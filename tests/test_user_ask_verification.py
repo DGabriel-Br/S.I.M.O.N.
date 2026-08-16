@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+from simon.actions import create_action
+from simon.events import get_event
 from simon.goals import Goal, insert_goal
 from simon.model_provider import StructuredModelResult
 from simon.plans import create_plan
@@ -12,6 +14,7 @@ from simon.user_ask_verification import (
     AssessmentVerdict,
     UserAskCriterionAssessment,
     assess_user_ask_response,
+    confirm_user_ask_assessment,
 )
 from simon.verification import list_verification_results
 
@@ -248,3 +251,171 @@ def test_assessment_prompt_treats_criterion_as_authoritative(tmp_path: Path) -> 
     assert "critério é a única fonte autoritativa" in provider.system
     assert "nunca pode tornar o critério mais estrito" in provider.system
     assert "não presuma que um script curto é incompleto" in provider.system
+
+
+def test_satisfied_assessment_can_be_explicitly_confirmed_as_verified(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal, action_id = _answered_user_ask(database_path, "print('ok')")
+    assessment = assess_user_ask_response(
+        database_path,
+        FakeAssessmentProvider("SATISFIED"),
+        model="fake-model",
+        action_id=action_id,
+    )
+
+    confirmation = confirm_user_ask_assessment(
+        database_path,
+        assessment_verification_id=assessment.verification.id,
+    )
+
+    assert confirmation.created is True
+    assert confirmation.verification.status == "VERIFIED"
+    assert confirmation.verification.strength == 3
+    assert confirmation.verification.subject_id == action_id
+    assert confirmation.verification.criteria == assessment.verification.criteria
+    assert assessment.verification.evidence_event_ids[0] in confirmation.verification.evidence_event_ids
+    assert confirmation.confirmation_event_id in confirmation.verification.evidence_event_ids
+    assert confirmation.verification.observed["confirmed_assessment_id"] == assessment.verification.id
+    assert confirmation.verification.observed["confirmed_by"] == "user"
+
+    event = get_event(database_path, confirmation.confirmation_event_id)
+    assert event is not None
+    assert event.kind == "verification.assessment.confirmed"
+    assert event.source == "user"
+    assert event.goal_id == goal.id
+
+
+def test_confirmation_is_idempotent_for_same_assessment(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _, action_id = _answered_user_ask(database_path, "print('ok')")
+    assessment = assess_user_ask_response(
+        database_path,
+        FakeAssessmentProvider("SATISFIED"),
+        model="fake-model",
+        action_id=action_id,
+    )
+
+    first = confirm_user_ask_assessment(
+        database_path,
+        assessment_verification_id=assessment.verification.id,
+    )
+    second = confirm_user_ask_assessment(
+        database_path,
+        assessment_verification_id=assessment.verification.id,
+    )
+
+    assert first.created is True
+    assert second.created is False
+    assert second.verification.id == first.verification.id
+    assert second.confirmation_event_id == first.confirmation_event_id
+
+
+def test_confirmation_rejects_non_satisfied_assessment(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _, action_id = _answered_user_ask(database_path, "Ainda não forneci o script.")
+    assessment = assess_user_ask_response(
+        database_path,
+        FakeAssessmentProvider("NOT_SATISFIED"),
+        model="fake-model",
+        action_id=action_id,
+    )
+
+    with pytest.raises(ValueError, match="somente assessment SATISFIED"):
+        confirm_user_ask_assessment(
+            database_path,
+            assessment_verification_id=assessment.verification.id,
+        )
+
+
+def test_confirmation_promotes_step_readiness_to_verified(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal, action_id = _answered_user_ask(database_path, "print('ok')")
+    assessment = assess_user_ask_response(
+        database_path,
+        FakeAssessmentProvider("SATISFIED"),
+        model="fake-model",
+        action_id=action_id,
+    )
+    confirm_user_ask_assessment(
+        database_path,
+        assessment_verification_id=assessment.verification.id,
+    )
+
+    readiness = evaluate_active_plan(database_path, goal_id=goal.id)
+    step = next(item for item in readiness.steps if item.step_id == "step_01")
+
+    assert step.state == "VERIFIED"
+    assert step.blockers == ()
+    assert step.related_action_id == action_id
+    assert readiness.next_step is not None
+    assert readiness.next_step.step_id == "step_02"
+
+
+def test_confirmation_rejects_assessment_from_stale_step_attempt(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal, action_id = _answered_user_ask(database_path, "print('ok')")
+    assessment = assess_user_ask_response(
+        database_path,
+        FakeAssessmentProvider("SATISFIED"),
+        model="fake-model",
+        action_id=action_id,
+    )
+    readiness = evaluate_active_plan(database_path, goal_id=goal.id)
+    create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=readiness.plan.id,
+        step_id="step_01",
+        kind="user.ask",
+        input_data={
+            "prompt": "Nova tentativa",
+            "verification": "O usuário fornece o código ou arquivo do script.",
+        },
+    )
+
+    with pytest.raises(ValueError, match="tentativa mais recente"):
+        confirm_user_ask_assessment(
+            database_path,
+            assessment_verification_id=assessment.verification.id,
+        )
+
+
+def test_confirmation_rolls_back_event_if_verified_insert_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _, action_id = _answered_user_ask(database_path, "print('ok')")
+    assessment = assess_user_ask_response(
+        database_path,
+        FakeAssessmentProvider("SATISFIED"),
+        model="fake-model",
+        action_id=action_id,
+    )
+
+    def fail_insert(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("falha simulada")
+
+    monkeypatch.setattr(
+        "simon.user_ask_verification.create_verification_result_in_connection",
+        fail_insert,
+    )
+
+    with pytest.raises(RuntimeError, match="falha simulada"):
+        confirm_user_ask_assessment(
+            database_path,
+            assessment_verification_id=assessment.verification.id,
+        )
+
+    import sqlite3
+
+    with sqlite3.connect(database_path) as connection:
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'verification.assessment.confirmed'"
+        ).fetchone()
+        verified_count = connection.execute(
+            "SELECT COUNT(*) FROM verification_results WHERE status = 'VERIFIED'"
+        ).fetchone()
+
+    assert event_count == (0,)
+    assert verified_count == (0,)

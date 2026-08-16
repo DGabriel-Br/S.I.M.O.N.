@@ -885,3 +885,78 @@ def test_action_retry_cli_creates_reviewed_waiting_attempt(
     repeated_output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert f"Action: {actions[-1].id}" in repeated_output
     assert "Retry criado: não (já aguardava resposta)" in repeated_output
+
+
+def test_verification_confirm_cli_promotes_satisfied_assessment(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.user_ask import answer_user_ask, dispatch_next_user_ask
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Obter script",
+        origin="USER",
+        desired_state={"description": "conteúdo do script disponível"},
+        success_criteria=({"description": "script recebido"},),
+    )
+    insert_goal(database_path, goal)
+    create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Solicitar ao usuário o conteúdo do script.",
+                "kind": "EPISTEMIC",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "user.ask",
+                "verification": "O usuário fornece o código ou arquivo do script.",
+            },
+        ),
+    )
+    dispatch = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer = answer_user_ask(
+        database_path,
+        action_id=dispatch.action.id,
+        response="print('ok')",
+    )
+    assessment = create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=dispatch.action.id,
+        criteria=({"description": "O usuário fornece o código ou arquivo do script."},),
+        status="ASSESSED",
+        evidence_event_ids=(answer.response_event_id,),
+        observed={
+            "assessment_type": "user.ask.semantic",
+            "verdict": "SATISFIED",
+            "response_event_id": answer.response_event_id,
+            "model": "fake-model",
+        },
+        strength=2,
+    )
+
+    assert main(
+        ["--data-dir", str(tmp_path), "verification-confirm", assessment.id]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Assessment: {assessment.id}" in output
+    assert f"Action: {dispatch.action.id}" in output
+    assert "Veredito avaliado: SATISFIED" in output
+    assert "Status persistido: VERIFIED" in output
+    assert "Verification confirmada: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT status, observed_json FROM verification_results WHERE subject_id = ? ORDER BY created_at",
+            (dispatch.action.id,),
+        ).fetchall()
+
+    assert [row[0] for row in rows] == ["ASSESSED", "VERIFIED"]
+    confirmed = json.loads(str(rows[-1][1]))
+    assert confirmed["confirmed_assessment_id"] == assessment.id
+    assert confirmed["confirmed_by"] == "user"

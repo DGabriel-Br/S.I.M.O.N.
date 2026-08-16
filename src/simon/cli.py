@@ -29,7 +29,10 @@ from simon.planning import propose_plan
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
-from simon.user_ask_verification import assess_user_ask_response
+from simon.user_ask_verification import (
+    assess_user_ask_response,
+    confirm_user_ask_assessment,
+)
 
 
 class ModelDiagnosticResponse(BaseModel):
@@ -168,6 +171,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="prompt refinado opcional; se omitido, reutiliza a solicitação anterior",
     )
 
+    verification_confirm = commands.add_parser(
+        "verification-confirm",
+        help="confirma explicitamente um assessment SATISFIED como VERIFIED",
+    )
+    verification_confirm.add_argument(
+        "assessment_verification_id",
+        help="ID do VerificationResult ASSESSED que será confirmado",
+    )
+
     return parser
 
 
@@ -266,6 +278,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "action-retry":
         prompt = " ".join(args.text) if args.text else None
         return _action_retry(database_path, args.action_id, prompt)
+    if args.command == "verification-confirm":
+        return _verification_confirm(database_path, args.assessment_verification_id)
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -845,6 +859,33 @@ def _action_retry(
         print("Retry criado: sim")
     else:
         print("Retry criado: não (já aguardava resposta)")
+    return 0
+
+
+def _verification_confirm(
+    database_path: Path,
+    assessment_verification_id: str,
+) -> int:
+    try:
+        receipt = confirm_user_ask_assessment(
+            database_path,
+            assessment_verification_id=assessment_verification_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Confirmação de Verification: falha ({exc})")
+        return 1
+
+    print(f"Assessment: {receipt.assessment.id}")
+    print(f"Action: {receipt.verification.subject_id}")
+    print(f"Veredito avaliado: {receipt.assessment.observed.get('verdict')}")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status persistido: {receipt.verification.status}")
+    print(f"Força: {receipt.verification.strength}")
+    print(f"Confirmação registrada: {receipt.confirmation_event_id}")
+    if receipt.created:
+        print("Verification confirmada: sim")
+    else:
+        print("Verification confirmada: não (já existia para este assessment)")
     return 0
 
 

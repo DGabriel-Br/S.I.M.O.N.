@@ -4823,3 +4823,39 @@ Por padrão o prompt anterior é reutilizado. Um texto refinado pode ser forneci
 A operação é idempotente enquanto o retry correspondente ainda está `WAITING`: repetir a autorização para a mesma Action anterior devolve a tentativa já aberta. Se uma tentativa posterior já foi concluída, a Action antiga não pode ser usada novamente como origem de retry; somente a tentativa mais recente daquele step pode ser revisada. Isso evita bifurcações silenciosas na linhagem causal.
 
 O sistema continua permitindo apenas uma `user.ask` em `WAITING` por Plan neste corte, evitando perguntas concorrentes ao usuário. Nenhuma inferência é necessária para autorizar o retry, nenhum `VerificationResult` novo é criado nessa operação e nenhuma migration adicional é necessária. O SQLite permanece no schema 10.
+
+### 32.15. Confirmação explícita de assessment positivo
+
+Um `VerificationResult(status=ASSESSED)` com veredito `SATISFIED` continua sendo apenas julgamento cognitivo. O modelo não pode promover sua própria avaliação para `VERIFIED`. O v0.1 introduz um gate explícito acionado por:
+
+```text
+simon verification-confirm <assessment_verification_id>
+```
+
+A operação aceita somente assessments de `ACTION` produzidos pelo fluxo `user.ask.semantic` e cujo veredito persistido seja exatamente `SATISFIED`. `NOT_SATISFIED` e `UNCLEAR` permanecem nos fluxos de review e retry. Assessments de outro tipo, VerificationResults que não estejam em `ASSESSED` e Actions que não sejam `user.ask COMPLETED` são rejeitados.
+
+A confirmação não modifica o assessment original. Ela registra um Event imutável:
+
+```text
+verification.assessment.confirmed
+source = user
+```
+
+e cria um novo `VerificationResult` para a mesma Action com:
+
+```text
+status = VERIFIED
+strength = 3
+verification_type = user.ask.assessment_confirmation
+confirmed_assessment_id = <assessment selecionado>
+confirmed_by = user
+```
+
+Os critérios são copiados exatamente do assessment confirmado. A evidência da nova Verification preserva os Events já usados pelo assessment, incluindo `user.response.received`, e acrescenta o Event de confirmação explícita. Dessa forma, a promoção mantém a linhagem entre evidência original, julgamento cognitivo e decisão de autoridade.
+
+A criação do Event de confirmação e do `VerificationResult` `VERIFIED` ocorre na mesma transação SQLite. A operação é idempotente por `assessment_verification_id`: repetir a confirmação recupera a mesma Verification sem criar Events ou provas duplicadas.
+
+Para evitar promover evidência obsoleta após uma nova tentativa, somente a tentativa mais recente do `(plan_id, step_id)` pode ser confirmada. O gate não chama o modelo e não altera Goal, Plan ou Action.
+
+Depois de existir uma Verification `VERIFIED`, o avaliador de readiness considera aquela Action suficiente para marcar o step como `VERIFIED`. A partir desse ponto, dependências que apontem para o step podem ser liberadas. Nenhuma migration adicional é necessária; o SQLite permanece no schema 10.
+

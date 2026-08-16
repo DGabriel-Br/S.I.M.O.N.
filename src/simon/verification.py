@@ -44,6 +44,22 @@ def _verification_from_row(row: tuple[object, ...]) -> VerificationResult:
     )
 
 
+def _verification_select() -> str:
+    return """
+        SELECT
+            id,
+            subject_type,
+            subject_id,
+            criteria_json,
+            status,
+            evidence_event_ids_json,
+            observed_json,
+            strength,
+            created_at
+        FROM verification_results
+    """
+
+
 def _validate_subject(
     connection: sqlite3.Connection,
     *,
@@ -85,17 +101,13 @@ def _validate_evidence(
             raise ValueError(f"Event de evidência não encontrado: {event_id}")
 
 
-def create_verification_result(
-    database_path: Path,
+def _validate_input(
     *,
     subject_type: str,
-    subject_id: str,
     criteria: tuple[dict[str, object], ...],
     status: str,
-    evidence_event_ids: tuple[str, ...],
-    observed: dict[str, object],
     strength: int,
-) -> VerificationResult:
+) -> None:
     if subject_type not in SUBJECT_TYPES:
         raise ValueError(f"subject_type inválido: {subject_type}")
     if not criteria:
@@ -106,6 +118,31 @@ def create_verification_result(
         raise TypeError("strength precisa ser um inteiro")
     if not MIN_STRENGTH <= strength <= MAX_STRENGTH:
         raise ValueError(f"strength precisa estar entre {MIN_STRENGTH} e {MAX_STRENGTH}")
+
+
+def create_verification_result_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    subject_type: str,
+    subject_id: str,
+    criteria: tuple[dict[str, object], ...],
+    status: str,
+    evidence_event_ids: tuple[str, ...],
+    observed: dict[str, object],
+    strength: int,
+) -> VerificationResult:
+    _validate_input(
+        subject_type=subject_type,
+        criteria=criteria,
+        status=status,
+        strength=strength,
+    )
+    _validate_subject(
+        connection,
+        subject_type=subject_type,
+        subject_id=subject_id,
+    )
+    _validate_evidence(connection, evidence_event_ids)
 
     result = VerificationResult(
         id=f"ver_{uuid4().hex}",
@@ -118,43 +155,69 @@ def create_verification_result(
         strength=strength,
         created_at=datetime.now(UTC),
     )
+    connection.execute(
+        """
+        INSERT INTO verification_results (
+            id,
+            subject_type,
+            subject_id,
+            criteria_json,
+            status,
+            evidence_event_ids_json,
+            observed_json,
+            strength,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            result.id,
+            result.subject_type,
+            result.subject_id,
+            json.dumps(result.criteria, ensure_ascii=False, separators=(",", ":")),
+            result.status,
+            json.dumps(result.evidence_event_ids, separators=(",", ":")),
+            json.dumps(result.observed, ensure_ascii=False, separators=(",", ":")),
+            result.strength,
+            result.created_at.isoformat(),
+        ),
+    )
+    return result
 
+
+def create_verification_result(
+    database_path: Path,
+    *,
+    subject_type: str,
+    subject_id: str,
+    criteria: tuple[dict[str, object], ...],
+    status: str,
+    evidence_event_ids: tuple[str, ...],
+    observed: dict[str, object],
+    strength: int,
+) -> VerificationResult:
     with sqlite3.connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        _validate_subject(
+        return create_verification_result_in_connection(
             connection,
             subject_type=subject_type,
             subject_id=subject_id,
-        )
-        _validate_evidence(connection, evidence_event_ids)
-        connection.execute(
-            """
-            INSERT INTO verification_results (
-                id,
-                subject_type,
-                subject_id,
-                criteria_json,
-                status,
-                evidence_event_ids_json,
-                observed_json,
-                strength,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                result.id,
-                result.subject_type,
-                result.subject_id,
-                json.dumps(result.criteria, ensure_ascii=False, separators=(",", ":")),
-                result.status,
-                json.dumps(result.evidence_event_ids, separators=(",", ":")),
-                json.dumps(result.observed, ensure_ascii=False, separators=(",", ":")),
-                result.strength,
-                result.created_at.isoformat(),
-            ),
+            criteria=criteria,
+            status=status,
+            evidence_event_ids=evidence_event_ids,
+            observed=observed,
+            strength=strength,
         )
 
-    return result
+
+def get_verification_result_in_connection(
+    connection: sqlite3.Connection,
+    verification_id: str,
+) -> VerificationResult | None:
+    row = connection.execute(
+        _verification_select() + " WHERE id = ?",
+        (verification_id,),
+    ).fetchone()
+    return _verification_from_row(row) if row is not None else None
 
 
 def get_verification_result(
@@ -162,25 +225,24 @@ def get_verification_result(
     verification_id: str,
 ) -> VerificationResult | None:
     with sqlite3.connect(database_path) as connection:
-        row = connection.execute(
-            """
-            SELECT
-                id,
-                subject_type,
-                subject_id,
-                criteria_json,
-                status,
-                evidence_event_ids_json,
-                observed_json,
-                strength,
-                created_at
-            FROM verification_results
-            WHERE id = ?
-            """,
-            (verification_id,),
-        ).fetchone()
+        return get_verification_result_in_connection(connection, verification_id)
 
-    return _verification_from_row(row) if row is not None else None
+
+def list_verification_results_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    subject_type: str,
+    subject_id: str,
+) -> tuple[VerificationResult, ...]:
+    if subject_type not in SUBJECT_TYPES:
+        raise ValueError(f"subject_type inválido: {subject_type}")
+
+    rows = connection.execute(
+        _verification_select()
+        + " WHERE subject_type = ? AND subject_id = ? ORDER BY created_at, id",
+        (subject_type, subject_id),
+    ).fetchall()
+    return tuple(_verification_from_row(row) for row in rows)
 
 
 def list_verification_results(
@@ -189,27 +251,9 @@ def list_verification_results(
     subject_type: str,
     subject_id: str,
 ) -> tuple[VerificationResult, ...]:
-    if subject_type not in SUBJECT_TYPES:
-        raise ValueError(f"subject_type inválido: {subject_type}")
-
     with sqlite3.connect(database_path) as connection:
-        rows = connection.execute(
-            """
-            SELECT
-                id,
-                subject_type,
-                subject_id,
-                criteria_json,
-                status,
-                evidence_event_ids_json,
-                observed_json,
-                strength,
-                created_at
-            FROM verification_results
-            WHERE subject_type = ? AND subject_id = ?
-            ORDER BY created_at, id
-            """,
-            (subject_type, subject_id),
-        ).fetchall()
-
-    return tuple(_verification_from_row(row) for row in rows)
+        return list_verification_results_in_connection(
+            connection,
+            subject_type=subject_type,
+            subject_id=subject_id,
+        )

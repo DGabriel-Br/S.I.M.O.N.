@@ -226,9 +226,25 @@ O retry registra `action.retry.authorized` com `source=user`, cria uma nova Acti
 
 Repetir `action-retry` enquanto a mesma nova tentativa ainda está em `WAITING` é idempotente e devolve a Action já aberta. Depois que uma tentativa posterior existe, uma tentativa antiga não pode ser reaberta silenciosamente. O SQLite permanece no schema 10.
 
+## Confirmação explícita de assessment positivo
+
+Um assessment `SATISFIED` continua sem autoridade para liberar o step sozinho. A promoção epistemológica exige uma decisão explícita fora do modelo:
+
+```powershell
+uv run simon verification-confirm ver_ID_DO_ASSESSMENT
+```
+
+O comando aceita somente um `VerificationResult` `ASSESSED` produzido pelo fluxo `user.ask.semantic` com veredito `SATISFIED`. A operação não chama o modelo novamente e não altera o assessment original. Em vez disso, registra `verification.assessment.confirmed` com `source=user` e cria um novo `VerificationResult(status=VERIFIED)` ligado à mesma Action.
+
+A nova Verification preserva os critérios do assessment, mantém o Event de resposta original como evidência e acrescenta o Event de confirmação explícita. O assessment escolhido fica registrado em `confirmed_assessment_id`; a confirmação usa força procedural 3 neste primeiro corte.
+
+A operação é idempotente por assessment. Repetir o comando devolve a mesma Verification `VERIFIED`. Assessments `NOT_SATISFIED`, `UNCLEAR`, tipos diferentes de assessment ou tentativas antigas do mesmo step são rejeitados.
+
+Depois da confirmação, `plan-next` passa a representar aquela tentativa como `VERIFIED`. Só então o step satisfaz dependências e deixa de bloquear o avanço do Plan. Nenhuma migration adicional é necessária e o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Criar o gate determinístico que permita transformar um assessment `SATISFIED` explicitamente revisado em `VerificationResult(status=VERIFIED)`, sem conceder ao modelo autoridade para promover sua própria avaliação.
+Usar o primeiro step efetivamente `VERIFIED` para continuar o ciclo operacional sem esconder decisões: avançar para os próximos steps independentes e começar a definir quando um conjunto de steps verificados permite considerar o Plan concluído, mantendo Plan completion separado de Goal completion.
 
 ## Primeira interpretação cognitiva
 
