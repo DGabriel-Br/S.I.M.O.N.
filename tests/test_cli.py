@@ -1150,3 +1150,128 @@ def test_goal_assess_cli_persists_assessed_without_completing_goal(
     assert verification[0] == "ASSESSED"
     observed = json.loads(str(verification[1]))
     assert observed["verdict"] == "NOT_SATISFIED"
+
+
+def test_plan_propose_uses_goal_assessment_instead_of_stale_intake_questions(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.events import Event, append_event
+    from simon.model_provider import StructuredModelResult
+    from simon.planning import PlanProposal, PlanStepProposal
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Corrigir falha no script",
+        origin="USER",
+        desired_state={"description": "O script executa sem erros."},
+        success_criteria=({"description": "A execução conclui sem erro."},),
+    )
+    insert_goal(database_path, goal)
+    append_event(
+        database_path,
+        Event.create(
+            kind="goal.proposal.accepted",
+            source="user",
+            payload={
+                "proposal_event_id": "evt_source",
+                "open_questions": ["Qual script está falhando?"],
+            },
+            goal_id=goal.id,
+        ),
+    )
+    evidence = Event.create(
+        kind="user.response.received",
+        source="user",
+        payload={"response": "NameError: resultado is not defined"},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    assessment = create_verification_result(
+        database_path,
+        subject_type="GOAL",
+        subject_id=goal.id,
+        criteria=goal.success_criteria,
+        status="ASSESSED",
+        evidence_event_ids=(evidence.id,),
+        observed={
+            "assessment_type": "goal.semantic",
+            "verdict": "INSUFFICIENT_EVIDENCE",
+            "criterion_assessments": [
+                {
+                    "criterion_index": 1,
+                    "verdict": "INSUFFICIENT_EVIDENCE",
+                    "rationale": "Falta executar após a correção.",
+                    "supporting_step_ids": [],
+                }
+            ],
+            "missing_evidence": ["Execução posterior sem erro."],
+            "plan_id": "pln_completed",
+            "plan_revision": 2,
+            "model": "assessment-model",
+        },
+        strength=2,
+    )
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanProposal]:
+            prompt = kwargs.get("prompt")
+            assert isinstance(prompt, str)
+            assert assessment.id in prompt
+            assert "Execução posterior sem erro." in prompt
+            assert "NameError: resultado is not defined" in prompt
+            return StructuredModelResult(
+                model="fake-model",
+                output=PlanProposal(
+                    summary="Investigar e corrigir antes de reexecutar.",
+                    steps=[
+                        PlanStepProposal(
+                            id="step_01",
+                            description="Analisar a falha já observada.",
+                            kind="EPISTEMIC",
+                            capability="cognition.analyze",
+                            verification="Existe uma hipótese causal sustentada pela evidência.",
+                        )
+                    ],
+                ),
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "plan-propose",
+            "--model",
+            "fake-model",
+            goal.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Assessment de continuação: {assessment.id} (INSUFFICIENT_EVIDENCE)" in output
+    assert "Plan anterior avaliado: pln_completed (revisão 2)" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT payload_json
+            FROM events
+            WHERE kind = 'cognition.plan_proposal.completed' AND goal_id = ?
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1
+            """,
+            (goal.id,),
+        ).fetchone()
+
+    assert row is not None
+    payload = json.loads(str(row[0]))
+    assert payload["source_open_questions"] == []
+    assert payload["source_goal_assessment_id"] == assessment.id
+    assert payload["source_completed_plan_id"] == "pln_completed"

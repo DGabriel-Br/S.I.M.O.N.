@@ -21,7 +21,7 @@ from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
-from simon.goal_verification import assess_goal_outcome
+from simon.goal_verification import assess_goal_outcome, get_latest_goal_assessment_context
 from simon.goals import OPEN_STATUSES, get_goal
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
@@ -696,7 +696,15 @@ def _plan_propose(
 
     try:
         context = build_cognitive_context(database_path, text=context_query)
-        open_questions = get_goal_acceptance_open_questions(database_path, goal.id)
+        goal_assessment = get_latest_goal_assessment_context(database_path, goal.id)
+        if goal_assessment is not None and goal_assessment.verdict == "SATISFIED":
+            print(
+                "Proposta de Plan: não gerada "
+                "(assessment de Goal SATISFIED aguarda promoção epistemológica)"
+            )
+            return 0
+        intake_open_questions = get_goal_acceptance_open_questions(database_path, goal.id)
+        open_questions = () if goal_assessment is not None else intake_open_questions
         append_event(
             database_path,
             Event.create(
@@ -719,6 +727,7 @@ def _plan_propose(
             goal=goal,
             open_questions=open_questions,
             context=context,
+            goal_assessment=goal_assessment,
         )
     except (ModelProviderError, TypeError, ValueError) as exc:
         append_event(
@@ -741,6 +750,12 @@ def _plan_propose(
             "model": result.model,
             "proposal": result.output.model_dump(mode="json"),
             "source_open_questions": list(open_questions),
+            "source_goal_assessment_id": (
+                goal_assessment.verification_id if goal_assessment is not None else None
+            ),
+            "source_completed_plan_id": (
+                goal_assessment.plan_id if goal_assessment is not None else None
+            ),
             "prompt_eval_count": result.prompt_eval_count,
             "eval_count": result.eval_count,
             "total_duration_ns": result.total_duration_ns,
@@ -753,6 +768,15 @@ def _plan_propose(
     print(f"Modelo: {result.model}")
     print(f"Goal: {goal.id} ({goal.title})")
     _print_context_summary(context)
+    if goal_assessment is not None:
+        print(
+            "Assessment de continuação: "
+            f"{goal_assessment.verification_id} ({goal_assessment.verdict})"
+        )
+        print(
+            "Plan anterior avaliado: "
+            f"{goal_assessment.plan_id} (revisão {goal_assessment.plan_revision})"
+        )
     print("Proposta de Plan:")
     print(f"Resumo: {result.output.summary}")
     print("Passos:")

@@ -79,6 +79,72 @@ class GoalAssessmentReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class GoalAssessmentContext:
+    verification_id: str
+    verdict: OverallVerdict
+    plan_id: str
+    plan_revision: int
+    criterion_assessments: tuple[dict[str, object], ...]
+    missing_evidence: tuple[str, ...]
+    evidence_events: tuple[Event, ...]
+
+    def to_model_payload(self) -> dict[str, object]:
+        return {
+            "verification_id": self.verification_id,
+            "status": "ASSESSED",
+            "verdict": self.verdict,
+            "plan_id": self.plan_id,
+            "plan_revision": self.plan_revision,
+            "criterion_assessments": list(self.criterion_assessments),
+            "missing_evidence": list(self.missing_evidence),
+            "verified_evidence_events": [
+                {
+                    "event_id": event.id,
+                    "kind": event.kind,
+                    "source": event.source,
+                    "payload": event.payload,
+                }
+                for event in self.evidence_events
+            ],
+        }
+
+
+def get_latest_goal_assessment_context(
+    database_path: Path,
+    goal_id: str,
+) -> GoalAssessmentContext | None:
+    for verification in reversed(
+        list_verification_results(database_path, subject_type="GOAL", subject_id=goal_id)
+    ):
+        observed = verification.observed
+        if verification.status != "ASSESSED":
+            continue
+        if observed.get("assessment_type") != ASSESSMENT_TYPE:
+            continue
+
+        assessment, verdict, plan_id, plan_revision = _parse_persisted_assessment(
+            verification
+        )
+        with sqlite3.connect(database_path) as connection:
+            evidence_events = tuple(
+                _event_by_id(connection, event_id)
+                for event_id in verification.evidence_event_ids
+            )
+        return GoalAssessmentContext(
+            verification_id=verification.id,
+            verdict=verdict,
+            plan_id=plan_id,
+            plan_revision=plan_revision,
+            criterion_assessments=tuple(
+                item.model_dump(mode="json") for item in assessment.criteria
+            ),
+            missing_evidence=tuple(assessment.missing_evidence),
+            evidence_events=evidence_events,
+        )
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class _VerifiedStepEvidence:
     step_id: str
     description: str
@@ -422,23 +488,15 @@ def _find_existing_assessment(
         if observed.get("plan_id") != plan_id or observed.get("model") != model:
             continue
 
-        raw_criteria = observed.get("criterion_assessments")
-        raw_missing = observed.get("missing_evidence", [])
-        if not isinstance(raw_criteria, list) or not isinstance(raw_missing, list):
-            raise TypeError("assessment de goal persistido possui observed inválido")
-        assessment = GoalEvidenceAssessment.model_validate(
-            {"criteria": raw_criteria, "missing_evidence": raw_missing}
+        assessment, verdict, persisted_plan_id, revision = _parse_persisted_assessment(
+            verification
         )
-        verdict = observed.get("verdict")
-        if verdict not in {"SATISFIED", "NOT_SATISFIED", "INSUFFICIENT_EVIDENCE"}:
-            raise TypeError("assessment de goal persistido possui verdict inválido")
-        revision = observed.get("plan_revision")
-        if not isinstance(revision, int):
-            raise TypeError("assessment de goal persistido possui plan_revision inválida")
+        if persisted_plan_id != plan_id:
+            continue
         return GoalAssessmentReceipt(
             verification=verification,
             assessment=assessment,
-            overall_verdict=cast(OverallVerdict, verdict),
+            overall_verdict=verdict,
             model=model,
             plan_id=plan_id,
             plan_revision=revision,
@@ -448,6 +506,30 @@ def _find_existing_assessment(
             total_duration_ns=_optional_int(observed.get("total_duration_ns")),
         )
     return None
+
+
+def _parse_persisted_assessment(
+    verification: VerificationResult,
+) -> tuple[GoalEvidenceAssessment, OverallVerdict, str, int]:
+    observed = verification.observed
+    raw_criteria = observed.get("criterion_assessments")
+    raw_missing = observed.get("missing_evidence", [])
+    if not isinstance(raw_criteria, list) or not isinstance(raw_missing, list):
+        raise TypeError("assessment de goal persistido possui observed inválido")
+    assessment = GoalEvidenceAssessment.model_validate(
+        {"criteria": raw_criteria, "missing_evidence": raw_missing}
+    )
+
+    verdict = observed.get("verdict")
+    if verdict not in {"SATISFIED", "NOT_SATISFIED", "INSUFFICIENT_EVIDENCE"}:
+        raise TypeError("assessment de goal persistido possui verdict inválido")
+    plan_id = observed.get("plan_id")
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        raise TypeError("assessment de goal persistido possui plan_id inválido")
+    revision = observed.get("plan_revision")
+    if not isinstance(revision, int):
+        raise TypeError("assessment de goal persistido possui plan_revision inválida")
+    return assessment, cast(OverallVerdict, verdict), plan_id, revision
 
 
 def _optional_int(value: object) -> int | None:

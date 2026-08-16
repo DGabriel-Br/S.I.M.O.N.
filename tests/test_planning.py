@@ -210,3 +210,51 @@ def test_plan_proposal_requires_detail_for_unknown_capability() -> None:
                 )
             ],
         )
+
+
+def test_propose_plan_uses_prior_goal_assessment_as_continuation_feedback() -> None:
+    from simon.goal_verification import GoalAssessmentContext
+
+    provider = FakePlanProvider()
+    goal = Goal.create(
+        title="Corrigir falha no script",
+        origin="USER",
+        desired_state={"description": "O script executa sem erros."},
+        success_criteria=({"description": "A execução conclui sem erro."},),
+    )
+    evidence = Event.create(
+        kind="user.response.received",
+        source="user",
+        payload={"response": "NameError: resultado is not defined"},
+        goal_id=goal.id,
+    )
+    assessment = GoalAssessmentContext(
+        verification_id="ver_goal_assessment",
+        verdict="INSUFFICIENT_EVIDENCE",
+        plan_id="pln_previous",
+        plan_revision=2,
+        criterion_assessments=(
+            {
+                "criterion_index": 1,
+                "verdict": "INSUFFICIENT_EVIDENCE",
+                "rationale": "Falta uma execução posterior sem erro.",
+                "supporting_step_ids": ["step_03"],
+            },
+        ),
+        missing_evidence=("Registro de execução após a correção.",),
+        evidence_events=(evidence,),
+    )
+
+    propose_plan(
+        provider,
+        model="fake-model",
+        goal=goal,
+        goal_assessment=assessment,
+    )
+
+    assert "prior_goal_assessment" in provider.prompt
+    assert "ver_goal_assessment" in provider.prompt
+    assert "Registro de execução após a correção." in provider.prompt
+    assert "NameError: resultado is not defined" in provider.prompt
+    assert "não repita coleta de evidência" in provider.system
+    assert "não trate o assessment como VERIFIED" in provider.system

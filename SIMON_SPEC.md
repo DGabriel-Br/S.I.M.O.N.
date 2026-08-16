@@ -4904,17 +4904,15 @@ A operação é idempotente. Se o Goal não possui mais Plan `ACTIVE`, mas exist
 
 Plan completion permanece estritamente separado de Goal completion. Executar e verificar todos os passos prova que a estratégia registrada terminou conforme seus critérios locais. Isso não prova, por si só, que o `desired_state` do Goal se tornou verdadeiro. A futura conclusão de Goal precisa de Verification no nível `GOAL`, com seus próprios critérios e evidências. Nenhuma migration adicional é necessária; o SQLite permanece no schema 10.
 
-### 32.17. Assessment semântico no nível do Goal
+### 32.17. Assessment semântico no nível de Goal
 
-Plan `COMPLETED` demonstra que a estratégia registrada terminou conforme as verificações locais de seus steps, mas não demonstra que o estado desejado do Goal foi alcançado. O v0.1 introduz uma avaliação cognitiva separada no nível `GOAL` através de:
+Plan `COMPLETED` não promove Goal automaticamente. O v0.1 compara as evidências da estratégia concluída com os critérios globais do Goal através de:
 
 ```text
 simon goal-assess --model <modelo> <goal_id>
 ```
 
-A operação exige Goal `ACTIVE` e pelo menos um Plan `COMPLETED`. O avaliador utiliza o Plan concluído mais recente, seu Event `plan.completed`, os steps persistidos, as Actions que sustentaram cada step e os Events usados pelas Verifications `VERIFIED`. O modelo recebe `desired_state` e `success_criteria` como condições autoritativas e não pode inferir sucesso apenas porque a estratégia terminou.
-
-Cada critério de sucesso recebe um dos três julgamentos:
+O avaliador recebe o estado desejado, todos os critérios de sucesso, o Event `plan.completed` e as evidências que sustentaram as Verifications `VERIFIED` dos steps. Cada critério recebe exatamente um veredito:
 
 ```text
 SATISFIED
@@ -4922,28 +4920,67 @@ NOT_SATISFIED
 INSUFFICIENT_EVIDENCE
 ```
 
-`SATISFIED` exige evidência fornecida que demonstre literalmente o critério. `NOT_SATISFIED` exige evidência que demonstre que o critério não foi atendido. `INSUFFICIENT_EVIDENCE` representa ausência de evidência suficiente para decidir. O avaliador também pode indicar quais `step_id` sustentam cada julgamento e quais evidências continuam ausentes. Referências a steps inexistentes são rejeitadas deterministicamente.
-
-O modelo não escolhe o veredito global. O Core o deriva a partir dos critérios individuais:
+O veredito global não é escolhido livremente pelo modelo. O Core deriva deterministicamente:
 
 ```text
-qualquer NOT_SATISFIED                    → NOT_SATISFIED
-todos SATISFIED                           → SATISFIED
-qualquer outra combinação                 → INSUFFICIENT_EVIDENCE
+qualquer NOT_SATISFIED          -> NOT_SATISFIED
+todos SATISFIED                 -> SATISFIED
+qualquer outra combinação       -> INSUFFICIENT_EVIDENCE
 ```
 
-O resultado é persistido como `VerificationResult` com:
+O resultado é persistido como `VerificationResult(subject_type=GOAL, status=ASSESSED, strength=2)`. O modelo não pode criar `VERIFIED` nem alterar o lifecycle do Goal. O assessment preserva `plan_id`, revisão, Event de conclusão, julgamentos por critério, evidência ausente e metadados de inferência.
+
+A operação é idempotente para o mesmo Goal, Plan concluído e modelo. Referências a steps inexistentes são rejeitadas. Plan completion continua sendo apenas evidência de que a estratégia terminou, nunca prova automática do estado final do Goal.
+
+### 32.18. Replanejamento orientado por Goal Assessment
+
+Depois de um Goal Assessment `NOT_SATISFIED` ou `INSUFFICIENT_EVIDENCE`, o Planner precisa continuar a partir da evidência já obtida em vez de reiniciar o raciocínio a partir das perguntas originais de intake.
+
+A fronteira passa a ser:
 
 ```text
-subject_type = GOAL
-status = ASSESSED
-strength = 2
-assessment_type = goal.semantic
+Goal ACTIVE
+   ↓
+Plan anterior COMPLETED
+   ↓
+Verification GOAL ASSESSED
+   ↓
+criterion assessments + missing evidence + verified evidence Events
+   ↓
+plan-propose
+   ↓
+nova PlanProposal de continuação
 ```
 
-A evidência do VerificationResult preserva o Event `plan.completed` e os Events já utilizados pelas Verifications locais dos steps. O assessment mantém `plan_id`, revisão, Event de conclusão, avaliações por critério, evidência ausente, modelo e métricas de inferência em `observed`.
+`get_latest_goal_assessment_context` projeta temporariamente o assessment persistido para Cognition. Essa projeção não é um novo objeto persistente. Ela contém:
 
-Assessment cognitivo continua sem autoridade para concluir o Goal. Mesmo um veredito global `SATISFIED` permanece `ASSESSED`; qualquer promoção para `VERIFIED` e qualquer transição `Goal ACTIVE → COMPLETED` exigirão gates próprios. Um veredito `NOT_SATISFIED` ou `INSUFFICIENT_EVIDENCE` mantém o Goal `ACTIVE` e deve alimentar um novo ciclo de planejamento.
+```text
+verification_id
+verdict
+plan_id
+plan_revision
+criterion_assessments
+missing_evidence
+verified_evidence_events
+```
 
-A operação é idempotente para a combinação `(goal_id, plan_id, model)`. Uma revisão futura de Plan concluída pode produzir um novo assessment do mesmo Goal. Nenhuma migration adicional é necessária; o SQLite permanece no schema 10.
+Os Events de evidência são fornecidos ao Planner como dados sem autoridade de instrução. O assessment continua sendo julgamento `ASSESSED`, não fato `VERIFIED` sobre o Goal. O Planner deve usar os Events como evidência observada e os julgamentos como feedback epistemológico para escolher o próximo trabalho.
 
+Quando esse feedback existe, as `open_questions` preservadas no `goal.proposal.accepted` não são carregadas automaticamente como questões ainda atuais. Elas pertencem ao estado de intake anterior e podem já ter sido respondidas pelo Plan concluído. O estado mais recente passa a ser representado pela evidência acumulada e pelo Goal Assessment. Isso evita repetir coleta já comprovada apenas porque uma pergunta histórica ainda existe no Event original.
+
+O Planner recebe instruções explícitas para:
+
+```text
+não repetir evidência já presente em verified_evidence_events;
+focar lacunas indicadas pelos critérios e por missing_evidence;
+tratar NOT_SATISFIED como falha a enfrentar antes de revalidar;
+tratar INSUFFICIENT_EVIDENCE como necessidade de produzir ou obter evidência faltante;
+não tratar ASSESSED como VERIFIED;
+não inventar capabilities ou fontes de dados ausentes.
+```
+
+O Event `cognition.plan_proposal.completed` passa a preservar `source_goal_assessment_id` e `source_completed_plan_id`. Dessa forma, uma nova revisão de Plan permanece causalmente ligada à avaliação que justificou o replanejamento.
+
+Se o Goal Assessment mais recente estiver `SATISFIED`, `plan-propose` não gera uma nova estratégia. O sistema aguarda um gate separado de promoção epistemológica no nível do Goal, mantendo planejamento fora da decisão de conclusão do objetivo.
+
+Nenhuma migration é necessária. O SQLite permanece no schema 10.

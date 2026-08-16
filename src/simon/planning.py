@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from simon.capabilities import CapabilityId, capability_catalog_for_model
 from simon.context import CognitiveContext
+from simon.goal_verification import GoalAssessmentContext
 from simon.goals import Goal
 from simon.model_provider import ModelProvider, StructuredModelResult
 
@@ -138,6 +139,7 @@ def propose_plan(
     goal: Goal,
     open_questions: tuple[str, ...] = (),
     context: CognitiveContext | None = None,
+    goal_assessment: GoalAssessmentContext | None = None,
 ) -> StructuredModelResult[PlanProposal]:
     system = (
         "Você é o componente de planejamento do SIMON. "
@@ -159,9 +161,15 @@ def propose_plan(
         "sistema de arquivos, logs ou ambiente de execução se esse acesso não estiver demonstrado no "
         "contexto. Quando a informação necessária precisa ser fornecida pelo usuário, o primeiro trabalho "
         "EPISTEMIC deve ser solicitar ou obter essa informação do usuário, não fingir que ela já pode ser "
-        "consultada em outra fonte. Questões recebidas como abertas continuam abertas neste estágio até "
-        "existir um mecanismo explícito de resolução; o ato de planejar não resolve uma questão. Cada passo "
-        "precisa declarar precondições relevantes, a capability abstrata necessária e uma forma observável "
+        "consultada em outra fonte. Questões recebidas como abertas na chamada atual continuam abertas "
+        "até existir evidência que as resolva; o ato de planejar não resolve uma questão. Quando houver "
+        "prior_goal_assessment, trate-o como feedback de continuação após um Plan concluído: não repita "
+        "coleta de evidência que já aparece em verified_evidence_events, não trate o assessment como VERIFIED "
+        "por si só e concentre a nova estratégia nas lacunas dos critérios e em missing_evidence. Se o "
+        "assessment demonstrar uma falha, planeje como enfrentá-la e depois revalidar o estado final. Se "
+        "indicar evidência insuficiente, planeje como obter a evidência faltante ou realizar o trabalho "
+        "necessário para que essa evidência possa existir. Cada passo precisa declarar precondições relevantes, "
+        "a capability abstrata necessária e uma forma observável "
         "de verificação. Use somente IDs de capability presentes no catálogo fornecido. "
         "Quando uma informação precisa ser fornecida ou confirmada pelo usuário, use user.ask. "
         "Não combine user.ask com leitura de arquivos, logs ou execução no mesmo passo. "
@@ -182,6 +190,9 @@ def propose_plan(
         "open_questions_from_goal_acceptance": list(open_questions),
         "capability_catalog": capability_catalog_for_model(),
         "context": context.to_model_payload() if context is not None else {},
+        "prior_goal_assessment": (
+            goal_assessment.to_model_payload() if goal_assessment is not None else None
+        ),
     }
     prompt = (
         "Formule uma proposta de Plan para o Goal autorizado abaixo. "

@@ -237,3 +237,43 @@ def test_goal_assessment_prompt_does_not_equate_plan_completion_with_goal_succes
     assert provider.system is not None
     assert "Plan estar COMPLETED prova somente" in provider.system
     assert "não prova automaticamente que o Goal global foi alcançado" in provider.system
+
+
+def test_latest_goal_assessment_context_exposes_persisted_feedback_and_evidence(
+    tmp_path: Path,
+) -> None:
+    from simon.goal_verification import get_latest_goal_assessment_context
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, completion_event_id, evidence_ids = _completed_goal(database_path)
+    provider = FakeGoalAssessmentProvider(_negative_assessment())
+    receipt = assess_goal_outcome(
+        database_path,
+        provider,
+        model="fake-model",
+        goal_id=goal.id,
+    )
+
+    context = get_latest_goal_assessment_context(database_path, goal.id)
+
+    assert context is not None
+    assert context.verification_id == receipt.verification.id
+    assert context.verdict == "NOT_SATISFIED"
+    assert context.plan_id == receipt.plan_id
+    assert context.plan_revision == receipt.plan_revision
+    assert context.missing_evidence == ("Uma execução posterior sem erro.",)
+    assert context.criterion_assessments[1]["verdict"] == "NOT_SATISFIED"
+    event_ids = {event.id for event in context.evidence_events}
+    assert completion_event_id in event_ids
+    assert set(evidence_ids) <= event_ids
+
+
+def test_latest_goal_assessment_context_returns_none_without_goal_assessment(
+    tmp_path: Path,
+) -> None:
+    from simon.goal_verification import get_latest_goal_assessment_context
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+
+    assert get_latest_goal_assessment_context(database_path, goal.id) is None

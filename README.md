@@ -140,9 +140,9 @@ Um Goal já autorizado pode ser enviado ao primeiro Planner cognitivo:
 uv run simon plan-propose --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
 ```
 
-O Planner recebe o Goal persistente, as questões em aberto preservadas durante a aceitação e um recorte determinístico do contexto. A saída contém uma estratégia curta com passos `EPISTEMIC` ou `WORLD`, dependências, precondições, capability abstrata e forma de verificação.
+O Planner recebe o Goal persistente, as questões em aberto ainda relevantes, um recorte determinístico do contexto e, quando já existe um Plan concluído avaliado no nível do Goal, o assessment persistido dessa tentativa. A saída contém uma estratégia curta com passos `EPISTEMIC` ou `WORLD`, dependências, precondições, capability abstrata e forma de verificação.
 
-Quando falta informação, o Planner deve preferir trabalho epistêmico para obtê-la em vez de inventar arquivos, erros ou caminhos. A proposta é registrada como `cognition.plan_proposal.completed` e não executa nenhuma Action.
+Quando falta informação, o Planner deve preferir trabalho epistêmico para obtê-la em vez de inventar arquivos, erros ou caminhos. Quando existe um `Goal Assessment`, o Planner recebe também o veredito por critério, a evidência ausente e os Events que sustentaram a tentativa anterior. O novo Plan deve avançar a partir desse estado, sem repetir coleta já comprovada. A proposta é registrada como `cognition.plan_proposal.completed` e não executa nenhuma Action.
 
 Uma proposta validada pode ser materializada sem nova chamada ao modelo:
 
@@ -256,23 +256,27 @@ A conclusão não chama o modelo e revalida as evidências dentro da mesma trans
 
 Concluir o Plan não conclui o Goal. O Goal permanece `ACTIVE` até existir uma verificação própria dos seus critérios de sucesso. Essa separação evita inferir que uma estratégia executada necessariamente produziu o estado de mundo desejado. O SQLite permanece no schema 10.
 
-## Assessment semântico no nível do Goal
+## Assessment no nível do Goal
 
-Depois de um Plan chegar a `COMPLETED`, o Goal continua `ACTIVE` e pode ser avaliado contra seus próprios critérios de sucesso:
+Um Plan concluído pode ser comparado aos critérios globais do Goal:
 
 ```powershell
 uv run simon goal-assess --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
 ```
 
-O avaliador recebe o `desired_state`, todos os critérios de sucesso do Goal, o Plan concluído e as evidências que sustentaram as Verifications `VERIFIED` de seus steps. O fato de o Plan estar `COMPLETED` é apresentado explicitamente como evidência de conclusão da estratégia, não como prova de sucesso global.
+O avaliador recebe os critérios persistidos, o `plan.completed` e as evidências `VERIFIED` dos steps. Cada critério recebe `SATISFIED`, `NOT_SATISFIED` ou `INSUFFICIENT_EVIDENCE`. O veredito global é derivado deterministicamente pelo Core e o resultado é persistido como `VerificationResult(subject_type=GOAL, status=ASSESSED)`. O Goal continua `ACTIVE`; avaliação cognitiva não produz `VERIFIED` nem conclui o Goal por autoridade própria.
 
-Cada critério recebe um veredito `SATISFIED`, `NOT_SATISFIED` ou `INSUFFICIENT_EVIDENCE`. O veredito geral não é escolhido pelo modelo: o Core o deriva deterministicamente. Qualquer critério `NOT_SATISFIED` torna o conjunto `NOT_SATISFIED`; todos `SATISFIED` produzem `SATISFIED`; qualquer combinação restante produz `INSUFFICIENT_EVIDENCE`.
+## Replanejamento orientado pelo Goal Assessment
 
-O resultado é persistido como `VerificationResult(subject_type=GOAL, status=ASSESSED, strength=2)`. Mesmo um assessment global `SATISFIED` não conclui o Goal nem produz `VERIFIED` por autoridade do modelo. A operação é idempotente para o mesmo Plan concluído e o mesmo modelo.
+Quando um Goal continua `ACTIVE` após um assessment `NOT_SATISFIED` ou `INSUFFICIENT_EVIDENCE`, uma nova chamada de `plan-propose` reutiliza esse assessment como feedback de continuação. O Planner recebe o ID da Verification, o Plan anterior avaliado, os julgamentos por critério, a evidência faltante e os Events de evidência que sustentaram a avaliação.
+
+Questões de intake antigas deixam de ser carregadas automaticamente nessa continuação. A evidência observada e o assessment mais recente passam a representar o estado epistemológico atual, evitando que uma nova revisão repita perguntas já respondidas apenas porque elas existiam no `goal.proposal.accepted`.
+
+O Event `cognition.plan_proposal.completed` registra `source_goal_assessment_id` e `source_completed_plan_id`, preservando a proveniência da nova estratégia. Se o assessment mais recente estiver `SATISFIED`, `plan-propose` não gera outra estratégia; esse caso pertence ao futuro gate de promoção epistemológica do Goal.
 
 ## Próximo passo
 
-Usar um assessment `GOAL` negativo ou insuficiente como evidência explícita para o próximo ciclo de planejamento. O Planner deverá enxergar por que o Goal ainda não foi alcançado e formular uma nova revisão de Plan, em vez de repetir a estratégia de coleta já concluída.
+Usar a nova revisão proposta pelo Planner para descobrir quais capabilities concretas faltam para continuar o Goal. O catálogo permanece honesto: uma capability só é marcada como disponível quando existe execução real correspondente.
 
 ## Primeira interpretação cognitiva
 
