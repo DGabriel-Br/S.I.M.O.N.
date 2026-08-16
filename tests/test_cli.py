@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from simon.actions import create_action, get_action, transition_action
+from simon.actions import create_action, get_action, list_actions_for_plan, transition_action
 from simon.cli import main
 from simon.entities import SIMON_ENTITY_ID
 from simon.experiences import create_experience, get_experience
@@ -50,7 +50,7 @@ def test_main_initializes_storage_and_records_current_world_state(
 
     assert claim is not None
     assert claim[0] == "storage.schema_version"
-    assert json.loads(str(claim[1])) == 9
+    assert json.loads(str(claim[1])) == 10
     assert claim[2] == "DIRECT_OBSERVATION"
     assert tuple(json.loads(str(claim[3]))) == (str(event[0]),)
     assert claim[4] == "ACTIVE"
@@ -648,3 +648,69 @@ def test_plan_next_reports_blockers_without_creating_action(
     assert payload["available_capabilities"] == ["user.ask"]
     assert payload["next_step_id"] is None
     assert payload["steps"][0]["step_id"] == "step_01"
+
+
+def test_cli_user_ask_waits_across_restart_and_records_answer(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Obter erro do usuário",
+        origin="USER",
+        desired_state={"description": "erro disponível"},
+        success_criteria=({"description": "erro informado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Solicitar ao usuário a mensagem de erro.",
+                "kind": "EPISTEMIC",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "user.ask",
+                "verification": "O usuário fornece a mensagem de erro.",
+            },
+        ),
+    )
+
+    assert main(["--data-dir", str(tmp_path), "plan-ask", goal.id]) == 0
+    first_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Status: WAITING" in first_output
+    assert "Action criada: sim" in first_output
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert len(actions) == 1
+    action_id = actions[0].id
+
+    assert main(["--data-dir", str(tmp_path)]) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    restored = get_action(database_path, action_id)
+    assert restored is not None
+    assert restored.status == "WAITING"
+
+    assert main(["--data-dir", str(tmp_path), "plan-ask", goal.id]) == 0
+    second_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action: {action_id}" in second_output
+    assert "Action criada: não (já aguardava resposta)" in second_output
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "action-answer",
+            action_id,
+            "ValueError: arquivo ausente",
+        ]
+    ) == 0
+    answer_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Status: COMPLETED" in answer_output
+    assert "Verification criada: não" in answer_output
+
+    completed = get_action(database_path, action_id)
+    assert completed is not None
+    assert completed.status == "COMPLETED"

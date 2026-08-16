@@ -8,7 +8,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
     database_path, schema_version = initialize_storage(tmp_path)
 
     assert database_path.exists()
-    assert schema_version == 9
+    assert schema_version == 10
 
     with sqlite3.connect(database_path) as connection:
         tables = {
@@ -236,7 +236,7 @@ def test_initialize_storage_upgrades_schema_seven_without_losing_data(tmp_path: 
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'experiences'"
         ).fetchone()
 
-    assert schema_version == 9
+    assert schema_version == 10
     assert event == ("evt_existing", "system.started")
     assert entity == ("ent_existing", "Existing Project")
     assert claim == ("clm_existing", "status")
@@ -257,8 +257,8 @@ def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
     second_database_path, second_schema_version = initialize_storage(tmp_path)
 
     assert second_database_path == first_database_path
-    assert first_schema_version == 9
-    assert second_schema_version == 9
+    assert first_schema_version == 10
+    assert second_schema_version == 10
 
 
 def test_initialize_storage_upgrades_schema_eight_without_losing_experience(
@@ -314,6 +314,104 @@ def test_initialize_storage_upgrades_schema_eight_without_losing_experience(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
         ).fetchone()
 
-    assert schema_version == 9
+    assert schema_version == 10
     assert experience == ("exp_existing", "SUCCESS", "Existing summary")
     assert memory_table == ("memories",)
+
+
+def test_initialize_storage_upgrades_schema_nine_and_preserves_actions(tmp_path: Path) -> None:
+    database_path = tmp_path / "simon.db"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(database_path) as connection:
+        for version in range(1, 10):
+            migration = next(MIGRATIONS_DIR.glob(f"{version:04d}_*.sql"))
+            connection.executescript(migration.read_text(encoding="utf-8"))
+
+        connection.execute(
+            """
+            INSERT INTO goals (
+                id, title, origin, desired_state_json, success_criteria_json,
+                status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "gol_schema9",
+                "Existing Goal",
+                "USER",
+                '{"status":"active"}',
+                '[{"kind":"done"}]',
+                "ACTIVE",
+                "2026-08-16T12:00:00+00:00",
+                "2026-08-16T12:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO plans (
+                id, goal_id, revision, steps_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "pln_schema9",
+                "gol_schema9",
+                1,
+                '[{"id":"step_1","description":"Existing Step"}]',
+                "ACTIVE",
+                "2026-08-16T12:00:00+00:00",
+                "2026-08-16T12:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO actions (
+                id, goal_id, plan_id, step_id, kind, input_json, status,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "act_schema9",
+                "gol_schema9",
+                "pln_schema9",
+                "step_1",
+                "test.run",
+                "{}",
+                "COMPLETED",
+                "2026-08-16T12:00:00+00:00",
+                "2026-08-16T12:00:00+00:00",
+            ),
+        )
+
+    upgraded_path, schema_version = initialize_storage(tmp_path)
+
+    with sqlite3.connect(upgraded_path) as connection:
+        preserved = connection.execute(
+            "SELECT id, status FROM actions WHERE id = 'act_schema9'"
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO actions (
+                id, goal_id, plan_id, step_id, kind, input_json, status,
+                created_at, started_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "act_waiting",
+                "gol_schema9",
+                "pln_schema9",
+                "step_1",
+                "user.ask",
+                '{"prompt":"Pergunta"}',
+                "WAITING",
+                "2026-08-16T12:10:00+00:00",
+                "2026-08-16T12:10:00+00:00",
+                "2026-08-16T12:10:00+00:00",
+            ),
+        )
+        waiting = connection.execute(
+            "SELECT status FROM actions WHERE id = 'act_waiting'"
+        ).fetchone()
+
+    assert schema_version == 10
+    assert preserved == ("act_schema9", "COMPLETED")
+    assert waiting == ("WAITING",)

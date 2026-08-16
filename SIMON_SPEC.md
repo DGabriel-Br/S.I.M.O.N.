@@ -2811,6 +2811,7 @@ Estados mínimos:
 ```text
 PENDING
 RUNNING
+WAITING
 COMPLETED
 FAILED
 BLOCKED
@@ -2822,7 +2823,8 @@ CANCELLED
 Significado:
 
 - `PENDING`: Action criada, ainda não iniciada;
-- `RUNNING`: execução iniciou;
+- `RUNNING`: execução iniciou e depende do runtime local para continuar;
+- `WAITING`: a tentativa foi iniciada, mas aguarda uma condição externa explícita, como resposta do usuário;
 - `COMPLETED`: o executor terminou a operação e produziu um resultado;
 - `FAILED`: execução terminou com falha concreta;
 - `BLOCKED`: falta uma precondition, recurso ou condição externa;
@@ -2834,11 +2836,16 @@ Fluxo principal:
 
 ```text
 PENDING ─► RUNNING ─► COMPLETED
+   │          │
+   │          ├─────► WAITING ─► COMPLETED
+   │          │          ├─────► BLOCKED
+   │          │          └─────► CANCELLED
    │          ├─────► FAILED
    │          ├─────► BLOCKED
    │          ├─────► INTERRUPTED
    │          └─────► CANCELLED
    │
+   ├───────────────► WAITING
    ├───────────────► BLOCKED
    ├───────────────► DENIED
    └───────────────► CANCELLED
@@ -3014,7 +3021,7 @@ Na inicialização, o Core deve procurar no mínimo:
 ```text
 Goals em ACTIVE / WAITING / BLOCKED / PAUSED
 Plans ACTIVE associados
-Actions PENDING / RUNNING
+Actions PENDING / RUNNING / WAITING
 Experiences ACTIVE / SUSPENDED
 ```
 
@@ -3022,9 +3029,10 @@ Regras iniciais:
 
 1. `RUNNING` encontrado após perda do runtime é tratado como execução potencialmente interrompida e precisa ser reconciliado antes de retry.
 2. `PENDING` pode ser reavaliado pelo Planner/Policy antes da execução.
-3. `ACTIVE Experience` pode ser convertida para `SUSPENDED` durante recovery quando sua continuidade operacional foi perdida.
-4. Goal não é cancelado ou falhado apenas porque o processo reiniciou.
-5. World e Memory são reconstruídos a partir do estado persistido, não do contexto anterior do modelo.
+3. `WAITING` preserva a dependência externa através do reinício e não é convertido em `INTERRUPTED`.
+4. `ACTIVE Experience` pode ser convertida para `SUSPENDED` durante recovery quando sua continuidade operacional foi perdida.
+5. Goal não é cancelado ou falhado apenas porque o processo reiniciou.
+6. World e Memory são reconstruídos a partir do estado persistido, não do contexto anterior do modelo.
 
 ### 25.15. O que deliberadamente não ganha State Machine agora
 
@@ -4646,7 +4654,7 @@ nenhuma Action criada
 
 A avaliação considera apenas fatos que o sistema consegue demonstrar. Dependências entre steps só são satisfeitas quando existe uma `Action` `COMPLETED` para o step dependência e ao menos um `VerificationResult` `VERIFIED` associado àquela Action. `COMPLETED` sem Verification não é suficiente para liberar o próximo step.
 
-Um step com `Action` `PENDING` ou `RUNNING` é `IN_PROGRESS` e não recebe uma tentativa concorrente. Um step já demonstrado por Action verificada é `VERIFIED` e deixa de competir como próximo trabalho.
+Um step com `Action` `PENDING`, `RUNNING` ou `WAITING` é `IN_PROGRESS` e não recebe uma tentativa concorrente. Um step já demonstrado por Action verificada é `VERIFIED` e deixa de competir como próximo trabalho.
 
 Falhas anteriores não geram retry silencioso. `FAILED`, `BLOCKED`, `DENIED`, `INTERRUPTED` e `CANCELLED` produzem um bloqueador `PREVIOUS_ATTEMPT_REQUIRES_REVIEW` até que uma política de retry ou replanning seja implementada.
 
@@ -4692,3 +4700,58 @@ Para `user.ask`, preconditions textuais como `o usuário possui a informação` 
 Plans persistidos antes do catálogo continuam válidos historicamente. Capabilities antigas em texto livre não são convertidas por similaridade e permanecem `CAPABILITY_UNAVAILABLE`. A correção ocorre através de uma nova `PlanProposal` e nova revisão de Plan, preservando a estratégia anterior como histórico.
 
 `plan.readiness.evaluated` passa a registrar também `available_capabilities`, tornando reproduzível por que um step foi considerado pronto ou bloqueado naquele momento. Nenhuma Action é criada nesta etapa e o SQLite permanece no schema 9.
+
+
+### 32.12. Primeira Action de interação humana: `user.ask`
+
+O primeiro step realmente executável do v0.1 é uma interação com o usuário. A capability `user.ask` não acessa filesystem, shell, rede ou logs; ela apenas materializa uma solicitação já presente em um Plan autorizado e aguarda uma resposta humana.
+
+A fronteira operacional inicial é:
+
+```text
+Plan ACTIVE
+   ↓
+step user.ask READY
+   ↓
+plan-ask
+   ↓
+Action(kind=user.ask, status=WAITING)
+   ↓
+user.question.asked
+   ↓
+resposta humana
+   ↓
+action-answer
+   ↓
+user.response.received
+   ↓
+Action COMPLETED
+   ↓
+Verification ainda pendente
+```
+
+`WAITING` passa a fazer parte do lifecycle persistente de `Action`. Esse estado representa uma tentativa que já foi iniciada, mas cuja continuidade depende de uma resposta externa. Ele não é terminal e não representa CPU, Tool ou processo local atualmente em execução.
+
+Por isso, o recovery de startup continua convertendo somente Actions `RUNNING` para `INTERRUPTED`. Uma Action `WAITING` sobrevive ao encerramento e reinício do SIMON sem mudança de estado. O avaliador de readiness a considera `IN_PROGRESS`, impedindo que o mesmo step seja iniciado novamente.
+
+A transição inicial suportada é `PENDING → WAITING`; `started_at` é preenchido quando a pergunta é emitida. Uma resposta válida permite `WAITING → COMPLETED`. O resultado reportado da Action referencia o Event que preserva a resposta, em vez de duplicar o texto bruto em múltiplos objetos.
+
+O comando inicial é:
+
+```text
+simon plan-ask <goal_id>
+```
+
+Ele avalia o Plan ativo, exige que o próximo step `READY` utilize exatamente `user.ask`, cria a Action, registra `user.question.asked` e a coloca em `WAITING`. Se o mesmo Plan já possui uma `user.ask` em espera, o comando é idempotente operacionalmente e devolve a Action existente em vez de abrir outra pergunta concorrente.
+
+A resposta é registrada por:
+
+```text
+simon action-answer <action_id> <resposta>
+```
+
+A operação exige Action `user.ask` em `WAITING`, grava `user.response.received` com `source=user` e conclui a Action na mesma transação. A Action preserva apenas `response_event_id` em `reported_result`.
+
+Receber uma resposta não cria `VerificationResult` automaticamente. Uma resposta como `não sei` prova que houve interação, mas pode não satisfazer um critério como `o usuário fornece o código do script`. O step permanece `VERIFICATION_PENDING` até uma etapa posterior avaliar o conteúdo contra o critério declarado.
+
+A tabela `actions` precisa ampliar seu `CHECK` de status para incluir `WAITING`. A migration `0010_action_waiting.sql` recria a tabela preservando registros existentes e adiciona uma garantia parcial de no máximo uma tentativa aberta (`PENDING`, `RUNNING` ou `WAITING`) por `(plan_id, step_id)`. O SQLite passa ao schema 10.

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -55,7 +57,7 @@ def _validate_subject(
         ).fetchone()
         if row is None:
             raise ValueError(f"action não encontrada: {subject_id}")
-        if str(row[0]) in {"PENDING", "RUNNING"}:
+        if str(row[0]) in {"PENDING", "RUNNING", "WAITING"}:
             raise ValueError("action precisa estar em estado terminal antes da verificação")
         return
 

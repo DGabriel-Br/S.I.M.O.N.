@@ -242,3 +242,41 @@ def test_verification_validates_status_strength_and_criteria(tmp_path: Path) -> 
             observed={"passed": True},
             strength=6,
         )
+
+
+def test_verification_rejects_waiting_action(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Aguardar resposta",
+        origin="USER",
+        desired_state={"response": "received"},
+        success_criteria=({"kind": "response_received"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=({"id": "step_1", "description": "Perguntar ao usuário"},),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_1",
+        kind="user.ask",
+    )
+    transition_action(database_path, action.id, "WAITING")
+    evidence = Event.create(kind="user.question.asked", source="system")
+    append_event(database_path, evidence)
+
+    with pytest.raises(ValueError, match="estado terminal"):
+        create_verification_result(
+            database_path,
+            subject_type="ACTION",
+            subject_id=action.id,
+            criteria=({"kind": "response_received"},),
+            status="VERIFIED",
+            evidence_event_ids=(evidence.id,),
+            observed={"response": "pending"},
+            strength=1,
+        )

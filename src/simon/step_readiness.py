@@ -88,7 +88,7 @@ def evaluate_active_plan(
             )
             continue
 
-        active_action = _latest_action_with_statuses(step_actions, {"PENDING", "RUNNING"})
+        active_action = _latest_action_with_statuses(step_actions, {"PENDING", "RUNNING", "WAITING"})
         if active_action is not None:
             assessments.append(
                 StepReadiness(

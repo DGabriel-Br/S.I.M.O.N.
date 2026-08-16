@@ -28,6 +28,7 @@ from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
+from simon.user_ask import answer_user_ask, dispatch_next_user_ask
 
 
 class ModelDiagnosticResponse(BaseModel):
@@ -124,6 +125,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="ID do Goal cujo Plan ativo será avaliado",
     )
 
+    plan_ask = commands.add_parser(
+        "plan-ask",
+        help="cria a próxima Action user.ask e aguarda uma resposta do usuário",
+    )
+    plan_ask.add_argument(
+        "goal_id",
+        help="ID do Goal cujo próximo step user.ask será iniciado",
+    )
+
+    action_answer = commands.add_parser(
+        "action-answer",
+        help="registra a resposta do usuário para uma Action user.ask em espera",
+    )
+    action_answer.add_argument("action_id", help="ID da Action user.ask em WAITING")
+    action_answer.add_argument("text", nargs="+", help="resposta fornecida pelo usuário")
+
     return parser
 
 
@@ -207,6 +224,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan_materialize(database_path, args.proposal_event_id)
     if args.command == "plan-next":
         return _plan_next(database_path, args.goal_id)
+    if args.command == "plan-ask":
+        return _plan_ask(database_path, args.goal_id)
+    if args.command == "action-answer":
+        return _action_answer(database_path, args.action_id, " ".join(args.text))
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -672,6 +693,45 @@ def _plan_next(database_path: Path, goal_id: str) -> int:
     print("Action criada: não")
     return 0
 
+
+
+def _plan_ask(database_path: Path, goal_id: str) -> int:
+    try:
+        dispatch = dispatch_next_user_ask(database_path, goal_id=goal_id)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Action user.ask: falha ({exc})")
+        return 1
+
+    print(f"Action: {dispatch.action.id}")
+    print(f"Goal: {dispatch.action.goal_id}")
+    print(f"Plan: {dispatch.action.plan_id}")
+    print(f"Step: {dispatch.action.step_id}")
+    print(f"Capability: {dispatch.action.kind}")
+    print(f"Status: {dispatch.action.status}")
+    print(f"Solicitação: {dispatch.prompt}")
+    if dispatch.created:
+        print("Action criada: sim")
+    else:
+        print("Action criada: não (já aguardava resposta)")
+    return 0
+
+
+def _action_answer(database_path: Path, action_id: str, text: str) -> int:
+    try:
+        receipt = answer_user_ask(
+            database_path,
+            action_id=action_id,
+            response=text,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Resposta user.ask: falha ({exc})")
+        return 1
+
+    print(f"Action: {receipt.action.id}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Resposta registrada: {receipt.response_event_id}")
+    print("Verification criada: não")
+    return 0
 
 def _record_plan_readiness(
     database_path: Path,

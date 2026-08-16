@@ -27,7 +27,9 @@ O projeto já consegue:
 - persistir Plans versionados ligados a Goals;
 - substituir um Plan ativo por nova revisão sem apagar o histórico anterior;
 - persistir Actions ligadas a Goal, Plan e step;
-- reconciliar Actions que perderam continuidade durante reinicialização;
+- manter Actions `user.ask` em `WAITING` enquanto aguardam resposta humana;
+- preservar Actions `WAITING` através de reinicializações sem tratá-las como execução interrompida;
+- reconciliar apenas Actions `RUNNING` que perderam continuidade durante reinicialização;
 - persistir VerificationResults imutáveis ligados a Actions ou Goals;
 - preservar verificações anteriores quando nova evidência surgir;
 - manter execução e verificação como fatos separados;
@@ -46,7 +48,9 @@ O projeto já consegue:
 - formular propostas curtas de Plan para Goals autorizados, com passos epistêmicos ou de mundo, dependências, capabilities abstratas e verificação, sem executar o Plan automaticamente;
 - materializar uma proposta validada como revisão persistente de Plan, preservando proveniência e idempotência;
 - avaliar deterministicamente a prontidão dos steps de um Plan antes de criar qualquer Action;
-- exigir dependências verificadas, preconditions resolvidas e capability disponível antes de considerar um step executável.
+- exigir dependências verificadas, preconditions resolvidas e capability disponível antes de considerar um step executável;
+- iniciar o primeiro step `user.ask` READY como Action persistente;
+- registrar respostas humanas como Events e concluir a Action sem inventar Verification automática.
 
 O primeiro adapter de modelo local já existe:
 
@@ -164,11 +168,31 @@ O corte atual possui um catálogo mínimo de IDs estáveis de capability. O Plan
 
 Plans antigos com capability em texto livre continuam legíveis, mas permanecem `CAPABILITY_UNAVAILABLE`; não há fuzzy matching nem migração silenciosa. Uma nova proposta deve usar os IDs estáveis do catálogo. Uma Action `COMPLETED` sem Verification também não libera dependências, e tentativas anteriores com falha, bloqueio, negação, interrupção ou cancelamento exigem revisão antes de retry.
 
-A avaliação registra `plan.readiness.evaluated`, incluindo o conjunto de capabilities disponível naquela avaliação, e ainda não cria Action.
+A avaliação registra `plan.readiness.evaluated`, incluindo o conjunto de capabilities disponível naquela avaliação, e não cria Action por conta própria.
+
+## Primeira Action `user.ask`
+
+Quando `plan-next` identifica um step `user.ask` como `READY`, a interação pode ser iniciada explicitamente:
+
+```powershell
+uv run simon plan-ask gol_ID_DO_GOAL
+```
+
+O comando cria uma Action com `kind=user.ask`, registra `user.question.asked` e coloca a Action em `WAITING`. `WAITING` representa dependência externa do usuário, não processamento em andamento. Por isso ela sobrevive a reinicializações e não é convertida para `INTERRUPTED` pelo recovery de runtime.
+
+Enquanto uma `user.ask` do Plan já estiver em `WAITING`, repetir `plan-ask` recupera a mesma Action em vez de criar outra pergunta concorrente. A resposta é registrada separadamente:
+
+```powershell
+uv run simon action-answer act_ID_DA_ACTION "texto da resposta"
+```
+
+A resposta vira um Event `user.response.received`, e a Action passa para `COMPLETED` referenciando o Event como resultado reportado. O texto bruto permanece no Event de origem. Nenhum `VerificationResult` é criado automaticamente, porque receber uma resposta não demonstra por si só que o critério semântico do step foi satisfeito. Até uma verificação posterior, o step aparece como `VERIFICATION_PENDING`.
+
+Essa etapa eleva o SQLite ao schema 10 para incluir `WAITING` no lifecycle persistente de Action.
 
 ## Próximo passo
 
-Usar um step `user.ask` realmente `READY` para criar a primeira Action de interação com o usuário, definindo um estado de espera que sobreviva a reinicializações sem ser confundido com falha de execução.
+Verificar uma Action `user.ask` concluída contra o critério do step usando a resposta registrada como evidência, sem confundir "o usuário respondeu" com "a informação necessária foi realmente obtida".
 
 ## Primeira interpretação cognitiva
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -7,6 +9,7 @@ from uuid import uuid4
 
 PENDING = "PENDING"
 RUNNING = "RUNNING"
+WAITING = "WAITING"
 TERMINAL_STATUSES = {
     "COMPLETED",
     "FAILED",
@@ -16,8 +19,9 @@ TERMINAL_STATUSES = {
     "CANCELLED",
 }
 ALLOWED_TRANSITIONS = {
-    PENDING: {RUNNING, "BLOCKED", "DENIED", "CANCELLED"},
-    RUNNING: {"COMPLETED", "FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"},
+    PENDING: {RUNNING, WAITING, "BLOCKED", "DENIED", "CANCELLED"},
+    RUNNING: {WAITING, "COMPLETED", "FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"},
+    WAITING: {"COMPLETED", "BLOCKED", "CANCELLED"},
 }
 
 
@@ -54,6 +58,26 @@ def _action_from_row(row: tuple[object, ...]) -> Action:
         finished_at=datetime.fromisoformat(str(row[11])) if row[11] is not None else None,
         updated_at=datetime.fromisoformat(str(row[12])),
     )
+
+
+def _action_select() -> str:
+    return """
+        SELECT
+            id,
+            goal_id,
+            plan_id,
+            step_id,
+            kind,
+            input_json,
+            status,
+            reported_result_json,
+            failure_json,
+            created_at,
+            started_at,
+            finished_at,
+            updated_at
+        FROM actions
+    """
 
 
 def _validate_target(
@@ -93,8 +117,8 @@ def _validate_target(
         raise ValueError(f"passo não encontrado no plan: {step_id}")
 
 
-def create_action(
-    database_path: Path,
+def create_action_in_connection(
+    connection: sqlite3.Connection,
     *,
     goal_id: str,
     plan_id: str,
@@ -122,116 +146,105 @@ def create_action(
         updated_at=now,
     )
 
+    _validate_target(
+        connection,
+        goal_id=goal_id,
+        plan_id=plan_id,
+        step_id=step_id,
+    )
+    connection.execute(
+        """
+        INSERT INTO actions (
+            id,
+            goal_id,
+            plan_id,
+            step_id,
+            kind,
+            input_json,
+            status,
+            reported_result_json,
+            failure_json,
+            created_at,
+            started_at,
+            finished_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            action.id,
+            action.goal_id,
+            action.plan_id,
+            action.step_id,
+            action.kind,
+            json.dumps(action.input_data, ensure_ascii=False, separators=(",", ":")),
+            action.status,
+            None,
+            None,
+            action.created_at.isoformat(),
+            None,
+            None,
+            action.updated_at.isoformat(),
+        ),
+    )
+    return action
+
+
+def create_action(
+    database_path: Path,
+    *,
+    goal_id: str,
+    plan_id: str,
+    step_id: str,
+    kind: str,
+    input_data: dict[str, object] | None = None,
+) -> Action:
     with sqlite3.connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        _validate_target(
+        return create_action_in_connection(
             connection,
             goal_id=goal_id,
             plan_id=plan_id,
             step_id=step_id,
-        )
-        connection.execute(
-            """
-            INSERT INTO actions (
-                id,
-                goal_id,
-                plan_id,
-                step_id,
-                kind,
-                input_json,
-                status,
-                reported_result_json,
-                failure_json,
-                created_at,
-                started_at,
-                finished_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                action.id,
-                action.goal_id,
-                action.plan_id,
-                action.step_id,
-                action.kind,
-                json.dumps(action.input_data, ensure_ascii=False, separators=(",", ":")),
-                action.status,
-                None,
-                None,
-                action.created_at.isoformat(),
-                None,
-                None,
-                action.updated_at.isoformat(),
-            ),
+            kind=kind,
+            input_data=input_data,
         )
 
-    return action
+
+def get_action_in_connection(
+    connection: sqlite3.Connection,
+    action_id: str,
+) -> Action | None:
+    row = connection.execute(
+        _action_select() + " WHERE id = ?",
+        (action_id,),
+    ).fetchone()
+    return _action_from_row(row) if row is not None else None
 
 
 def get_action(database_path: Path, action_id: str) -> Action | None:
     with sqlite3.connect(database_path) as connection:
-        row = connection.execute(
-            """
-            SELECT
-                id,
-                goal_id,
-                plan_id,
-                step_id,
-                kind,
-                input_json,
-                status,
-                reported_result_json,
-                failure_json,
-                created_at,
-                started_at,
-                finished_at,
-                updated_at
-            FROM actions
-            WHERE id = ?
-            """,
-            (action_id,),
-        ).fetchone()
-
-    return _action_from_row(row) if row is not None else None
+        return get_action_in_connection(connection, action_id)
 
 
 def list_actions_for_plan(database_path: Path, plan_id: str) -> tuple[Action, ...]:
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute(
-            """
-            SELECT
-                id,
-                goal_id,
-                plan_id,
-                step_id,
-                kind,
-                input_json,
-                status,
-                reported_result_json,
-                failure_json,
-                created_at,
-                started_at,
-                finished_at,
-                updated_at
-            FROM actions
-            WHERE plan_id = ?
-            ORDER BY created_at, id
-            """,
+            _action_select() + " WHERE plan_id = ? ORDER BY created_at, id",
             (plan_id,),
         ).fetchall()
 
     return tuple(_action_from_row(row) for row in rows)
 
 
-def transition_action(
-    database_path: Path,
+def transition_action_in_connection(
+    connection: sqlite3.Connection,
     action_id: str,
     new_status: str,
     *,
     reported_result: dict[str, object] | None = None,
     failure: dict[str, object] | None = None,
 ) -> Action:
-    current = get_action(database_path, action_id)
+    current = get_action_in_connection(connection, action_id)
     if current is None:
         raise ValueError(f"action não encontrada: {action_id}")
 
@@ -243,50 +256,68 @@ def transition_action(
     started_at = current.started_at
     finished_at = current.finished_at
 
-    if new_status == RUNNING and started_at is None:
+    if new_status in {RUNNING, WAITING} and started_at is None:
         started_at = now
     if new_status in TERMINAL_STATUSES:
         finished_at = now
 
-    with sqlite3.connect(database_path) as connection:
-        cursor = connection.execute(
-            """
-            UPDATE actions
-            SET
-                status = ?,
-                reported_result_json = ?,
-                failure_json = ?,
-                started_at = ?,
-                finished_at = ?,
-                updated_at = ?
-            WHERE id = ? AND status = ?
-            """,
+    cursor = connection.execute(
+        """
+        UPDATE actions
+        SET
+            status = ?,
+            reported_result_json = ?,
+            failure_json = ?,
+            started_at = ?,
+            finished_at = ?,
+            updated_at = ?
+        WHERE id = ? AND status = ?
+        """,
+        (
+            new_status,
             (
-                new_status,
-                (
-                    json.dumps(reported_result, ensure_ascii=False, separators=(",", ":"))
-                    if reported_result is not None
-                    else None
-                ),
-                (
-                    json.dumps(failure, ensure_ascii=False, separators=(",", ":"))
-                    if failure is not None
-                    else None
-                ),
-                started_at.isoformat() if started_at is not None else None,
-                finished_at.isoformat() if finished_at is not None else None,
-                now.isoformat(),
-                action_id,
-                current.status,
+                json.dumps(reported_result, ensure_ascii=False, separators=(",", ":"))
+                if reported_result is not None
+                else None
             ),
-        )
-        if cursor.rowcount != 1:
-            raise RuntimeError(f"action mudou durante a transição: {action_id}")
+            (
+                json.dumps(failure, ensure_ascii=False, separators=(",", ":"))
+                if failure is not None
+                else None
+            ),
+            started_at.isoformat() if started_at is not None else None,
+            finished_at.isoformat() if finished_at is not None else None,
+            now.isoformat(),
+            action_id,
+            current.status,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"action mudou durante a transição: {action_id}")
 
-    updated = get_action(database_path, action_id)
+    updated = get_action_in_connection(connection, action_id)
     if updated is None:
         raise RuntimeError(f"action desapareceu após atualização: {action_id}")
     return updated
+
+
+def transition_action(
+    database_path: Path,
+    action_id: str,
+    new_status: str,
+    *,
+    reported_result: dict[str, object] | None = None,
+    failure: dict[str, object] | None = None,
+) -> Action:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        return transition_action_in_connection(
+            connection,
+            action_id,
+            new_status,
+            reported_result=reported_result,
+            failure=failure,
+        )
 
 
 def interrupt_running_actions(database_path: Path) -> tuple[Action, ...]:

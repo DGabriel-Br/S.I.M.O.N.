@@ -175,3 +175,25 @@ def test_terminal_action_cannot_be_reopened(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="transição de action inválida"):
         transition_action(database_path, action.id, "RUNNING")
+
+
+def test_waiting_action_survives_runtime_restart_reconciliation(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal, plan_id = _goal_and_plan(database_path)
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan_id,
+        step_id="step_1",
+        kind="user.ask",
+    )
+    waiting = transition_action(database_path, action.id, "WAITING")
+
+    interrupted = interrupt_running_actions(database_path)
+    restored = get_action(database_path, action.id)
+
+    assert interrupted == ()
+    assert restored is not None
+    assert restored.status == "WAITING"
+    assert restored.started_at == waiting.started_at
+    assert restored.finished_at is None
