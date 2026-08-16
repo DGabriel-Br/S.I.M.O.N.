@@ -8,7 +8,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
     database_path, schema_version = initialize_storage(tmp_path)
 
     assert database_path.exists()
-    assert schema_version == 8
+    assert schema_version == 9
 
     with sqlite3.connect(database_path) as connection:
         tables = {
@@ -18,7 +18,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
                 "WHERE type = 'table' "
                 "AND name IN ("
                 "'events', 'entities', 'claims', 'goals', "
-                "'plans', 'actions', 'verification_results', 'experiences'"
+                "'plans', 'actions', 'verification_results', 'experiences', 'memories'"
                 ")"
             ).fetchall()
         }
@@ -32,6 +32,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
         "actions",
         "verification_results",
         "experiences",
+        "memories",
     }
 
 
@@ -235,7 +236,7 @@ def test_initialize_storage_upgrades_schema_seven_without_losing_data(tmp_path: 
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'experiences'"
         ).fetchone()
 
-    assert schema_version == 8
+    assert schema_version == 9
     assert event == ("evt_existing", "system.started")
     assert entity == ("ent_existing", "Existing Project")
     assert claim == ("clm_existing", "status")
@@ -244,6 +245,11 @@ def test_initialize_storage_upgrades_schema_seven_without_losing_data(tmp_path: 
     assert action == ("act_existing", "COMPLETED")
     assert verification == ("ver_existing", "VERIFIED")
     assert experience_table == ("experiences",)
+    with sqlite3.connect(upgraded_path) as connection:
+        memory_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+        ).fetchone()
+    assert memory_table == ("memories",)
 
 
 def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
@@ -251,5 +257,63 @@ def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
     second_database_path, second_schema_version = initialize_storage(tmp_path)
 
     assert second_database_path == first_database_path
-    assert first_schema_version == 8
-    assert second_schema_version == 8
+    assert first_schema_version == 9
+    assert second_schema_version == 9
+
+
+def test_initialize_storage_upgrades_schema_eight_without_losing_experience(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "simon.db"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(database_path) as connection:
+        for version in range(1, 9):
+            migration = next(MIGRATIONS_DIR.glob(f"{version:04d}_*.sql"))
+            connection.executescript(migration.read_text(encoding="utf-8"))
+
+        connection.execute(
+            """
+            INSERT INTO experiences (
+                id,
+                title,
+                status,
+                outcome,
+                event_ids_json,
+                action_ids_json,
+                verification_ids_json,
+                summary,
+                started_at,
+                ended_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "exp_existing",
+                "Existing Experience",
+                "CLOSED",
+                "SUCCESS",
+                "[]",
+                "[]",
+                "[]",
+                "Existing summary",
+                "2026-08-16T12:00:00+00:00",
+                "2026-08-16T12:05:00+00:00",
+                "2026-08-16T12:05:00+00:00",
+            ),
+        )
+
+    upgraded_path, schema_version = initialize_storage(tmp_path)
+
+    with sqlite3.connect(upgraded_path) as connection:
+        experience = connection.execute(
+            "SELECT id, outcome, summary FROM experiences WHERE id = ?",
+            ("exp_existing",),
+        ).fetchone()
+        memory_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+        ).fetchone()
+
+    assert schema_version == 9
+    assert experience == ("exp_existing", "SUCCESS", "Existing summary")
+    assert memory_table == ("memories",)

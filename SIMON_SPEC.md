@@ -1803,6 +1803,14 @@ Working Memory permanece runtime state, não registro permanente próprio.
 
 Prospective Memory permanece inicialmente representada por Goal, Event/subscription ou metadata apropriada. Só vira objeto próprio se seu uso real exigir lifecycle separado.
 
+#### Primeiro corte implementável de Memory
+
+No v0.1, uma Memory persistente nasce apenas por decisão explícita a partir de uma ou mais Experiences já `CLOSED`. Production ainda não executa automaticamente Significance Filter, deduplicação ou consolidação. Esses mecanismos entram quando houver volume real de Experiences que justifique automatizá-los.
+
+O conteúdo persistido começa como texto significativo e mantém referências para Experiences, Claims e Entities de origem. O retrieval inicial é deliberadamente simples: somente Memories `ACTIVE`, filtráveis por texto, `kind`, `scope` e Entity. Busca vetorial, embeddings e índices especializados permanecem adiados até existir evidência de que a busca simples não atende.
+
+`last_used_at` é atualizado quando uma Memory é selecionada pelo retrieval normal, permitindo observar uso real sem criar score de importância ou decay artificial no primeiro corte.
+
 ### 23.13. Value objects, não entidades independentes
 
 Algumas estruturas serão utilizadas dentro dos objetos acima sem ganhar tabela ou identidade própria no v0.1:

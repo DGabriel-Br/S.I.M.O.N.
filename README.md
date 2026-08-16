@@ -33,9 +33,13 @@ O projeto já consegue:
 - manter execução e verificação como fatos separados;
 - persistir Experiences como unidades causais ligadas a Goals, Events, Actions e VerificationResults;
 - suspender Experiences ativas quando o runtime perde continuidade;
-- preservar outcome e resumo sem substituir as evidências originais.
+- preservar outcome e resumo sem substituir as evidências originais;
+- persistir Memories derivadas explicitamente de Experiences fechadas;
+- recuperar apenas Memories ativas por texto, tipo, escopo e Entity;
+- preservar proveniência de Experiences, Claims e Entities nas Memories;
+- retirar Memories arquivadas, substituídas ou retraídas do retrieval normal.
 
-Ainda não existem Memory, Cognition, modelos ou Lab executáveis.
+Ainda não existem Cognition, modelos ou Lab executáveis.
 
 ## Preparação
 
@@ -73,4 +77,4 @@ uv run mypy src
 
 ## Próximo passo
 
-Introduzir `Memory`, começando por memória episódica e semântica derivada de Experiences relevantes, sem transformar todo histórico bruto em memória permanente.
+Introduzir o primeiro `ModelProvider` local e uma chamada cognitiva estruturada, sem acoplar o Core a um modelo específico.
