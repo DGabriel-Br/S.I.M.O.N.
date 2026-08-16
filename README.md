@@ -256,9 +256,23 @@ A conclusão não chama o modelo e revalida as evidências dentro da mesma trans
 
 Concluir o Plan não conclui o Goal. O Goal permanece `ACTIVE` até existir uma verificação própria dos seus critérios de sucesso. Essa separação evita inferir que uma estratégia executada necessariamente produziu o estado de mundo desejado. O SQLite permanece no schema 10.
 
+## Assessment semântico no nível do Goal
+
+Depois de um Plan chegar a `COMPLETED`, o Goal continua `ACTIVE` e pode ser avaliado contra seus próprios critérios de sucesso:
+
+```powershell
+uv run simon goal-assess --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
+```
+
+O avaliador recebe o `desired_state`, todos os critérios de sucesso do Goal, o Plan concluído e as evidências que sustentaram as Verifications `VERIFIED` de seus steps. O fato de o Plan estar `COMPLETED` é apresentado explicitamente como evidência de conclusão da estratégia, não como prova de sucesso global.
+
+Cada critério recebe um veredito `SATISFIED`, `NOT_SATISFIED` ou `INSUFFICIENT_EVIDENCE`. O veredito geral não é escolhido pelo modelo: o Core o deriva deterministicamente. Qualquer critério `NOT_SATISFIED` torna o conjunto `NOT_SATISFIED`; todos `SATISFIED` produzem `SATISFIED`; qualquer combinação restante produz `INSUFFICIENT_EVIDENCE`.
+
+O resultado é persistido como `VerificationResult(subject_type=GOAL, status=ASSESSED, strength=2)`. Mesmo um assessment global `SATISFIED` não conclui o Goal nem produz `VERIFIED` por autoridade do modelo. A operação é idempotente para o mesmo Plan concluído e o mesmo modelo.
+
 ## Próximo passo
 
-Usar `plan.completed` e as evidências acumuladas para iniciar verificação no nível do Goal. Plan `COMPLETED` será evidência de que a estratégia terminou, não prova automática de que o estado desejado do Goal foi alcançado.
+Usar um assessment `GOAL` negativo ou insuficiente como evidência explícita para o próximo ciclo de planejamento. O Planner deverá enxergar por que o Goal ainda não foi alcançado e formular uma nova revisão de Plan, em vez de repetir a estratégia de coleta já concluída.
 
 ## Primeira interpretação cognitiva
 

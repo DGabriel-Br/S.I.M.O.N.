@@ -21,6 +21,7 @@ from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
+from simon.goal_verification import assess_goal_outcome
 from simon.goals import OPEN_STATUSES, get_goal
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
@@ -99,6 +100,18 @@ def build_parser() -> argparse.ArgumentParser:
         "proposal_event_id",
         help="ID do Event cognition.goal_proposal.completed que será aceito",
     )
+
+    goal_assess = commands.add_parser(
+        "goal-assess",
+        help="avalia semanticamente se as evidências de um Plan concluído satisfazem o Goal",
+    )
+    goal_assess.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    goal_assess.add_argument("goal_id", help="ID do Goal ACTIVE que será avaliado")
+    _add_ollama_arguments(goal_assess)
 
     plan_propose = commands.add_parser(
         "plan-propose",
@@ -261,6 +274,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "goal-accept":
         return _goal_accept(database_path, args.proposal_event_id)
+    if args.command == "goal-assess":
+        return _goal_assess(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.goal_id,
+        )
     if args.command == "plan-propose":
         return _plan_propose(
             database_path,
@@ -567,6 +588,74 @@ def _goal_accept(database_path: Path, proposal_event_id: str) -> int:
         print("Goal persistido: sim")
     else:
         print("Goal persistido: já existia para esta proposta")
+    return 0
+
+
+def _goal_assess(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    goal_id: str,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        receipt = assess_goal_outcome(
+            database_path,
+            provider,
+            model=model,
+            goal_id=goal_id,
+        )
+    except (ModelProviderError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Assessment de Goal: falha ({exc})")
+        return 1
+
+    goal = get_goal(database_path, goal_id)
+    if goal is None:
+        print(f"Assessment de Goal: falha (goal não encontrado: {goal_id})")
+        return 1
+
+    desired_description = goal.desired_state.get("description")
+    print(f"Modelo: {receipt.model}")
+    print(f"Goal: {goal.id} ({goal.title})")
+    print(f"Plan avaliado: {receipt.plan_id} (revisão {receipt.plan_revision})")
+    if isinstance(desired_description, str) and desired_description.strip():
+        print(f"Estado desejado: {desired_description.strip()}")
+    print(f"Veredito geral: {receipt.overall_verdict}")
+    print("Critérios:")
+    criteria_by_index = {
+        index: criterion
+        for index, criterion in enumerate(goal.success_criteria, start=1)
+    }
+    for item in sorted(receipt.assessment.criteria, key=lambda value: value.criterion_index):
+        criterion = criteria_by_index[item.criterion_index].get("description", "")
+        print(f"- [{item.criterion_index}] {item.verdict}: {criterion}")
+        print(f"  Justificativa: {item.rationale}")
+        if item.supporting_step_ids:
+            print(f"  Steps de suporte: {', '.join(item.supporting_step_ids)}")
+        else:
+            print("  Steps de suporte: nenhum")
+
+    if receipt.assessment.missing_evidence:
+        print("Evidência ausente:")
+        for missing in receipt.assessment.missing_evidence:
+            print(f"- {missing}")
+    else:
+        print("Evidência ausente: nenhuma")
+
+    if receipt.prompt_eval_count is not None:
+        print(f"Tokens de entrada: {receipt.prompt_eval_count}")
+    if receipt.eval_count is not None:
+        print(f"Tokens gerados: {receipt.eval_count}")
+    if receipt.total_duration_ns is not None:
+        print(f"Duração: {receipt.total_duration_ns / 1_000_000_000:.2f}s")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status persistido: {receipt.verification.status}")
+    print("Goal alterado: não")
+    if receipt.created:
+        print("Assessment criada: sim")
+    else:
+        print("Assessment criada: não (já existia para este Plan e modelo)")
     return 0
 
 

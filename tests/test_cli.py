@@ -1018,3 +1018,135 @@ def test_cli_plan_complete_finishes_verified_plan_without_goal(
     assert "Steps verificados: 1" in output
     assert "Plan concluído: sim" in output
     assert "Goal alterado: não" in output
+
+
+def test_goal_assess_cli_persists_assessed_without_completing_goal(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.events import Event, append_event
+    from simon.goal_verification import GoalCriterionAssessment, GoalEvidenceAssessment
+    from simon.model_provider import StructuredModelResult
+    from simon.plan_completion import complete_verified_plan
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Corrigir script",
+        origin="USER",
+        desired_state={"description": "O script executa sem erro."},
+        success_criteria=(
+            {"description": "A execução conclui com sucesso."},
+            {"description": "Não ocorre mensagem de erro."},
+        ),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Coletar erro",
+                "verification": "erro coletado",
+            },
+        ),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="test.observe",
+    )
+    transition_action(database_path, action.id, "RUNNING")
+    transition_action(database_path, action.id, "COMPLETED", reported_result={"ok": True})
+    evidence = Event.create(
+        kind="test.error.observed",
+        source="test",
+        payload={"error": "NameError"},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action.id,
+        criteria=({"description": "erro coletado"},),
+        status="VERIFIED",
+        evidence_event_ids=(evidence.id,),
+        observed={"ok": True},
+        strength=3,
+    )
+    complete_verified_plan(database_path, goal_id=goal.id)
+
+    class FakeProvider:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[object]:
+            return StructuredModelResult(
+                model="fake-model",
+                output=GoalEvidenceAssessment(
+                    criteria=[
+                        GoalCriterionAssessment(
+                            criterion_index=1,
+                            verdict="INSUFFICIENT_EVIDENCE",
+                            rationale="Não houve nova execução bem-sucedida.",
+                            supporting_step_ids=[],
+                        ),
+                        GoalCriterionAssessment(
+                            criterion_index=2,
+                            verdict="NOT_SATISFIED",
+                            rationale="A evidência contém NameError.",
+                            supporting_step_ids=["step_01"],
+                        ),
+                    ],
+                    missing_evidence=["Uma execução posterior sem erro."],
+                ),
+                prompt_eval_count=40,
+                eval_count=16,
+                total_duration_ns=1_000_000_000,
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "goal-assess",
+            "--model",
+            "fake-model",
+            goal.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Goal: {goal.id} (Corrigir script)" in output
+    assert f"Plan avaliado: {plan.id} (revisão 1)" in output
+    assert "Veredito geral: NOT_SATISFIED" in output
+    assert "Status persistido: ASSESSED" in output
+    assert "Goal alterado: não" in output
+    assert "Assessment criada: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT status FROM goals WHERE id = ?",
+            (goal.id,),
+        ).fetchone()
+        verification = connection.execute(
+            """
+            SELECT status, observed_json
+            FROM verification_results
+            WHERE subject_type = 'GOAL' AND subject_id = ?
+            """,
+            (goal.id,),
+        ).fetchone()
+
+    assert row == ("ACTIVE",)
+    assert verification is not None
+    assert verification[0] == "ASSESSED"
+    observed = json.loads(str(verification[1]))
+    assert observed["verdict"] == "NOT_SATISFIED"
