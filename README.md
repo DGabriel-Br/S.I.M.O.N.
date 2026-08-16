@@ -8,24 +8,27 @@ A especificação oficial está em [`SIMON_SPEC.md`](SIMON_SPEC.md).
 
 ## Estado atual
 
-Primeiro bootstrap executável do v0.1.
+Fundação persistente inicial do v0.1.
 
-Neste ponto o projeto apenas:
+O projeto já consegue:
 
-- inicia pelo comando `simon` ou `python -m simon`;
-- resolve o diretório local de dados;
-- cria e abre um banco SQLite;
-- lê a versão atual do schema pelo `PRAGMA user_version`;
-- encerra sem manter estado cognitivo em memória do processo.
+- iniciar pelo comando `simon` ou `python -m simon`;
+- resolver o diretório local de dados;
+- criar e migrar um banco SQLite;
+- persistir Events imutáveis;
+- persistir Entities com identidade estável e aliases;
+- manter uma Entity canônica para o próprio SIMON;
+- relacionar `system.started` à Entity do SIMON;
+- reconstruir Events e Entities em uma nova conexão com o banco.
 
-Ainda não existem World, Goals, Cognition, modelos, Memory ou Lab implementados.
+Ainda não existem Claims, World State, Goals, Cognition, modelos, Memory ou Lab executáveis.
 
 ## Preparação
 
 Requer Python 3.14 e `uv`.
 
 ```powershell
-uv sync --group dev
+uv sync
 ```
 
 ## Executar
@@ -56,4 +59,4 @@ uv run mypy src
 
 ## Próximo passo
 
-Implementar a primeira migration do Canonical Data Model mínimo somente quando o primeiro objeto persistente for realmente necessário.
+Introduzir `Claim`, a primeira representação persistente de algo que o SIMON acredita sobre uma Entity, mantendo evidência e estado epistemológico separados do Event Log.
