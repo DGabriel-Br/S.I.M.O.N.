@@ -1,10 +1,9 @@
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
-
 
 SIMON_ENTITY_ID = "ent_simon"
 
@@ -25,13 +24,13 @@ class Entity:
         name: str,
         aliases: tuple[str, ...] = (),
         entity_id: str | None = None,
-    ) -> "Entity":
+    ) -> Entity:
         return cls(
             id=entity_id or f"ent_{uuid4().hex}",
             kind=kind,
             name=name,
             aliases=aliases,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
 

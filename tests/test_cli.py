@@ -1,6 +1,6 @@
 import json
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 from simon.cli import main
 from simon.entities import SIMON_ENTITY_ID
@@ -45,7 +45,7 @@ def test_main_initializes_storage_and_records_current_world_state(
 
     assert claim is not None
     assert claim[0] == "storage.schema_version"
-    assert json.loads(str(claim[1])) == 3
+    assert json.loads(str(claim[1])) == 4
     assert claim[2] == "DIRECT_OBSERVATION"
     assert tuple(json.loads(str(claim[3]))) == (str(event[0]),)
     assert claim[4] == "ACTIVE"

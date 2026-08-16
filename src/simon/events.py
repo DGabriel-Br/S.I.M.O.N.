@@ -1,8 +1,8 @@
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 
@@ -29,11 +29,11 @@ class Event:
         related_entity_ids: tuple[str, ...] = (),
         goal_id: str | None = None,
         experience_id: str | None = None,
-    ) -> "Event":
+    ) -> Event:
         return cls(
             id=f"evt_{uuid4().hex}",
             kind=kind,
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             source=source,
             payload=payload or {},
             trace_id=trace_id,

@@ -1,5 +1,5 @@
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 from simon.storage import MIGRATIONS_DIR, initialize_storage
 
@@ -8,31 +8,29 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
     database_path, schema_version = initialize_storage(tmp_path)
 
     assert database_path.exists()
-    assert schema_version == 3
+    assert schema_version == 4
 
     with sqlite3.connect(database_path) as connection:
         tables = {
             str(row[0])
             for row in connection.execute(
                 "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name IN ('events', 'entities', 'claims')"
+                "WHERE type = 'table' AND name IN ('events', 'entities', 'claims', 'goals')"
             ).fetchall()
         }
 
-    assert tables == {"events", "entities", "claims"}
+    assert tables == {"events", "entities", "claims", "goals"}
 
 
-def test_initialize_storage_upgrades_schema_two_without_losing_data(tmp_path: Path) -> None:
+def test_initialize_storage_upgrades_schema_three_without_losing_data(tmp_path: Path) -> None:
     database_path = tmp_path / "simon.db"
     tmp_path.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            (MIGRATIONS_DIR / "0001_events.sql").read_text(encoding="utf-8")
-        )
-        connection.executescript(
-            (MIGRATIONS_DIR / "0002_entities.sql").read_text(encoding="utf-8")
-        )
+        for version in range(1, 4):
+            migration = next(MIGRATIONS_DIR.glob(f"{version:04d}_*.sql"))
+            connection.executescript(migration.read_text(encoding="utf-8"))
+
         connection.execute(
             """
             INSERT INTO events (
@@ -66,6 +64,30 @@ def test_initialize_storage_upgrades_schema_two_without_losing_data(tmp_path: Pa
                 "2026-08-16T12:00:00+00:00",
             ),
         )
+        connection.execute(
+            """
+            INSERT INTO claims (
+                id,
+                subject_id,
+                predicate,
+                value_json,
+                epistemic_status,
+                learned_at,
+                evidence_event_ids_json,
+                status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "clm_existing",
+                "ent_existing",
+                "status",
+                '"working"',
+                "DIRECT_OBSERVATION",
+                "2026-08-16T12:00:00+00:00",
+                '["evt_existing"]',
+                "ACTIVE",
+            ),
+        )
 
     upgraded_path, schema_version = initialize_storage(tmp_path)
 
@@ -78,14 +100,19 @@ def test_initialize_storage_upgrades_schema_two_without_losing_data(tmp_path: Pa
             "SELECT id, name FROM entities WHERE id = ?",
             ("ent_existing",),
         ).fetchone()
-        claims_table = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'claims'"
+        claim = connection.execute(
+            "SELECT id, predicate FROM claims WHERE id = ?",
+            ("clm_existing",),
+        ).fetchone()
+        goals_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'goals'"
         ).fetchone()
 
-    assert schema_version == 3
+    assert schema_version == 4
     assert event == ("evt_existing", "system.started")
     assert entity == ("ent_existing", "Existing Project")
-    assert claims_table == ("claims",)
+    assert claim == ("clm_existing", "status")
+    assert goals_table == ("goals",)
 
 
 def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
@@ -93,5 +120,5 @@ def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
     second_database_path, second_schema_version = initialize_storage(tmp_path)
 
     assert second_database_path == first_database_path
-    assert first_schema_version == 3
-    assert second_schema_version == 3
+    assert first_schema_version == 4
+    assert second_schema_version == 4

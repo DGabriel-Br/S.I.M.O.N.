@@ -1,10 +1,9 @@
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
-
 
 ACTIVE = "ACTIVE"
 TERMINAL_STATUSES = {"SUPERSEDED", "RETRACTED", "EXPIRED"}
@@ -34,7 +33,7 @@ class Claim:
         evidence_event_ids: tuple[str, ...] = (),
         valid_from: datetime | None = None,
         valid_until: datetime | None = None,
-    ) -> "Claim":
+    ) -> Claim:
         return cls(
             id=f"clm_{uuid4().hex}",
             subject_id=subject_id,
@@ -43,7 +42,7 @@ class Claim:
             epistemic_status=epistemic_status,
             valid_from=valid_from,
             valid_until=valid_until,
-            learned_at=datetime.now(timezone.utc),
+            learned_at=datetime.now(UTC),
             evidence_event_ids=evidence_event_ids,
             status=ACTIVE,
         )
