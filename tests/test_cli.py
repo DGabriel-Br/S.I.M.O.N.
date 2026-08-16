@@ -5,6 +5,7 @@ from pathlib import Path
 from simon.actions import create_action, get_action, transition_action
 from simon.cli import main
 from simon.entities import SIMON_ENTITY_ID
+from simon.experiences import create_experience, get_experience
 from simon.goals import Goal, insert_goal
 from simon.plans import create_plan
 from simon.storage import initialize_storage
@@ -49,7 +50,7 @@ def test_main_initializes_storage_and_records_current_world_state(
 
     assert claim is not None
     assert claim[0] == "storage.schema_version"
-    assert json.loads(str(claim[1])) == 7
+    assert json.loads(str(claim[1])) == 8
     assert claim[2] == "DIRECT_OBSERVATION"
     assert tuple(json.loads(str(claim[3]))) == (str(event[0]),)
     assert claim[4] == "ACTIVE"
@@ -114,3 +115,21 @@ def test_startup_marks_previous_running_action_as_interrupted(
     assert restored.status == "INTERRUPTED"
     assert restored.failure is not None
     assert restored.failure["kind"] == "runtime_restart"
+
+
+def test_startup_suspends_previous_active_experience(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    experience = create_experience(
+        database_path,
+        title="Investigar antes do reinício",
+    )
+
+    assert main(["--data-dir", str(tmp_path)]) == 0
+
+    restored = get_experience(database_path, experience.id)
+    assert restored is not None
+    assert restored.status == "SUSPENDED"
+    assert restored.outcome is None

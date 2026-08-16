@@ -30,9 +30,12 @@ O projeto já consegue:
 - reconciliar Actions que perderam continuidade durante reinicialização;
 - persistir VerificationResults imutáveis ligados a Actions ou Goals;
 - preservar verificações anteriores quando nova evidência surgir;
-- manter execução e verificação como fatos separados.
+- manter execução e verificação como fatos separados;
+- persistir Experiences como unidades causais ligadas a Goals, Events, Actions e VerificationResults;
+- suspender Experiences ativas quando o runtime perde continuidade;
+- preservar outcome e resumo sem substituir as evidências originais.
 
-Ainda não existem Experience, Memory, Cognition, modelos ou Lab executáveis.
+Ainda não existem Memory, Cognition, modelos ou Lab executáveis.
 
 ## Preparação
 
@@ -70,4 +73,4 @@ uv run mypy src
 
 ## Próximo passo
 
-Introduzir `Experience`, para conectar Goal, Actions, Events e VerificationResults em uma unidade causal persistente sem transformar histórico bruto em memória permanente.
+Introduzir `Memory`, começando por memória episódica e semântica derivada de Experiences relevantes, sem transformar todo histórico bruto em memória permanente.

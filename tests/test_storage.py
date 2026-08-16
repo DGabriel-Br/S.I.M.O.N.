@@ -8,7 +8,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
     database_path, schema_version = initialize_storage(tmp_path)
 
     assert database_path.exists()
-    assert schema_version == 7
+    assert schema_version == 8
 
     with sqlite3.connect(database_path) as connection:
         tables = {
@@ -18,7 +18,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
                 "WHERE type = 'table' "
                 "AND name IN ("
                 "'events', 'entities', 'claims', 'goals', "
-                "'plans', 'actions', 'verification_results'"
+                "'plans', 'actions', 'verification_results', 'experiences'"
                 ")"
             ).fetchall()
         }
@@ -31,15 +31,16 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
         "plans",
         "actions",
         "verification_results",
+        "experiences",
     }
 
 
-def test_initialize_storage_upgrades_schema_six_without_losing_data(tmp_path: Path) -> None:
+def test_initialize_storage_upgrades_schema_seven_without_losing_data(tmp_path: Path) -> None:
     database_path = tmp_path / "simon.db"
     tmp_path.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(database_path) as connection:
-        for version in range(1, 7):
+        for version in range(1, 8):
             migration = next(MIGRATIONS_DIR.glob(f"{version:04d}_*.sql"))
             connection.executescript(migration.read_text(encoding="utf-8"))
 
@@ -146,7 +147,6 @@ def test_initialize_storage_upgrades_schema_six_without_losing_data(tmp_path: Pa
                 "2026-08-16T12:00:00+00:00",
             ),
         )
-
         connection.execute(
             """
             INSERT INTO actions (
@@ -170,6 +170,32 @@ def test_initialize_storage_upgrades_schema_six_without_losing_data(tmp_path: Pa
                 "{}",
                 "COMPLETED",
                 "2026-08-16T12:00:00+00:00",
+                "2026-08-16T12:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO verification_results (
+                id,
+                subject_type,
+                subject_id,
+                criteria_json,
+                status,
+                evidence_event_ids_json,
+                observed_json,
+                strength,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ver_existing",
+                "ACTION",
+                "act_existing",
+                '[{"kind":"test_passes"}]',
+                "VERIFIED",
+                '["evt_existing"]',
+                '{"passed":true}',
+                2,
                 "2026-08-16T12:00:00+00:00",
             ),
         )
@@ -201,19 +227,23 @@ def test_initialize_storage_upgrades_schema_six_without_losing_data(tmp_path: Pa
             "SELECT id, status FROM actions WHERE id = ?",
             ("act_existing",),
         ).fetchone()
-        verification_table = connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'verification_results'"
+        verification = connection.execute(
+            "SELECT id, status FROM verification_results WHERE id = ?",
+            ("ver_existing",),
+        ).fetchone()
+        experience_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'experiences'"
         ).fetchone()
 
-    assert schema_version == 7
+    assert schema_version == 8
     assert event == ("evt_existing", "system.started")
     assert entity == ("ent_existing", "Existing Project")
     assert claim == ("clm_existing", "status")
     assert goal == ("gol_existing", "Existing Goal")
     assert plan == ("pln_existing", 1)
     assert action == ("act_existing", "COMPLETED")
-    assert verification_table == ("verification_results",)
+    assert verification == ("ver_existing", "VERIFIED")
+    assert experience_table == ("experiences",)
 
 
 def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
@@ -221,5 +251,5 @@ def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
     second_database_path, second_schema_version = initialize_storage(tmp_path)
 
     assert second_database_path == first_database_path
-    assert first_schema_version == 7
-    assert second_schema_version == 7
+    assert first_schema_version == 8
+    assert second_schema_version == 8

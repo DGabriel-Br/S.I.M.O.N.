@@ -7,6 +7,7 @@ from simon.actions import interrupt_running_actions
 from simon.claims import set_current_claim
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
+from simon.experiences import suspend_active_experiences
 from simon.storage import initialize_storage
 
 
@@ -28,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     database_path, schema_version = initialize_storage(args.data_dir.resolve())
+    suspend_active_experiences(database_path)
     interrupt_running_actions(database_path)
 
     simon_entity = get_or_create_entity(

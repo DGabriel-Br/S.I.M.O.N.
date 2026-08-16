@@ -1769,6 +1769,8 @@ summary?
 
 O `summary` é uma representação operacional da Experience, nunca substituto dos Events e evidências originais.
 
+No primeiro corte implementável, `start_world_revision` e `end_world_revision` permanecem adiados até o World possuir revisão formal. Criar esses campos antes disso produziria apenas referências vazias sem semântica real.
+
 Experiences podem ser nested desde o modelo inicial porque isso evita transformar um Goal longo em uma única experiência gigantesca.
 
 ### 23.12. Memory
