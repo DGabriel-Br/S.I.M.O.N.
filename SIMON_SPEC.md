@@ -4508,4 +4508,45 @@ Falhas da segunda chamada cognitiva geram:
 cognition.goal_proposal.failed
 ```
 
-O resultado cognitivo pode ser auditado nos Events, mas a tabela `goals` permanece inalterada. Persistir a proposta exigirá um gate explícito separado.
+O resultado cognitivo pode ser auditado nos Events, mas a tabela `goals` permanece inalterada até uma decisão explícita fora do modelo.
+
+### 32.7. Gate determinístico de aceitação de Goal
+
+Uma proposta cognitiva somente se torna um Goal operacional quando o usuário aceita explicitamente o Event imutável que contém aquela proposta. O modelo não participa da decisão de aceitação e não é chamado novamente durante a persistência.
+
+A fronteira executável é:
+
+```text
+cognition.goal_proposal.completed
+        ↓
+ID imutável do Event
+        ↓
+decisão explícita do usuário
+        ↓
+simon goal-accept <proposal_event_id>
+        ↓
+Goal(origin=USER, status=ACTIVE)
+```
+
+O gate lê exatamente `title`, `desired_state` e `success_criteria` armazenados no Event de proposta. Para encaixar o contrato textual cognitivo no modelo persistente do v0.1, a representação inicial é: 
+
+```text
+desired_state = {description: <texto proposto>}
+success_criteria = ({description: <critério 1>}, ...)
+```
+
+`origin` não é herdado do modelo. Para uma proposta derivada diretamente de uma solicitação do usuário, o Core determina `origin=USER`. O Goal nasce `ACTIVE` pelo lifecycle já existente.
+
+A aceitação produz um Event separado:
+
+```text
+goal.proposal.accepted
+```
+
+Esse Event referencia `goal_id`, `proposal_event_id`, o `trace_id` original da proposta quando disponível, o modelo que produziu a proposta e as `open_questions` ainda não resolvidas. A aceitação possui seu próprio `trace_id`, porque ocorre em uma nova decisão operacional, enquanto a proveniência aponta de volta para o trace cognitivo original.
+
+As `open_questions` não impedem automaticamente a criação do Goal. Elas representam desconhecidos que poderão exigir investigação ou ações epistêmicas durante planejamento. O gate preserva essas questões, mas não as responde.
+
+Aceitar o mesmo `proposal_event_id` mais de uma vez é idempotente. O sistema retorna o Goal já criado e não duplica nem o Goal nem o Event de aceitação. A escrita do Goal e do Event de proveniência acontece na mesma transação SQLite para evitar um Goal autorizado sem rastro de aceitação.
+
+O comando rejeita Events inexistentes, Events de outro tipo e propostas que não respeitem o contrato `GoalProposal`. Nenhum novo objeto persistente ou migration é criado nesta etapa; o SQLite permanece no schema 9.

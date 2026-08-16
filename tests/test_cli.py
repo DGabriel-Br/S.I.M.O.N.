@@ -345,6 +345,7 @@ def test_goal_propose_records_proposal_without_persisting_goal(
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert "Intenção: REQUEST" in output
     assert "Título: Corrigir falha do script" in output
+    assert "ID da proposta: evt_" in output
     assert "Goal persistido: não" in output
 
     with sqlite3.connect(tmp_path / "simon.db") as connection:
@@ -373,3 +374,50 @@ def test_goal_propose_records_proposal_without_persisting_goal(
     proposal_payload = json.loads(str(rows[-1][1]))
     assert proposal_payload["proposal"]["title"] == "Corrigir falha do script"
     assert len({str(row[2]) for row in rows}) == 1
+
+
+def test_goal_accept_cli_persists_selected_proposal(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.cognition import GoalProposal
+    from simon.events import Event, append_event
+
+    database_path, _ = initialize_storage(tmp_path)
+    proposal = GoalProposal(
+        title="Corrigir falha no script",
+        desired_state="O script executa sem reproduzir a falha relatada.",
+        success_criteria=["A falha original não é reproduzida."],
+        open_questions=[],
+    )
+    proposal_event = Event.create(
+        kind="cognition.goal_proposal.completed",
+        source="cognition",
+        payload={
+            "model": "fake-model",
+            "proposal": proposal.model_dump(mode="json"),
+        },
+        trace_id="trc_source",
+    )
+    append_event(database_path, proposal_event)
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "goal-accept",
+            proposal_event.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Origem: USER" in output
+    assert "Status: ACTIVE" in output
+    assert "Goal persistido: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        goal = connection.execute(
+            "SELECT title, origin, status FROM goals"
+        ).fetchone()
+
+    assert goal == ("Corrigir falha no script", "USER", "ACTIVE")

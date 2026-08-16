@@ -18,6 +18,7 @@ from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
+from simon.goal_intake import accept_goal_proposal
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
 from simon.storage import initialize_storage
@@ -77,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     goal_propose.add_argument("text", nargs="+", help="solicitação usada para formular o Goal")
     _add_ollama_arguments(goal_propose)
+
+    goal_accept = commands.add_parser(
+        "goal-accept",
+        help="aceita explicitamente uma proposta registrada e persiste um Goal USER",
+    )
+    goal_accept.add_argument(
+        "proposal_event_id",
+        help="ID do Event cognition.goal_proposal.completed que será aceito",
+    )
 
     return parser
 
@@ -147,6 +157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.model,
             " ".join(args.text),
         )
+    if args.command == "goal-accept":
+        return _goal_accept(database_path, args.proposal_event_id)
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -366,21 +378,19 @@ def _goal_propose(
         print(f"Proposta de Goal: falha ({exc})")
         return 1
 
-    append_event(
-        database_path,
-        Event.create(
-            kind="cognition.goal_proposal.completed",
-            source="cognition",
-            payload={
-                "model": proposal_result.model,
-                "proposal": proposal_result.output.model_dump(mode="json"),
-                "prompt_eval_count": proposal_result.prompt_eval_count,
-                "eval_count": proposal_result.eval_count,
-                "total_duration_ns": proposal_result.total_duration_ns,
-            },
-            trace_id=trace_id,
-        ),
+    proposal_event = Event.create(
+        kind="cognition.goal_proposal.completed",
+        source="cognition",
+        payload={
+            "model": proposal_result.model,
+            "proposal": proposal_result.output.model_dump(mode="json"),
+            "prompt_eval_count": proposal_result.prompt_eval_count,
+            "eval_count": proposal_result.eval_count,
+            "total_duration_ns": proposal_result.total_duration_ns,
+        },
+        trace_id=trace_id,
     )
+    append_event(database_path, proposal_event)
 
     proposal = proposal_result.output
     print("Proposta de Goal:")
@@ -398,7 +408,32 @@ def _goal_propose(
         print("Questões em aberto: nenhuma")
 
     _print_model_metrics(proposal_result)
+    print(f"ID da proposta: {proposal_event.id}")
     print("Goal persistido: não")
+    return 0
+
+
+def _goal_accept(database_path: Path, proposal_event_id: str) -> int:
+    trace_id = f"trc_{uuid4().hex}"
+    try:
+        acceptance = accept_goal_proposal(
+            database_path,
+            proposal_event_id,
+            trace_id=trace_id,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Aceitação de Goal: falha ({exc})")
+        return 1
+
+    goal = acceptance.goal
+    print(f"Goal: {goal.id}")
+    print(f"Título: {goal.title}")
+    print(f"Origem: {goal.origin}")
+    print(f"Status: {goal.status}")
+    if acceptance.created:
+        print("Goal persistido: sim")
+    else:
+        print("Goal persistido: já existia para esta proposta")
     return 0
 
 

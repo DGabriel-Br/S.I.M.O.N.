@@ -41,7 +41,8 @@ O projeto já consegue:
 - interpretar entradas do usuário em um contrato cognitivo estruturado;
 - montar contexto cognitivo determinístico com Goals abertos, Entities explicitamente mencionadas, Claims atuais e Memories relacionadas;
 - registrar a seleção de contexto como Event sem criar um objeto persistente adicional;
-- formular propostas estruturadas de Goal para solicitações (`REQUEST`) sem persistir o Goal automaticamente.
+- formular propostas estruturadas de Goal para solicitações (`REQUEST`) sem persistir o Goal automaticamente;
+- aceitar explicitamente uma proposta registrada e convertê-la em um Goal `USER` persistente sem nova decisão do modelo.
 
 O primeiro adapter de modelo local já existe:
 
@@ -113,9 +114,19 @@ uv run simon goal-propose --model qwen3.5:4b-q4_K_M "Veja por que esse script es
 
 A proposta contém título, estado desejado, critérios de sucesso e questões em aberto. Ela é registrada como resultado cognitivo, mas não é inserida na tabela de Goals. O modelo também não cria Plan, não escolhe Tools e não executa ações nessa etapa.
 
+Ao final, o comando imprime o ID imutável do Event que contém a proposta. A persistência do Goal exige um segundo comando explícito:
+
+```powershell
+uv run simon goal-accept evt_ID_DA_PROPOSTA
+```
+
+`goal-accept` não chama o modelo novamente. Ele aceita exatamente a proposta registrada naquele Event, fixa `origin=USER`, persiste o Goal em estado `ACTIVE` e grava um Event `goal.proposal.accepted` com a proveniência da decisão. Executar a aceitação novamente para a mesma proposta é idempotente e não cria um Goal duplicado.
+
+Questões em aberto continuam preservadas no Event de aceitação para não serem perdidas, mas não são inventadas nem resolvidas pelo gate.
+
 ## Próximo passo
 
-Criar o primeiro gate determinístico de aceitação da proposta, permitindo transformar uma proposta revisada em um Goal `USER` persistente somente após uma decisão explícita fora do modelo.
+Usar o Goal agora autorizado como entrada para a primeira formulação de Plan, mantendo Planner como produtor de estratégia e não como executor.
 
 ## Primeira interpretação cognitiva
 
