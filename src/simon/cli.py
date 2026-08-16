@@ -24,6 +24,7 @@ from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_que
 from simon.goals import OPEN_STATUSES, get_goal
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
+from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
 from simon.storage import initialize_storage
 
@@ -104,6 +105,15 @@ def build_parser() -> argparse.ArgumentParser:
     plan_propose.add_argument("goal_id", help="ID do Goal autorizado que será planejado")
     _add_ollama_arguments(plan_propose)
 
+    plan_materialize = commands.add_parser(
+        "plan-materialize",
+        help="materializa uma proposta registrada como revisão persistente de Plan",
+    )
+    plan_materialize.add_argument(
+        "proposal_event_id",
+        help="ID do Event cognition.plan_proposal.completed que será materializado",
+    )
+
     return parser
 
 
@@ -183,6 +193,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.model,
             args.goal_id,
         )
+    if args.command == "plan-materialize":
+        return _plan_materialize(database_path, args.proposal_event_id)
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -581,6 +593,31 @@ def _plan_propose(
     _print_model_metrics(result)
     print(f"ID da proposta: {proposal_event.id}")
     print("Plan persistido: não")
+    return 0
+
+
+def _plan_materialize(database_path: Path, proposal_event_id: str) -> int:
+    trace_id = f"trc_{uuid4().hex}"
+    try:
+        materialization = materialize_plan_proposal(
+            database_path,
+            proposal_event_id,
+            trace_id=trace_id,
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        print(f"Materialização de Plan: falha ({exc})")
+        return 1
+
+    plan = materialization.plan
+    print(f"Plan: {plan.id}")
+    print(f"Goal: {plan.goal_id}")
+    print(f"Revisão: {plan.revision}")
+    print(f"Status: {plan.status}")
+    print(f"Passos: {len(plan.steps)}")
+    if materialization.created:
+        print("Plan persistido: sim")
+    else:
+        print("Plan persistido: já existia para esta proposta")
     return 0
 
 

@@ -523,3 +523,70 @@ def test_plan_propose_records_strategy_without_persisting_plan(
     assert rows[0][2] == rows[1][2]
     assert rows[0][3] == goal.id
     assert rows[1][3] == goal.id
+
+
+def test_plan_materialize_cli_persists_selected_proposal(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.events import Event, append_event
+    from simon.planning import PlanProposal, PlanStepProposal
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Corrigir falha no script",
+        origin="USER",
+        desired_state={"description": "O script executa sem erros."},
+        success_criteria=({"description": "A falha não é reproduzida."},),
+    )
+    insert_goal(database_path, goal)
+    proposal = PlanProposal(
+        summary="Obter informação antes de agir.",
+        steps=[
+            PlanStepProposal(
+                id="step_01",
+                description="Solicitar o script e o erro ao usuário.",
+                kind="EPISTEMIC",
+                capability="obter contexto do usuário",
+                verification="Script e erro foram registrados.",
+            )
+        ],
+        open_questions=["Qual script está falhando?"],
+    )
+    proposal_event = Event.create(
+        kind="cognition.plan_proposal.completed",
+        source="cognition",
+        payload={
+            "model": "fake-model",
+            "proposal": proposal.model_dump(mode="json"),
+        },
+        trace_id="trc_source",
+        goal_id=goal.id,
+    )
+    append_event(database_path, proposal_event)
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "plan-materialize",
+            proposal_event.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Goal: {goal.id}" in output
+    assert "Revisão: 1" in output
+    assert "Status: ACTIVE" in output
+    assert "Plan persistido: sim" in output
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "plan-materialize",
+            proposal_event.id,
+        ]
+    ) == 0
+    repeated_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Plan persistido: já existia para esta proposta" in repeated_output

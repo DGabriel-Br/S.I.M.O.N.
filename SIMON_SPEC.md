@@ -4614,3 +4614,13 @@ Todos os Events da chamada compartilham o mesmo `trace_id` e referenciam o Goal 
 
 Nenhum novo objeto persistente ou migration é criado nesta etapa. A tabela `plans` permanece inalterada até a futura materialização determinística da proposta e o SQLite permanece no schema 9.
 
+### 32.9. Materialização determinística de PlanProposal
+
+Uma `PlanProposal` validada pode ser transformada no objeto persistente `Plan` sem uma nova decisão do modelo e sem introduzir um segundo gate de autoridade sobre os meios instrumentais de um Goal já autorizado.
+
+A materialização usa exatamente o Event `cognition.plan_proposal.completed` selecionado como fonte. Os passos estruturados da proposta são preservados no `steps` do Plan, incluindo `kind`, `depends_on`, `preconditions`, `capability` e `verification`. O resumo e as questões ainda abertas permanecem na proveniência do Event de materialização, em vez de criar novos campos persistentes antes de existir necessidade real.
+
+A operação deve ser idempotente por `proposal_event_id`: repetir a materialização da mesma proposta retorna o mesmo Plan. Uma proposta diferente para o mesmo Goal cria uma nova revisão e marca o Plan ativo anterior como `SUPERSEDED`, preservando o histórico de estratégias.
+
+A criação da revisão e o Event `plan.proposal.materialized` pertencem à mesma transação SQLite. Nenhuma Action é criada nesta etapa. Preconditions continuam sendo requisitos a verificar antes da execução, não fatos presumidos como verdadeiros.
+

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -74,8 +76,8 @@ def _plan_from_row(row: tuple[object, ...]) -> Plan:
     )
 
 
-def create_plan(
-    database_path: Path,
+def create_plan_in_connection(
+    connection: sqlite3.Connection,
     *,
     goal_id: str,
     steps: tuple[dict[str, object], ...],
@@ -83,76 +85,86 @@ def create_plan(
     _validate_steps(steps)
     now = datetime.now(UTC)
 
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    goal_row = connection.execute(
+        "SELECT status FROM goals WHERE id = ?",
+        (goal_id,),
+    ).fetchone()
+    if goal_row is None:
+        raise ValueError(f"goal não encontrado: {goal_id}")
 
-        goal_row = connection.execute(
-            "SELECT status FROM goals WHERE id = ?",
-            (goal_id,),
-        ).fetchone()
-        if goal_row is None:
-            raise ValueError(f"goal não encontrado: {goal_id}")
+    goal_status = str(goal_row[0])
+    if goal_status in GOAL_TERMINAL_STATUSES:
+        raise ValueError(f"não é possível criar plan para goal terminal: {goal_status}")
 
-        goal_status = str(goal_row[0])
-        if goal_status in GOAL_TERMINAL_STATUSES:
-            raise ValueError(f"não é possível criar plan para goal terminal: {goal_status}")
-
-        current_active = connection.execute(
-            "SELECT id FROM plans WHERE goal_id = ? AND status = ?",
-            (goal_id, ACTIVE),
-        ).fetchone()
-        if current_active is not None:
-            connection.execute(
-                """
-                UPDATE plans
-                SET status = 'SUPERSEDED', updated_at = ?
-                WHERE id = ? AND status = 'ACTIVE'
-                """,
-                (now.isoformat(), str(current_active[0])),
-            )
-
-        revision_row = connection.execute(
-            "SELECT COALESCE(MAX(revision), 0) + 1 FROM plans WHERE goal_id = ?",
-            (goal_id,),
-        ).fetchone()
-        revision = int(revision_row[0]) if revision_row is not None else 1
-
-        plan = Plan(
-            id=f"pln_{uuid4().hex}",
-            goal_id=goal_id,
-            revision=revision,
-            steps=steps,
-            status=ACTIVE,
-            created_at=now,
-            updated_at=now,
-        )
-        steps_json = json.dumps(steps, ensure_ascii=False, separators=(",", ":"))
-
+    current_active = connection.execute(
+        "SELECT id FROM plans WHERE goal_id = ? AND status = ?",
+        (goal_id, ACTIVE),
+    ).fetchone()
+    if current_active is not None:
         connection.execute(
             """
-            INSERT INTO plans (
-                id,
-                goal_id,
-                revision,
-                steps_json,
-                status,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            UPDATE plans
+            SET status = 'SUPERSEDED', updated_at = ?
+            WHERE id = ? AND status = 'ACTIVE'
             """,
-            (
-                plan.id,
-                plan.goal_id,
-                plan.revision,
-                steps_json,
-                plan.status,
-                plan.created_at.isoformat(),
-                plan.updated_at.isoformat(),
-            ),
+            (now.isoformat(), str(current_active[0])),
         )
 
+    revision_row = connection.execute(
+        "SELECT COALESCE(MAX(revision), 0) + 1 FROM plans WHERE goal_id = ?",
+        (goal_id,),
+    ).fetchone()
+    revision = int(revision_row[0]) if revision_row is not None else 1
+
+    plan = Plan(
+        id=f"pln_{uuid4().hex}",
+        goal_id=goal_id,
+        revision=revision,
+        steps=steps,
+        status=ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    steps_json = json.dumps(steps, ensure_ascii=False, separators=(",", ":"))
+
+    connection.execute(
+        """
+        INSERT INTO plans (
+            id,
+            goal_id,
+            revision,
+            steps_json,
+            status,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            plan.id,
+            plan.goal_id,
+            plan.revision,
+            steps_json,
+            plan.status,
+            plan.created_at.isoformat(),
+            plan.updated_at.isoformat(),
+        ),
+    )
     return plan
 
+
+def create_plan(
+    database_path: Path,
+    *,
+    goal_id: str,
+    steps: tuple[dict[str, object], ...],
+) -> Plan:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        return create_plan_in_connection(
+            connection,
+            goal_id=goal_id,
+            steps=steps,
+        )
 
 def get_plan(database_path: Path, plan_id: str) -> Plan | None:
     with sqlite3.connect(database_path) as connection:
