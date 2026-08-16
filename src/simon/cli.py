@@ -28,7 +28,7 @@ from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
-from simon.user_ask import answer_user_ask, dispatch_next_user_ask
+from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
 from simon.user_ask_verification import assess_user_ask_response
 
 
@@ -154,6 +154,20 @@ def build_parser() -> argparse.ArgumentParser:
     action_assess.add_argument("action_id", help="ID da Action user.ask COMPLETED")
     _add_ollama_arguments(action_assess)
 
+    action_retry = commands.add_parser(
+        "action-retry",
+        help="autoriza explicitamente uma nova tentativa user.ask após review negativo",
+    )
+    action_retry.add_argument(
+        "action_id",
+        help="ID da tentativa user.ask anterior que será revisada",
+    )
+    action_retry.add_argument(
+        "text",
+        nargs="*",
+        help="prompt refinado opcional; se omitido, reutiliza a solicitação anterior",
+    )
+
     return parser
 
 
@@ -249,6 +263,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.model,
             args.action_id,
         )
+    if args.command == "action-retry":
+        prompt = " ".join(args.text) if args.text else None
+        return _action_retry(database_path, args.action_id, prompt)
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -798,6 +815,36 @@ def _action_assess(
         print("Assessment criada: sim")
     else:
         print("Assessment criada: não (já existia para esta resposta e modelo)")
+    return 0
+
+
+def _action_retry(
+    database_path: Path,
+    action_id: str,
+    prompt: str | None,
+) -> int:
+    try:
+        dispatch = retry_user_ask(
+            database_path,
+            action_id=action_id,
+            prompt=prompt,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Retry user.ask: falha ({exc})")
+        return 1
+
+    print(f"Action anterior: {dispatch.retry_of_action_id}")
+    print(f"Verification de review: {dispatch.review_verification_id}")
+    print(f"Action: {dispatch.action.id}")
+    print(f"Goal: {dispatch.action.goal_id}")
+    print(f"Plan: {dispatch.action.plan_id}")
+    print(f"Step: {dispatch.action.step_id}")
+    print(f"Status: {dispatch.action.status}")
+    print(f"Solicitação: {dispatch.prompt}")
+    if dispatch.created:
+        print("Retry criado: sim")
+    else:
+        print("Retry criado: não (já aguardava resposta)")
     return 0
 
 

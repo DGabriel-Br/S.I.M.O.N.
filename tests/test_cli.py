@@ -800,3 +800,88 @@ def test_action_assess_cli_persists_assessment_without_promoting_to_verified(
     assert row[0] == "ASSESSED"
     observed = json.loads(str(row[1]))
     assert observed["verdict"] == "NOT_SATISFIED"
+
+
+def test_action_retry_cli_creates_reviewed_waiting_attempt(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.user_ask import answer_user_ask, dispatch_next_user_ask
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Obter script",
+        origin="USER",
+        desired_state={"description": "conteúdo do script disponível"},
+        success_criteria=({"description": "script recebido"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Solicitar ao usuário o conteúdo do script.",
+                "kind": "EPISTEMIC",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "user.ask",
+                "verification": "O usuário fornece o código ou arquivo do script.",
+            },
+        ),
+    )
+    first = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer = answer_user_ask(
+        database_path,
+        action_id=first.action.id,
+        response="Ainda não tenho o script.",
+    )
+    review = create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=first.action.id,
+        criteria=({"description": "O usuário fornece o código ou arquivo do script."},),
+        status="ASSESSED",
+        evidence_event_ids=(answer.response_event_id,),
+        observed={
+            "assessment_type": "user.ask.semantic",
+            "verdict": "NOT_SATISFIED",
+            "response_event_id": answer.response_event_id,
+            "model": "fake-model",
+        },
+        strength=2,
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "action-retry",
+            first.action.id,
+            "Cole",
+            "o",
+            "script",
+            "completo.",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action anterior: {first.action.id}" in output
+    assert f"Verification de review: {review.id}" in output
+    assert "Status: WAITING" in output
+    assert "Solicitação: Cole o script completo." in output
+    assert "Retry criado: sim" in output
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert len(actions) == 2
+    assert actions[-1].status == "WAITING"
+    assert actions[-1].input_data["retry_of_action_id"] == first.action.id
+
+    assert main(
+        ["--data-dir", str(tmp_path), "action-retry", first.action.id]
+    ) == 0
+    repeated_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action: {actions[-1].id}" in repeated_output
+    assert "Retry criado: não (já aguardava resposta)" in repeated_output

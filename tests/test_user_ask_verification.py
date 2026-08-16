@@ -219,3 +219,32 @@ def test_user_ask_assessment_rejects_waiting_action(tmp_path: Path) -> None:
             model="fake-model",
             action_id=dispatch.action.id,
         )
+
+
+def test_assessment_prompt_treats_criterion_as_authoritative(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _, action_id = _answered_user_ask(database_path, "print('ok')")
+
+    class CapturingProvider(FakeAssessmentProvider):
+        def __init__(self) -> None:
+            super().__init__("SATISFIED")
+            self.system: str | None = None
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[object]:
+            system = kwargs.get("system")
+            assert isinstance(system, str)
+            self.system = system
+            return super().generate_structured(**kwargs)
+
+    provider = CapturingProvider()
+    assess_user_ask_response(
+        database_path,
+        provider,
+        model="fake-model",
+        action_id=action_id,
+    )
+
+    assert provider.system is not None
+    assert "critério é a única fonte autoritativa" in provider.system
+    assert "nunca pode tornar o critério mais estrito" in provider.system
+    assert "não presuma que um script curto é incompleto" in provider.system

@@ -4796,3 +4796,30 @@ INCONCLUSIVE              → VERIFICATION_INCONCLUSIVE
 
 Somente um `VerificationResult` efetivamente `VERIFIED` continua marcando o step como `VERIFIED` e satisfazendo dependências. Nenhuma migration é necessária; o SQLite permanece no schema 10.
 
+
+
+### 32.14. Review e retry explícito para `user.ask`
+
+Um assessment semântico negativo não autoriza o sistema a repetir automaticamente a mesma tentativa. O v0.1 introduz um gate determinístico de retry para `user.ask`, acionado explicitamente pelo usuário através de:
+
+```text
+simon action-retry <action_id> [prompt refinado]
+```
+
+A operação exige que a Action original seja `user.ask`, esteja `COMPLETED` e possua um `VerificationResult` `ASSESSED` cujo veredito seja `NOT_SATISFIED` ou `UNCLEAR`. `SATISFIED` pertence ao fluxo separado de confirmação e não pode ser convertido em retry por conveniência.
+
+Retry não altera a Action anterior. Uma nova Action é criada para o mesmo `(goal_id, plan_id, step_id)` e entra em `WAITING`, preservando a tentativa anterior como histórico. A nova Action registra em `input_data`:
+
+```text
+retry_of_action_id
+review_verification_id
+retry_authorization_event_id
+```
+
+A decisão explícita produz `action.retry.authorized` com `source=user`. A emissão da nova pergunta produz outro `user.question.asked` no mesmo trace operacional. A criação da Action, a transição para `WAITING` e os dois Events pertencem à mesma transação SQLite.
+
+Por padrão o prompt anterior é reutilizado. Um texto refinado pode ser fornecido explicitamente no comando, permitindo corrigir uma pergunta ruim sem alterar retroativamente o Plan nem a tentativa anterior. O critério de Verification do step é preservado.
+
+A operação é idempotente enquanto o retry correspondente ainda está `WAITING`: repetir a autorização para a mesma Action anterior devolve a tentativa já aberta. Se uma tentativa posterior já foi concluída, a Action antiga não pode ser usada novamente como origem de retry; somente a tentativa mais recente daquele step pode ser revisada. Isso evita bifurcações silenciosas na linhagem causal.
+
+O sistema continua permitindo apenas uma `user.ask` em `WAITING` por Plan neste corte, evitando perguntas concorrentes ao usuário. Nenhuma inferência é necessária para autorizar o retry, nenhum `VerificationResult` novo é criado nessa operação e nenhuma migration adicional é necessária. O SQLite permanece no schema 10.

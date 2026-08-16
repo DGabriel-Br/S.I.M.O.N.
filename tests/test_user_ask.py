@@ -169,3 +169,183 @@ def test_waiting_user_ask_is_in_progress_for_readiness(tmp_path: Path) -> None:
     assert step.related_action_id == dispatch.action.id
     assert readiness.next_step is not None
     assert readiness.next_step.step_id == "step_02"
+
+
+def _add_user_ask_assessment(
+    database_path: Path,
+    *,
+    action_id: str,
+    response_event_id: str,
+    verdict: str,
+) -> str:
+    from simon.verification import create_verification_result
+
+    result = create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action_id,
+        criteria=({"description": "O usuário fornece a informação solicitada."},),
+        status="ASSESSED",
+        evidence_event_ids=(response_event_id,),
+        observed={
+            "assessment_type": "user.ask.semantic",
+            "verdict": verdict,
+            "response_event_id": response_event_id,
+            "model": "fake-model",
+        },
+        strength=2,
+    )
+    return result.id
+
+
+def test_user_ask_retry_requires_review_and_creates_new_waiting_attempt(
+    tmp_path: Path,
+) -> None:
+    from simon.actions import list_actions_for_plan
+    from simon.user_ask import retry_user_ask
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, plan_id = _user_ask_plan(database_path)
+    first = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer = answer_user_ask(
+        database_path,
+        action_id=first.action.id,
+        response="Ainda não tenho a informação.",
+    )
+    verification_id = _add_user_ask_assessment(
+        database_path,
+        action_id=first.action.id,
+        response_event_id=answer.response_event_id,
+        verdict="NOT_SATISFIED",
+    )
+
+    retry = retry_user_ask(
+        database_path,
+        action_id=first.action.id,
+        trace_id="trc_retry",
+    )
+
+    assert retry.created is True
+    assert retry.retry_of_action_id == first.action.id
+    assert retry.review_verification_id == verification_id
+    assert retry.action.id != first.action.id
+    assert retry.action.step_id == first.action.step_id
+    assert retry.action.status == "WAITING"
+    assert retry.action.input_data["retry_of_action_id"] == first.action.id
+    assert retry.action.input_data["review_verification_id"] == verification_id
+    assert retry.prompt == first.prompt
+
+    actions = list_actions_for_plan(database_path, plan_id)
+    assert [action.status for action in actions] == ["COMPLETED", "WAITING"]
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT kind, source, payload_json, trace_id
+            FROM events
+            WHERE kind IN ('action.retry.authorized', 'user.question.asked')
+              AND trace_id = 'trc_retry'
+            ORDER BY occurred_at, id
+            """
+        ).fetchall()
+
+    assert [row[0] for row in rows] == ["action.retry.authorized", "user.question.asked"]
+    assert rows[0][1] == "user"
+    authorization = json.loads(str(rows[0][2]))
+    assert authorization["retry_of_action_id"] == first.action.id
+    assert authorization["retry_action_id"] == retry.action.id
+    assert authorization["review_verification_id"] == verification_id
+    question = json.loads(str(rows[1][2]))
+    assert question["action_id"] == retry.action.id
+    assert question["retry_of_action_id"] == first.action.id
+
+
+def test_user_ask_retry_is_idempotent_while_retry_waits(tmp_path: Path) -> None:
+    from simon.user_ask import retry_user_ask
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, _ = _user_ask_plan(database_path)
+    first = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer = answer_user_ask(
+        database_path,
+        action_id=first.action.id,
+        response="Ainda não tenho a informação.",
+    )
+    _add_user_ask_assessment(
+        database_path,
+        action_id=first.action.id,
+        response_event_id=answer.response_event_id,
+        verdict="NOT_SATISFIED",
+    )
+
+    created = retry_user_ask(database_path, action_id=first.action.id)
+    repeated = retry_user_ask(database_path, action_id=first.action.id)
+
+    assert created.created is True
+    assert repeated.created is False
+    assert repeated.action.id == created.action.id
+
+
+def test_user_ask_retry_rejects_missing_or_positive_assessment(tmp_path: Path) -> None:
+    from simon.user_ask import retry_user_ask
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, _ = _user_ask_plan(database_path)
+    first = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer = answer_user_ask(
+        database_path,
+        action_id=first.action.id,
+        response="print('ok')",
+    )
+
+    with pytest.raises(ValueError, match="retry exige assessment"):
+        retry_user_ask(database_path, action_id=first.action.id)
+
+    _add_user_ask_assessment(
+        database_path,
+        action_id=first.action.id,
+        response_event_id=answer.response_event_id,
+        verdict="SATISFIED",
+    )
+    with pytest.raises(ValueError, match="SATISFIED"):
+        retry_user_ask(database_path, action_id=first.action.id)
+
+
+def test_user_ask_retry_can_refine_prompt_and_blocks_stale_retry(tmp_path: Path) -> None:
+    from simon.user_ask import retry_user_ask
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, _ = _user_ask_plan(database_path)
+    first = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer = answer_user_ask(
+        database_path,
+        action_id=first.action.id,
+        response="Não tenho isso agora.",
+    )
+    _add_user_ask_assessment(
+        database_path,
+        action_id=first.action.id,
+        response_event_id=answer.response_event_id,
+        verdict="UNCLEAR",
+    )
+    retry = retry_user_ask(
+        database_path,
+        action_id=first.action.id,
+        prompt="Cole aqui o conteúdo completo do script, se estiver disponível.",
+    )
+    assert retry.prompt == "Cole aqui o conteúdo completo do script, se estiver disponível."
+
+    second_answer = answer_user_ask(
+        database_path,
+        action_id=retry.action.id,
+        response="Ainda não tenho o arquivo.",
+    )
+    _add_user_ask_assessment(
+        database_path,
+        action_id=retry.action.id,
+        response_event_id=second_answer.response_event_id,
+        verdict="NOT_SATISFIED",
+    )
+
+    with pytest.raises(ValueError, match="já foi sucedida"):
+        retry_user_ask(database_path, action_id=first.action.id)

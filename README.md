@@ -206,9 +206,29 @@ Readiness passa a distinguir os casos. Um assessment `NOT_SATISFIED` gera `CRITE
 
 Nenhuma migration é necessária e o SQLite permanece no schema 10.
 
+## Retry explícito após assessment negativo
+
+Uma resposta `user.ask` avaliada como `NOT_SATISFIED` ou `UNCLEAR` não provoca retry automático. O sistema exige uma nova decisão explícita antes de abrir outra tentativa para o mesmo step:
+
+```powershell
+uv run simon action-retry act_ID_DA_ACTION
+```
+
+Por padrão, o retry reutiliza a solicitação anterior. O usuário pode refinar a pergunta no próprio comando:
+
+```powershell
+uv run simon action-retry act_ID_DA_ACTION "Cole aqui o conteúdo completo do script, se estiver disponível."
+```
+
+A operação exige que a Action anterior esteja `COMPLETED`, que seu assessment mais recente permita retry (`NOT_SATISFIED` ou `UNCLEAR`) e que ela ainda seja a tentativa mais recente daquele step. Um assessment `SATISFIED` não entra nesse fluxo; ele continua exigindo confirmação para virar prova operacional.
+
+O retry registra `action.retry.authorized` com `source=user`, cria uma nova Action `user.ask` em `WAITING` e registra uma nova `user.question.asked`. A nova Action preserva a linhagem através de `retry_of_action_id`, `review_verification_id` e `retry_authorization_event_id` dentro de `input_data`.
+
+Repetir `action-retry` enquanto a mesma nova tentativa ainda está em `WAITING` é idempotente e devolve a Action já aberta. Depois que uma tentativa posterior existe, uma tentativa antiga não pode ser reaberta silenciosamente. O SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Definir o gate mínimo que pode transformar uma avaliação `ASSESSED + SATISFIED` em uma Verification `VERIFIED` com autoridade explícita suficiente, sem permitir que o próprio modelo se auto-promova de assessor para prova.
+Criar o gate determinístico que permita transformar um assessment `SATISFIED` explicitamente revisado em `VerificationResult(status=VERIFIED)`, sem conceder ao modelo autoridade para promover sua própria avaliação.
 
 ## Primeira interpretação cognitiva
 
