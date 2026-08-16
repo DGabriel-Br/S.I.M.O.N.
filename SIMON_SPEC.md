@@ -4859,3 +4859,47 @@ Para evitar promover evidência obsoleta após uma nova tentativa, somente a ten
 
 Depois de existir uma Verification `VERIFIED`, o avaliador de readiness considera aquela Action suficiente para marcar o step como `VERIFIED`. A partir desse ponto, dependências que apontem para o step podem ser liberadas. Nenhuma migration adicional é necessária; o SQLite permanece no schema 10.
 
+
+
+### 32.16. Conclusão determinística de Plan
+
+Um Plan não é considerado concluído apenas porque não existe outro step `READY`. Ausência de próximo passo pode significar bloqueio, espera, capability indisponível ou verificação pendente. A conclusão do Plan exige uma condição positiva e verificável: todos os steps persistidos precisam estar em estado operacional `VERIFIED`.
+
+No v0.1, todos os steps presentes em `Plan.steps` são obrigatórios. Não existe ainda semântica de step opcional, branch condicional ou quorum parcial. A operação explícita é:
+
+```text
+simon plan-complete <goal_id>
+```
+
+A fronteira é:
+
+```text
+Plan ACTIVE
+   ↓
+todos os steps VERIFIED
+   ↓
+revalidação transacional das Actions e VerificationResults
+   ↓
+Plan COMPLETED
+   ↓
+plan.completed
+   ↓
+Goal continua ACTIVE
+```
+
+A avaliação preliminar reutiliza a mesma semântica de readiness. Para cada step deve existir uma Action `COMPLETED` sustentada por ao menos um `VerificationResult(status=VERIFIED)`. `ASSESSED`, `INCONCLUSIVE`, `FAILED`, Action concluída sem Verification e tentativa em andamento não satisfazem o gate.
+
+Antes da transição, a condição é revalidada dentro de uma transação `BEGIN IMMEDIATE`. O Plan ativo precisa continuar sendo a mesma revisão observada, o Goal precisa continuar `ACTIVE` e cada step precisa continuar possuindo evidência `VERIFIED`. Somente então o Plan transita de `ACTIVE` para `COMPLETED`.
+
+Na mesma transação é registrado o Event imutável:
+
+```text
+plan.completed
+source = system
+```
+
+O payload preserva `plan_id`, revisão, `verified_step_ids`, `verified_action_ids` e o fato de que o Goal permaneceu `ACTIVE`. Se o Event não puder ser persistido, a transição do Plan é revertida.
+
+A operação é idempotente. Se o Goal não possui mais Plan `ACTIVE`, mas existe um `plan.completed` válido associado ao Plan já `COMPLETED`, repetir o comando recupera o mesmo receipt sem criar novo Event nem alterar timestamps.
+
+Plan completion permanece estritamente separado de Goal completion. Executar e verificar todos os passos prova que a estratégia registrada terminou conforme seus critérios locais. Isso não prova, por si só, que o `desired_state` do Goal se tornou verdadeiro. A futura conclusão de Goal precisa de Verification no nível `GOAL`, com seus próprios critérios e evidências. Nenhuma migration adicional é necessária; o SQLite permanece no schema 10.

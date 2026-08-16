@@ -960,3 +960,61 @@ def test_verification_confirm_cli_promotes_satisfied_assessment(
     confirmed = json.loads(str(rows[-1][1]))
     assert confirmed["confirmed_assessment_id"] == assessment.id
     assert confirmed["confirmed_by"] == "user"
+
+
+def test_cli_plan_complete_finishes_verified_plan_without_goal(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.events import Event, append_event
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Concluir plan",
+        origin="USER",
+        desired_state={"description": "plan executado"},
+        success_criteria=({"description": "resultado observado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar passo",
+                "capability": "test.capability",
+            },
+        ),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="test.capability",
+    )
+    transition_action(database_path, action.id, "RUNNING")
+    transition_action(database_path, action.id, "COMPLETED", reported_result={"ok": True})
+    evidence = Event.create(kind="test.plan.complete", source="test", goal_id=goal.id)
+    append_event(database_path, evidence)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action.id,
+        criteria=({"description": "passo verificado"},),
+        status="VERIFIED",
+        evidence_event_ids=(evidence.id,),
+        observed={"ok": True},
+        strength=2,
+    )
+
+    assert main(["--data-dir", str(tmp_path), "plan-complete", goal.id]) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Plan: {plan.id}" in output
+    assert "Status: COMPLETED" in output
+    assert "Steps verificados: 1" in output
+    assert "Plan concluído: sim" in output
+    assert "Goal alterado: não" in output

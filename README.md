@@ -242,9 +242,23 @@ A operação é idempotente por assessment. Repetir o comando devolve a mesma Ve
 
 Depois da confirmação, `plan-next` passa a representar aquela tentativa como `VERIFIED`. Só então o step satisfaz dependências e deixa de bloquear o avanço do Plan. Nenhuma migration adicional é necessária e o SQLite permanece no schema 10.
 
+## Conclusão determinística de Plan
+
+Quando todos os steps persistidos de um Plan ativo possuem uma tentativa concluída com `VerificationResult(status=VERIFIED)`, o Plan pode ser concluído explicitamente:
+
+```powershell
+uv run simon plan-complete gol_ID_DO_GOAL
+```
+
+No corte atual, todo step persistido no Plan é obrigatório. Ainda não existe conceito de step opcional. Se qualquer step estiver `READY`, `BLOCKED` ou `IN_PROGRESS`, a conclusão é recusada e o Plan permanece `ACTIVE`.
+
+A conclusão não chama o modelo e revalida as evidências dentro da mesma transação que altera o Plan para `COMPLETED`. O sistema registra `plan.completed` com os IDs dos steps e Actions verificados que sustentaram a conclusão. Repetir o comando depois da conclusão é idempotente e recupera o mesmo registro.
+
+Concluir o Plan não conclui o Goal. O Goal permanece `ACTIVE` até existir uma verificação própria dos seus critérios de sucesso. Essa separação evita inferir que uma estratégia executada necessariamente produziu o estado de mundo desejado. O SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Usar o primeiro step efetivamente `VERIFIED` para continuar o ciclo operacional sem esconder decisões: avançar para os próximos steps independentes e começar a definir quando um conjunto de steps verificados permite considerar o Plan concluído, mantendo Plan completion separado de Goal completion.
+Usar `plan.completed` e as evidências acumuladas para iniciar verificação no nível do Goal. Plan `COMPLETED` será evidência de que a estratégia terminou, não prova automática de que o estado desejado do Goal foi alcançado.
 
 ## Primeira interpretação cognitiva
 

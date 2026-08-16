@@ -209,29 +209,51 @@ def list_plans_for_goal(database_path: Path, goal_id: str) -> tuple[Plan, ...]:
     return tuple(_plan_from_row(row) for row in rows)
 
 
-def transition_plan(database_path: Path, plan_id: str, new_status: str) -> Plan:
-    current = get_plan(database_path, plan_id)
-    if current is None:
+def transition_plan_in_connection(
+    connection: sqlite3.Connection,
+    plan_id: str,
+    new_status: str,
+) -> Plan:
+    row = connection.execute(
+        """
+        SELECT id, goal_id, revision, steps_json, status, created_at, updated_at
+        FROM plans
+        WHERE id = ?
+        """,
+        (plan_id,),
+    ).fetchone()
+    if row is None:
         raise ValueError(f"plan não encontrado: {plan_id}")
 
+    current = _plan_from_row(row)
     allowed = ALLOWED_TRANSITIONS.get(current.status, set())
     if new_status not in allowed:
         raise ValueError(f"transição de plan inválida: {current.status} -> {new_status}")
 
     updated_at = datetime.now(UTC)
-    with sqlite3.connect(database_path) as connection:
-        cursor = connection.execute(
-            """
-            UPDATE plans
-            SET status = ?, updated_at = ?
-            WHERE id = ? AND status = ?
-            """,
-            (new_status, updated_at.isoformat(), plan_id, current.status),
-        )
-        if cursor.rowcount != 1:
-            raise RuntimeError(f"plan mudou durante a transição: {plan_id}")
+    cursor = connection.execute(
+        """
+        UPDATE plans
+        SET status = ?, updated_at = ?
+        WHERE id = ? AND status = ?
+        """,
+        (new_status, updated_at.isoformat(), plan_id, current.status),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"plan mudou durante a transição: {plan_id}")
 
-    updated = get_plan(database_path, plan_id)
-    if updated is None:
-        raise RuntimeError(f"plan desapareceu após atualização: {plan_id}")
-    return updated
+    return Plan(
+        id=current.id,
+        goal_id=current.goal_id,
+        revision=current.revision,
+        steps=current.steps,
+        status=new_status,
+        created_at=current.created_at,
+        updated_at=updated_at,
+    )
+
+
+def transition_plan(database_path: Path, plan_id: str, new_status: str) -> Plan:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        return transition_plan_in_connection(connection, plan_id, new_status)

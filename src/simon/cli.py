@@ -24,6 +24,7 @@ from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_que
 from simon.goals import OPEN_STATUSES, get_goal
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
+from simon.plan_completion import complete_verified_plan
 from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
@@ -127,6 +128,15 @@ def build_parser() -> argparse.ArgumentParser:
     plan_next.add_argument(
         "goal_id",
         help="ID do Goal cujo Plan ativo será avaliado",
+    )
+
+    plan_complete = commands.add_parser(
+        "plan-complete",
+        help="conclui um Plan somente quando todos os seus steps estão VERIFIED",
+    )
+    plan_complete.add_argument(
+        "goal_id",
+        help="ID do Goal cujo Plan ativo será concluído",
     )
 
     plan_ask = commands.add_parser(
@@ -263,6 +273,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan_materialize(database_path, args.proposal_event_id)
     if args.command == "plan-next":
         return _plan_next(database_path, args.goal_id)
+    if args.command == "plan-complete":
+        return _plan_complete(database_path, args.goal_id)
     if args.command == "plan-ask":
         return _plan_ask(database_path, args.goal_id)
     if args.command == "action-answer":
@@ -745,6 +757,32 @@ def _plan_next(database_path: Path, goal_id: str) -> int:
     print("Action criada: não")
     return 0
 
+
+
+def _plan_complete(database_path: Path, goal_id: str) -> int:
+    trace_id = f"trc_{uuid4().hex}"
+    try:
+        completion = complete_verified_plan(
+            database_path,
+            goal_id=goal_id,
+            trace_id=trace_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Conclusão de Plan: falha ({exc})")
+        return 1
+
+    print(f"Plan: {completion.plan.id}")
+    print(f"Goal: {completion.plan.goal_id}")
+    print(f"Revisão: {completion.plan.revision}")
+    print(f"Status: {completion.plan.status}")
+    print(f"Steps verificados: {len(completion.verified_step_ids)}")
+    print(f"Conclusão registrada: {completion.completion_event_id}")
+    if completion.created:
+        print("Plan concluído: sim")
+    else:
+        print("Plan concluído: não (já estava concluído)")
+    print("Goal alterado: não")
+    return 0
 
 
 def _plan_ask(database_path: Path, goal_id: str) -> int:
