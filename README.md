@@ -23,14 +23,16 @@ O projeto já consegue:
 - substituir explicitamente Claims de estado atual preservando o histórico;
 - materializar o schema atual do próprio SIMON como uma Claim observada;
 - persistir Goals com estado desejado e critérios de sucesso explícitos;
-- suspender, bloquear, aguardar, retomar ou encerrar Goals conforme seu lifecycle;
 - recuperar Goals ainda abertos após uma nova conexão com o banco;
 - persistir Plans versionados ligados a Goals;
 - substituir um Plan ativo por nova revisão sem apagar o histórico anterior;
-- manter apenas um Plan ativo por Goal;
-- reconstruir Events, Entities, Claims, Goals e Plans a partir da persistência local.
+- persistir Actions ligadas a Goal, Plan e step;
+- reconciliar Actions que perderam continuidade durante reinicialização;
+- persistir VerificationResults imutáveis ligados a Actions ou Goals;
+- preservar verificações anteriores quando nova evidência surgir;
+- manter execução e verificação como fatos separados.
 
-Ainda não existem Actions, Cognition, modelos, Memory ou Lab executáveis.
+Ainda não existem Experience, Memory, Cognition, modelos ou Lab executáveis.
 
 ## Preparação
 
@@ -68,4 +70,4 @@ uv run mypy src
 
 ## Próximo passo
 
-Introduzir `Action`, para que os passos de um Plan possam se transformar em tentativas concretas de execução sem confundir estratégia com efeito real no mundo.
+Introduzir `Experience`, para conectar Goal, Actions, Events e VerificationResults em uma unidade causal persistente sem transformar histórico bruto em memória permanente.

@@ -1734,10 +1734,13 @@ criteria
 status
 evidence_event_ids
 observed
+strength
 created_at
 ```
 
-Estados detalhados serão fechados na State Machine, mas devem distinguir pelo menos sucesso verificado, falha, inconclusivo e avaliação cognitiva quando não existir prova externa suficiente.
+`strength` representa o nível procedural da verificação, não uma probabilidade de confiança. No v0.1 é um nível inteiro de 1 a 5, usado apenas para registrar quão forte foi o processo de verificação empregado.
+
+Os estados distinguem sucesso verificado, falha, inconclusivo e avaliação cognitiva quando não existir prova externa suficiente.
 
 Verification não fica embutida em Action porque possui significado epistemológico próprio e pode ocorrer depois da execução original.
 
