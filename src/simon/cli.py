@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from simon import __version__
+from simon.actions import interrupt_running_actions
 from simon.claims import set_current_claim
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
@@ -27,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     database_path, schema_version = initialize_storage(args.data_dir.resolve())
+    interrupt_running_actions(database_path)
 
     simon_entity = get_or_create_entity(
         database_path,

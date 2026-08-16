@@ -2,8 +2,12 @@ import json
 import sqlite3
 from pathlib import Path
 
+from simon.actions import create_action, get_action, transition_action
 from simon.cli import main
 from simon.entities import SIMON_ENTITY_ID
+from simon.goals import Goal, insert_goal
+from simon.plans import create_plan
+from simon.storage import initialize_storage
 
 
 def test_main_initializes_storage_and_records_current_world_state(
@@ -45,7 +49,7 @@ def test_main_initializes_storage_and_records_current_world_state(
 
     assert claim is not None
     assert claim[0] == "storage.schema_version"
-    assert json.loads(str(claim[1])) == 5
+    assert json.loads(str(claim[1])) == 6
     assert claim[2] == "DIRECT_OBSERVATION"
     assert tuple(json.loads(str(claim[3]))) == (str(event[0]),)
     assert claim[4] == "ACTIVE"
@@ -75,3 +79,38 @@ def test_repeated_startup_does_not_duplicate_same_current_claim(
 
     assert claim_count == (1,)
     assert event_count == (2,)
+
+
+def test_startup_marks_previous_running_action_as_interrupted(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Testar recuperação",
+        origin="USER",
+        desired_state={"state": "recovered"},
+        success_criteria=({"kind": "runtime_recovered"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=({"id": "step_1", "description": "Executar ação longa"},),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_1",
+        kind="process.run",
+    )
+    transition_action(database_path, action.id, "RUNNING")
+
+    assert main(["--data-dir", str(tmp_path)]) == 0
+
+    restored = get_action(database_path, action.id)
+    assert restored is not None
+    assert restored.status == "INTERRUPTED"
+    assert restored.failure is not None
+    assert restored.failure["kind"] == "runtime_restart"
