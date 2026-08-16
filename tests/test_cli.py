@@ -714,3 +714,89 @@ def test_cli_user_ask_waits_across_restart_and_records_answer(
     completed = get_action(database_path, action_id)
     assert completed is not None
     assert completed.status == "COMPLETED"
+
+
+def test_action_assess_cli_persists_assessment_without_promoting_to_verified(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.model_provider import StructuredModelResult
+    from simon.user_ask import answer_user_ask, dispatch_next_user_ask
+    from simon.user_ask_verification import UserAskCriterionAssessment
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Obter script",
+        origin="USER",
+        desired_state={"description": "conteúdo do script disponível"},
+        success_criteria=({"description": "script recebido"},),
+    )
+    insert_goal(database_path, goal)
+    create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Solicitar ao usuário o conteúdo do script.",
+                "kind": "EPISTEMIC",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "user.ask",
+                "verification": "O usuário fornece o código ou arquivo do script.",
+            },
+        ),
+    )
+    dispatch = dispatch_next_user_ask(database_path, goal_id=goal.id)
+    answer_user_ask(
+        database_path,
+        action_id=dispatch.action.id,
+        response="Ainda não forneci o conteúdo do script.",
+    )
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[object]:
+            return StructuredModelResult(
+                model="fake-model",
+                output=UserAskCriterionAssessment(
+                    verdict="NOT_SATISFIED",
+                    rationale="A resposta afirma que o conteúdo ainda não foi fornecido.",
+                    missing_information=["conteúdo do script"],
+                ),
+                prompt_eval_count=20,
+                eval_count=8,
+                total_duration_ns=500_000_000,
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "action-assess",
+            "--model",
+            "fake-model",
+            dispatch.action.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Veredito: NOT_SATISFIED" in output
+    assert "Status persistido: ASSESSED" in output
+    assert "Assessment criada: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT status, observed_json FROM verification_results WHERE subject_id = ?",
+            (dispatch.action.id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == "ASSESSED"
+    observed = json.loads(str(row[1]))
+    assert observed["verdict"] == "NOT_SATISFIED"

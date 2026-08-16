@@ -29,6 +29,7 @@ from simon.planning import propose_plan
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask
+from simon.user_ask_verification import assess_user_ask_response
 
 
 class ModelDiagnosticResponse(BaseModel):
@@ -141,6 +142,18 @@ def build_parser() -> argparse.ArgumentParser:
     action_answer.add_argument("action_id", help="ID da Action user.ask em WAITING")
     action_answer.add_argument("text", nargs="+", help="resposta fornecida pelo usuário")
 
+    action_assess = commands.add_parser(
+        "action-assess",
+        help="avalia semanticamente se a resposta user.ask satisfaz o critério do step",
+    )
+    action_assess.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    action_assess.add_argument("action_id", help="ID da Action user.ask COMPLETED")
+    _add_ollama_arguments(action_assess)
+
     return parser
 
 
@@ -228,6 +241,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan_ask(database_path, args.goal_id)
     if args.command == "action-answer":
         return _action_answer(database_path, args.action_id, " ".join(args.text))
+    if args.command == "action-assess":
+        return _action_assess(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.action_id,
+        )
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -732,6 +753,53 @@ def _action_answer(database_path: Path, action_id: str, text: str) -> int:
     print(f"Resposta registrada: {receipt.response_event_id}")
     print("Verification criada: não")
     return 0
+
+
+def _action_assess(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    action_id: str,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        receipt = assess_user_ask_response(
+            database_path,
+            provider,
+            model=model,
+            action_id=action_id,
+        )
+    except (ModelProviderError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Assessment user.ask: falha ({exc})")
+        return 1
+
+    criterion = receipt.verification.criteria[0].get("description")
+    print(f"Modelo: {receipt.model}")
+    print(f"Action: {receipt.verification.subject_id}")
+    print(f"Critério: {criterion}")
+    print(f"Veredito: {receipt.assessment.verdict}")
+    print(f"Justificativa: {receipt.assessment.rationale}")
+    if receipt.assessment.missing_information:
+        print("Informações ausentes:")
+        for item in receipt.assessment.missing_information:
+            print(f"- {item}")
+    else:
+        print("Informações ausentes: nenhuma")
+    if receipt.prompt_eval_count is not None:
+        print(f"Tokens de entrada: {receipt.prompt_eval_count}")
+    if receipt.eval_count is not None:
+        print(f"Tokens gerados: {receipt.eval_count}")
+    if receipt.total_duration_ns is not None:
+        print(f"Duração: {receipt.total_duration_ns / 1_000_000_000:.2f}s")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status persistido: {receipt.verification.status}")
+    if receipt.created:
+        print("Assessment criada: sim")
+    else:
+        print("Assessment criada: não (já existia para esta resposta e modelo)")
+    return 0
+
 
 def _record_plan_readiness(
     database_path: Path,

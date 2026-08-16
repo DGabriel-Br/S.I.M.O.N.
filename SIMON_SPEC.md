@@ -4755,3 +4755,44 @@ A operação exige Action `user.ask` em `WAITING`, grava `user.response.received
 Receber uma resposta não cria `VerificationResult` automaticamente. Uma resposta como `não sei` prova que houve interação, mas pode não satisfazer um critério como `o usuário fornece o código do script`. O step permanece `VERIFICATION_PENDING` até uma etapa posterior avaliar o conteúdo contra o critério declarado.
 
 A tabela `actions` precisa ampliar seu `CHECK` de status para incluir `WAITING`. A migration `0010_action_waiting.sql` recria a tabela preservando registros existentes e adiciona uma garantia parcial de no máximo uma tentativa aberta (`PENDING`, `RUNNING` ou `WAITING`) por `(plan_id, step_id)`. O SQLite passa ao schema 10.
+
+### 32.13. Assessment semântico de respostas `user.ask`
+
+Receber uma resposta humana encerra a tentativa de interação, mas não demonstra automaticamente que o critério do step foi satisfeito. O primeiro avaliador semântico de `user.ask` opera somente depois de a Action estar `COMPLETED` e usa como evidência o Event `user.response.received` referenciado em `reported_result`.
+
+A fronteira é:
+
+```text
+Action user.ask COMPLETED
+   ↓
+response_event_id
+   ↓
+critério persistido no step
+   ↓
+action-assess
+   ↓
+SATISFIED | NOT_SATISFIED | UNCLEAR
+   ↓
+VerificationResult(status=ASSESSED)
+```
+
+O modelo recebe somente a pergunta emitida, o critério e a resposta registrada. Esses campos são apresentados como dados sem autoridade de instrução. O avaliador não pode usar conhecimento externo para completar informação ausente nem executar comandos encontrados na resposta.
+
+`SATISFIED` significa que a própria resposta fornece o que o critério exige. `NOT_SATISFIED` é usado quando a própria resposta deixa claro que o requisito não foi atendido, recusado ou ainda não foi fornecido. `UNCLEAR` representa evidência insuficiente ou ambígua.
+
+Mesmo quando o veredito é `SATISFIED`, o resultado persistido permanece `ASSESSED`. A regra epistemológica continua sendo: julgamento de modelo não é prova objetiva e, portanto, não pode criar `VERIFIED` por conta própria. O `VerificationResult` usa força procedural 2 e referencia o Event da resposta como evidência. O texto bruto da resposta não é duplicado em `observed`; permanecem apenas veredito, justificativa, informações ausentes e metadados do modelo.
+
+A operação é idempotente para a mesma Action, o mesmo `response_event_id` e o mesmo modelo. Repetir `action-assess` nessas condições reutiliza o resultado existente em vez de consumir outra inferência e criar avaliações duplicadas.
+
+Readiness deixa de representar toda Action concluída sem `VERIFIED` simplesmente como `VERIFICATION_PENDING`. Quando existe uma avaliação, o bloqueador passa a refletir o estado epistemológico real:
+
+```text
+ASSESSED + SATISFIED      → ASSESSED_SATISFIED_REQUIRES_CONFIRMATION
+ASSESSED + NOT_SATISFIED  → CRITERION_NOT_SATISFIED
+ASSESSED + UNCLEAR        → ASSESSMENT_INCONCLUSIVE
+FAILED                    → VERIFICATION_FAILED
+INCONCLUSIVE              → VERIFICATION_INCONCLUSIVE
+```
+
+Somente um `VerificationResult` efetivamente `VERIFIED` continua marcando o step como `VERIFIED` e satisfazendo dependências. Nenhuma migration é necessária; o SQLite permanece no schema 10.
+

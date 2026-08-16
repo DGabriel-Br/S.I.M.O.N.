@@ -190,9 +190,25 @@ A resposta vira um Event `user.response.received`, e a Action passa para `COMPLE
 
 Essa etapa eleva o SQLite ao schema 10 para incluir `WAITING` no lifecycle persistente de Action.
 
+## Assessment semântico de `user.ask`
+
+Uma Action `user.ask` concluída pode ser comparada semanticamente com o critério de verificação do step:
+
+```powershell
+uv run simon action-assess --model qwen3.5:4b-q4_K_M act_ID_DA_ACTION
+```
+
+O avaliador recebe apenas a pergunta emitida, o critério persistido no step e o Event de resposta do usuário. A saída estruturada usa `SATISFIED`, `NOT_SATISFIED` ou `UNCLEAR` e é persistida como um `VerificationResult` com status `ASSESSED`. O modelo não pode produzir `VERIFIED` nessa etapa, porque julgamento semântico do LLM não é tratado como prova objetiva.
+
+A resposta bruta continua preservada somente no Event `user.response.received`; o `VerificationResult` referencia esse Event como evidência e guarda apenas o veredito, justificativa, informações ausentes e metadados da avaliação. Repetir o assessment para a mesma resposta e o mesmo modelo é idempotente.
+
+Readiness passa a distinguir os casos. Um assessment `NOT_SATISFIED` gera `CRITERION_NOT_SATISFIED`; `UNCLEAR` gera `ASSESSMENT_INCONCLUSIVE`; e `SATISFIED` gera `ASSESSED_SATISFIED_REQUIRES_CONFIRMATION`. Uma avaliação positiva do modelo ainda não libera dependências como se fosse `VERIFIED`.
+
+Nenhuma migration é necessária e o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Verificar uma Action `user.ask` concluída contra o critério do step usando a resposta registrada como evidência, sem confundir "o usuário respondeu" com "a informação necessária foi realmente obtida".
+Definir o gate mínimo que pode transformar uma avaliação `ASSESSED + SATISFIED` em uma Verification `VERIFIED` com autoridade explícita suficiente, sem permitir que o próprio modelo se auto-promova de assessor para prova.
 
 ## Primeira interpretação cognitiva
 

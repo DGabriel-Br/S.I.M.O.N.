@@ -8,7 +8,7 @@ from simon.actions import Action, list_actions_for_plan
 from simon.capabilities import available_capability_ids
 from simon.goals import get_goal
 from simon.plans import Plan, get_active_plan
-from simon.verification import list_verification_results
+from simon.verification import VerificationResult, list_verification_results
 
 StepState = Literal["READY", "BLOCKED", "IN_PROGRESS", "VERIFIED"]
 
@@ -88,7 +88,10 @@ def evaluate_active_plan(
             )
             continue
 
-        active_action = _latest_action_with_statuses(step_actions, {"PENDING", "RUNNING", "WAITING"})
+        active_action = _latest_action_with_statuses(
+            step_actions,
+            {"PENDING", "RUNNING", "WAITING"},
+        )
         if active_action is not None:
             assessments.append(
                 StepReadiness(
@@ -124,12 +127,19 @@ def evaluate_active_plan(
 
         completed_unverified = _latest_action_with_statuses(step_actions, {"COMPLETED"})
         if completed_unverified is not None:
-            blockers.append(
-                StepBlocker(
-                    kind="VERIFICATION_PENDING",
-                    detail=completed_unverified.id,
-                )
+            latest_verification = _latest_verification_result(
+                database_path,
+                completed_unverified,
             )
+            if latest_verification is None:
+                blockers.append(
+                    StepBlocker(
+                        kind="VERIFICATION_PENDING",
+                        detail=completed_unverified.id,
+                    )
+                )
+            else:
+                blockers.extend(_verification_blockers(latest_verification))
 
         unsuccessful = _latest_action_with_statuses(
             step_actions,
@@ -251,3 +261,56 @@ def _preconditions(step: dict[str, object]) -> tuple[str, ...]:
             raise ValueError("precondition persistida possui valor vazio")
         preconditions.append(precondition.strip())
     return tuple(preconditions)
+
+
+def _latest_verification_result(
+    database_path: Path,
+    action: Action,
+) -> VerificationResult | None:
+    results = list_verification_results(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action.id,
+    )
+    return results[-1] if results else None
+
+
+def _verification_blockers(result: VerificationResult) -> tuple[StepBlocker, ...]:
+    if result.status == "ASSESSED":
+        verdict = result.observed.get("verdict")
+        if verdict == "SATISFIED":
+            return (
+                StepBlocker(
+                    kind="ASSESSED_SATISFIED_REQUIRES_CONFIRMATION",
+                    detail=result.id,
+                ),
+            )
+        if verdict == "NOT_SATISFIED":
+            return (
+                StepBlocker(
+                    kind="CRITERION_NOT_SATISFIED",
+                    detail=result.id,
+                ),
+            )
+        if verdict == "UNCLEAR":
+            return (
+                StepBlocker(
+                    kind="ASSESSMENT_INCONCLUSIVE",
+                    detail=result.id,
+                ),
+            )
+        return (
+            StepBlocker(
+                kind="VERIFICATION_ASSESSED",
+                detail=result.id,
+            ),
+        )
+
+    if result.status == "FAILED":
+        return (StepBlocker(kind="VERIFICATION_FAILED", detail=result.id),)
+    if result.status == "INCONCLUSIVE":
+        return (StepBlocker(kind="VERIFICATION_INCONCLUSIVE", detail=result.id),)
+    if result.status == "VERIFIED":
+        return ()
+    return (StepBlocker(kind="VERIFICATION_REQUIRES_REVIEW", detail=result.id),)
+
