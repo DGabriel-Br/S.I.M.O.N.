@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -58,6 +59,16 @@ def insert_entity(database_path: Path, entity: Entity) -> None:
         )
 
 
+def _entity_from_row(row: tuple[object, ...]) -> Entity:
+    return Entity(
+        id=str(row[0]),
+        kind=str(row[1]),
+        name=str(row[2]),
+        aliases=tuple(json.loads(str(row[3]))),
+        created_at=datetime.fromisoformat(str(row[4])),
+    )
+
+
 def get_entity(database_path: Path, entity_id: str) -> Entity | None:
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
@@ -74,16 +85,54 @@ def get_entity(database_path: Path, entity_id: str) -> Entity | None:
             (entity_id,),
         ).fetchone()
 
-    if row is None:
-        return None
+    return _entity_from_row(row) if row is not None else None
 
-    return Entity(
-        id=str(row[0]),
-        kind=str(row[1]),
-        name=str(row[2]),
-        aliases=tuple(json.loads(str(row[3]))),
-        created_at=datetime.fromisoformat(str(row[4])),
-    )
+
+def find_entities_mentioned_in_text(
+    database_path: Path,
+    *,
+    text: str,
+    limit: int = 10,
+) -> tuple[Entity, ...]:
+    if limit <= 0:
+        raise ValueError("limit de entities precisa ser positivo")
+
+    normalized_text = text.strip().casefold()
+    if not normalized_text:
+        return ()
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                kind,
+                name,
+                aliases_json,
+                created_at
+            FROM entities
+            ORDER BY created_at, id
+            """
+        ).fetchall()
+
+    matches: list[Entity] = []
+    for row in rows:
+        entity = _entity_from_row(row)
+        terms = (entity.name, *entity.aliases)
+        if any(_contains_term(normalized_text, term) for term in terms):
+            matches.append(entity)
+            if len(matches) == limit:
+                break
+
+    return tuple(matches)
+
+
+def _contains_term(normalized_text: str, term: str) -> bool:
+    normalized_term = term.strip().casefold()
+    if not normalized_term:
+        return False
+    pattern = rf"(?<!\w){re.escape(normalized_term)}(?!\w)"
+    return re.search(pattern, normalized_text) is not None
 
 
 def get_or_create_entity(

@@ -37,7 +37,10 @@ O projeto já consegue:
 - persistir Memories derivadas explicitamente de Experiences fechadas;
 - recuperar apenas Memories ativas por texto, tipo, escopo e Entity;
 - preservar proveniência de Experiences, Claims e Entities nas Memories;
-- retirar Memories arquivadas, substituídas ou retraídas do retrieval normal.
+- retirar Memories arquivadas, substituídas ou retraídas do retrieval normal;
+- interpretar entradas do usuário em um contrato cognitivo estruturado;
+- montar contexto cognitivo determinístico com Goals abertos, Entities explicitamente mencionadas, Claims atuais e Memories relacionadas;
+- registrar a seleção de contexto como Event sem criar um objeto persistente adicional.
 
 O primeiro adapter de modelo local já existe:
 
@@ -47,7 +50,7 @@ O primeiro adapter de modelo local já existe:
 - `model-check` verifica o runtime e lista modelos já instalados;
 - `model-test` executa uma chamada estruturada de diagnóstico em um modelo escolhido explicitamente.
 
-Ainda não existe um Cognition Controller, roteamento entre modelos ou escolha automática de modelo.
+Ainda não existe um Cognition Controller, roteamento entre modelos ou escolha automática de modelo. O Context Builder atual é deliberadamente limitado e não usa busca vetorial, resolução fuzzy de entidades ou histórico de chat como estado.
 
 ## Preparação
 
@@ -101,7 +104,7 @@ O SIMON não baixa nem escolhe um modelo automaticamente neste estágio.
 
 ## Próximo passo
 
-Escolher o primeiro modelo local por medição no hardware real e então introduzir o primeiro `CognitiveJob` que use o `ModelProvider` sem carregar histórico de chat como estado.
+Validar interpretação contextual com estado persistente real e então conectar solicitações (`REQUEST`) a uma proposta explícita de Goal, ainda sem criação ou execução automática.
 
 ## Primeira interpretação cognitiva
 
@@ -113,5 +116,7 @@ uv run simon interpret --model qwen3.5:4b-q4_K_M "Veja por que esse script está
 
 A interpretação retorna intenção, objetivo explícito, entidades mencionadas e ambiguidades. Ela não cria Goal nem executa ações automaticamente.
 
-A entrada e o resultado estruturado são preservados como Events com o mesmo `trace_id`, preparando a base de observabilidade sem criar ainda um objeto persistente `CognitiveJob`.
+Antes da chamada ao modelo, o Context Builder seleciona de forma determinística um recorte pequeno do estado persistente. Goals abertos entram apenas como resumo; Entities precisam ser mencionadas por nome ou alias conhecido; Claims e Memories são recuperadas somente a partir dessas referências ou de correspondência textual simples. O contexto é apresentado ao modelo como dado, nunca como instrução.
+
+A entrada, a seleção de contexto e o resultado estruturado são preservados como Events com o mesmo `trace_id`, preparando a base de observabilidade sem criar ainda um objeto persistente `CognitiveJob`.
 

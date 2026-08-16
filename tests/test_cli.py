@@ -219,3 +219,72 @@ def test_interpret_records_input_and_structured_result(
     assert rows[1][0:2] == ("cognition.interpretation.completed", "cognition")
     assert json.loads(str(rows[1][2]))["interpretation"]["intent"] == "REQUEST"
     assert rows[0][3] == rows[1][3]
+
+
+def test_interpret_records_context_selection_before_model_result(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.cognition import UserInputInterpretation
+    from simon.model_provider import StructuredModelResult
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(
+            self, **kwargs: object
+        ) -> StructuredModelResult[UserInputInterpretation]:
+            return StructuredModelResult(
+                model="fake-model",
+                output=UserInputInterpretation(
+                    intent="QUESTION",
+                    objective="consultar o estado do SIMON",
+                    entity_mentions=[],
+                    ambiguities=[],
+                ),
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "interpret",
+            "--model",
+            "fake-model",
+            "O que você sabe sobre o SIMON?",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Contexto: 0 goal(s), 1 entity(s), 1 claim(s), 0 memory(s)" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        row = connection.execute(
+            """
+            SELECT payload_json, trace_id
+            FROM events
+            WHERE kind = 'cognition.context.built'
+            ORDER BY occurred_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        input_trace = connection.execute(
+            """
+            SELECT trace_id
+            FROM events
+            WHERE kind = 'user.input.received'
+            ORDER BY occurred_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    payload = json.loads(str(row[0]))
+    assert payload["entity_ids"] == [SIMON_ENTITY_ID]
+    assert len(payload["claim_ids"]) == 1
+    assert input_trace is not None
+    assert row[1] == input_trace[0]

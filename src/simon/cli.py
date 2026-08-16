@@ -10,6 +10,7 @@ from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.claims import set_current_claim
 from simon.cognition import interpret_user_input
+from simon.context import build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
@@ -193,7 +194,27 @@ def _interpret(
 
     provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
     try:
-        result = interpret_user_input(provider, model=model, text=text)
+        context = build_cognitive_context(database_path, text=text)
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.context.built",
+                source="cognition",
+                payload={
+                    "goal_ids": [goal.id for goal in context.goals],
+                    "entity_ids": [entity.id for entity in context.entities],
+                    "claim_ids": [claim.id for claim in context.claims],
+                    "memory_ids": [memory.id for memory in context.memories],
+                },
+                trace_id=trace_id,
+            ),
+        )
+        result = interpret_user_input(
+            provider,
+            model=model,
+            text=text,
+            context=context,
+        )
     except (ModelProviderError, ValueError) as exc:
         append_event(
             database_path,
@@ -224,6 +245,13 @@ def _interpret(
     )
 
     print(f"Modelo: {result.model}")
+    print(
+        "Contexto: "
+        f"{len(context.goals)} goal(s), "
+        f"{len(context.entities)} entity(s), "
+        f"{len(context.claims)} claim(s), "
+        f"{len(context.memories)} memory(s)"
+    )
     print(f"Intenção: {result.output.intent}")
     print(f"Objetivo: {result.output.objective or 'nenhum explícito'}")
 

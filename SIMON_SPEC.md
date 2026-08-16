@@ -4426,3 +4426,34 @@ simon interpret --model <modelo> "<mensagem>"
 ```
 
 Esse comando existe para validar interpretação cognitiva real com entradas variadas antes de conectá-la automaticamente à criação de Goals.
+
+### 32.5. Context Builder mínimo executável
+
+A primeira versão executável do Context Builder não é um agente e não possui persistência própria. Ela monta uma projeção temporária e limitada do estado já existente antes de uma chamada cognitiva.
+
+A seleção inicial usa apenas mecanismos determinísticos:
+
+```text
+até 3 Goals abertos mais recentemente atualizados
+Entities cujo nome ou alias aparece explicitamente na entrada
+Claims ACTIVE dessas Entities
+Memories ACTIVE por correspondência textual simples ou vínculo com essas Entities
+```
+
+Goals entram no prompt somente com `id`, `title` e `status`. O Context Builder não despeja automaticamente `desired_state`, planos completos ou histórico operacional no modelo. Contexto adicional deverá ser expandido apenas quando uma necessidade concreta justificar isso.
+
+A resolução de Entity desta etapa é estrita. Apenas nome ou alias conhecido com limites de palavra é aceito. Não há fuzzy matching, embeddings ou decisão probabilística de identidade. Uma menção produzida pelo modelo continua distinta de uma Entity canônica.
+
+O contexto enviado ao modelo é explicitamente marcado como dado recuperado e sem autoridade de instrução. Conteúdo de Memory, Claim ou Goal com aparência de comando não deve ser tratado como policy ou system instruction.
+
+A montagem de contexto gera um Event correlacionado ao mesmo `trace_id` da entrada e da interpretação:
+
+```text
+user.input.received
+cognition.context.built
+cognition.interpretation.completed
+```
+
+O Event de contexto registra apenas IDs selecionados. O payload completo usado no prompt não é duplicado na telemetria.
+
+Não é criado um objeto persistente `CognitiveContext` ou `CognitiveJob`. A projeção existe apenas durante a chamada cognitiva.

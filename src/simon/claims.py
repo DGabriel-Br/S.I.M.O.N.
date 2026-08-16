@@ -152,6 +152,40 @@ def list_active_claims(
     return tuple(_claim_from_row(row) for row in rows)
 
 
+def list_active_claims_for_subject(
+    database_path: Path,
+    *,
+    subject_id: str,
+    limit: int = 20,
+) -> tuple[Claim, ...]:
+    if limit <= 0:
+        raise ValueError("limit de claims precisa ser positivo")
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                subject_id,
+                predicate,
+                value_json,
+                epistemic_status,
+                valid_from,
+                valid_until,
+                learned_at,
+                evidence_event_ids_json,
+                status
+            FROM claims
+            WHERE subject_id = ? AND status = 'ACTIVE'
+            ORDER BY learned_at DESC, id DESC
+            LIMIT ?
+            """,
+            (subject_id, limit),
+        ).fetchall()
+
+    return tuple(_claim_from_row(row) for row in rows)
+
+
 def transition_claim(database_path: Path, claim_id: str, new_status: str) -> Claim:
     if new_status not in TERMINAL_STATUSES:
         raise ValueError(f"status terminal inválido: {new_status}")
