@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from simon.actions import Action, list_actions_for_plan
+from simon.capabilities import available_capability_ids
 from simon.goals import get_goal
 from simon.plans import Plan, get_active_plan
 from simon.verification import list_verification_results
@@ -31,6 +32,7 @@ class StepReadiness:
 @dataclass(frozen=True, slots=True)
 class PlanReadiness:
     plan: Plan
+    available_capabilities: tuple[str, ...]
     next_step: StepReadiness | None
     steps: tuple[StepReadiness, ...]
 
@@ -49,7 +51,11 @@ def evaluate_active_plan(
     if plan is None:
         raise ValueError(f"goal não possui plan ACTIVE: {goal_id}")
 
-    capabilities: frozenset[str] = available_capabilities or frozenset()
+    capabilities = (
+        available_capability_ids()
+        if available_capabilities is None
+        else available_capabilities
+    )
     actions = list_actions_for_plan(database_path, plan.id)
     actions_by_step: dict[str, list[Action]] = {}
     for action in actions:
@@ -137,13 +143,14 @@ def evaluate_active_plan(
                 )
             )
 
-        for precondition in _preconditions(raw_step):
-            blockers.append(
-                StepBlocker(
-                    kind="PRECONDITION_UNRESOLVED",
-                    detail=precondition,
+        if capability != "user.ask":
+            for precondition in _preconditions(raw_step):
+                blockers.append(
+                    StepBlocker(
+                        kind="PRECONDITION_UNRESOLVED",
+                        detail=precondition,
+                    )
                 )
-            )
 
         if capability is None:
             blockers.append(
@@ -173,6 +180,7 @@ def evaluate_active_plan(
     next_step = next((step for step in assessments if step.state == "READY"), None)
     return PlanReadiness(
         plan=plan,
+        available_capabilities=tuple(sorted(capabilities)),
         next_step=next_step,
         steps=tuple(assessments),
     )

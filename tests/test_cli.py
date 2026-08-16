@@ -468,7 +468,7 @@ def test_plan_propose_records_strategy_without_persisting_plan(
                             id="step_1",
                             description="Identificar o script e a falha observada.",
                             kind="EPISTEMIC",
-                            capability="obter contexto do usuário",
+                            capability="user.ask",
                             verification="Script e erro foram identificados.",
                         )
                     ],
@@ -547,7 +547,7 @@ def test_plan_materialize_cli_persists_selected_proposal(
                 id="step_01",
                 description="Solicitar o script e o erro ao usuário.",
                 kind="EPISTEMIC",
-                capability="obter contexto do usuário",
+                capability="user.ask",
                 verification="Script e erro foram registrados.",
             )
         ],
@@ -623,6 +623,7 @@ def test_plan_next_reports_blockers_without_creating_action(
 
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert f"Plan: {plan.id}" in output
+    assert "Capabilities executáveis registradas: user.ask" in output
     assert "Próximo passo executável: nenhum" in output
     assert "PRECONDITION_UNRESOLVED" in output
     assert "CAPABILITY_UNAVAILABLE" in output
@@ -644,5 +645,6 @@ def test_plan_next_reports_blockers_without_creating_action(
     payload = json.loads(str(row[0]))
     assert row[1] == goal.id
     assert payload["plan_id"] == plan.id
+    assert payload["available_capabilities"] == ["user.ask"]
     assert payload["next_step_id"] is None
     assert payload["steps"][0]["step_id"] == "step_01"

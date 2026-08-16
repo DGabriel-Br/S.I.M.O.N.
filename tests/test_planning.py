@@ -40,7 +40,7 @@ class FakePlanProvider:
                     id="step_1",
                     description="Identificar o script e coletar a falha observada.",
                     kind="EPISTEMIC",
-                    capability="obter contexto do usuário",
+                    capability="user.ask",
                     verification="O script e a mensagem de erro estão identificados.",
                 ),
                 PlanStepProposal(
@@ -48,7 +48,7 @@ class FakePlanProvider:
                     description="Investigar a causa da falha com base nas evidências coletadas.",
                     kind="EPISTEMIC",
                     depends_on=["step_1"],
-                    capability="analisar código e evidências de execução",
+                    capability="cognition.analyze",
                     verification="Existe uma causa sustentada pelas evidências disponíveis.",
                 ),
             ],
@@ -82,6 +82,8 @@ def test_propose_plan_turns_missing_information_into_epistemic_work() -> None:
     assert "nunca escreva 'step_X concluído' em preconditions" in provider.system
     assert "Não assuma sistema operacional" in provider.system
     assert "Não assuma acesso a repositório" in provider.system
+    assert "Quando uma informação precisa ser fornecida ou confirmada pelo usuário, use user.ask" in provider.system
+    assert '"id":"user.ask"' in provider.prompt
     assert '"open_questions_from_goal_acceptance":["Qual script está falhando?"]' in provider.prompt
     assert '"desired_state":{"description":"O script executa sem a falha relatada."}' in provider.prompt
     assert result.output.open_questions == ["Qual script está falhando?"]
@@ -97,14 +99,16 @@ def test_plan_proposal_rejects_dependency_on_future_step() -> None:
                     description="Executar depois do passo futuro.",
                     kind="WORLD",
                     depends_on=["step_2"],
-                    capability="alterar estado",
+                    capability="unknown",
+                    capability_detail="alterar estado externo ainda sem capability dedicada",
                     verification="Mudança observada.",
                 ),
                 PlanStepProposal(
                     id="step_2",
                     description="Passo posterior.",
                     kind="EPISTEMIC",
-                    capability="observar estado",
+                    capability="unknown",
+                    capability_detail="observar estado ainda sem capability dedicada",
                     verification="Estado observado.",
                 ),
             ],
@@ -120,7 +124,8 @@ def test_plan_proposal_rejects_step_dependency_hidden_in_preconditions() -> None
                     id="step_1",
                     description="Obter evidência.",
                     kind="EPISTEMIC",
-                    capability="observar estado",
+                    capability="unknown",
+                    capability_detail="observar estado ainda sem capability dedicada",
                     verification="Evidência registrada.",
                 ),
                 PlanStepProposal(
@@ -128,7 +133,7 @@ def test_plan_proposal_rejects_step_dependency_hidden_in_preconditions() -> None
                     description="Analisar evidência.",
                     kind="EPISTEMIC",
                     preconditions=["step_1 concluído."],
-                    capability="analisar evidência",
+                    capability="cognition.analyze",
                     verification="Análise registrada.",
                 ),
             ],
@@ -189,3 +194,19 @@ def test_propose_plan_preserves_all_unresolved_goal_questions() -> None:
         "Qual script está falhando?",
         "Qual erro foi observado?",
     ]
+
+
+def test_plan_proposal_requires_detail_for_unknown_capability() -> None:
+    with pytest.raises(ValidationError, match="capability unknown sem capability_detail"):
+        PlanProposal(
+            summary="Capability ainda não catalogada.",
+            steps=[
+                PlanStepProposal(
+                    id="step_1",
+                    description="Executar trabalho ainda não representado.",
+                    kind="EPISTEMIC",
+                    capability="unknown",
+                    verification="O efeito esperado foi observado.",
+                )
+            ],
+        )

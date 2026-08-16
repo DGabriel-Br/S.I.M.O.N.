@@ -4666,3 +4666,29 @@ Ele resolve o Plan `ACTIVE`, avalia todos os steps, mostra bloqueadores e regist
 
 Nenhuma migration é necessária. O SQLite permanece no schema 9. Essa etapa torna observável a fronteira entre planejamento e ação e impede que JSON estruturalmente válido seja confundido com trabalho executável.
 
+
+
+### 32.11. Catálogo mínimo de capabilities e primeira capability disponível
+
+O primeiro teste real de `plan-next` demonstrou que capability em linguagem natural não é uma interface estável entre Planner e runtime. Descrições como `Consultar logs ou solicitar ao usuário...` não podem ser comparadas deterministicamente com capacidades executáveis sem introduzir fuzzy matching ou interpretação adicional.
+
+O v0.1 passa a usar um catálogo pequeno de IDs estáveis na saída do Planner:
+
+```text
+user.ask
+file.read
+process.run
+logs.read
+cognition.analyze
+unknown
+```
+
+`unknown` existe para representar uma necessidade ainda não coberta pelo catálogo sem inventar uma Tool. Quando usado, `capability_detail` deve explicar a necessidade. O catálogo é enviado ao Planner como dado estruturado, incluindo quais capabilities estão disponíveis naquele runtime.
+
+Neste estágio somente `user.ask` é considerada disponível. Ela significa solicitar ao usuário informação, confirmação ou contexto ausente e aguardar uma resposta. A existência dessa capability não concede acesso a arquivos, logs, processos ou outras fontes.
+
+Para `user.ask`, preconditions textuais como `o usuário possui a informação` não bloqueiam readiness. A pergunta é justamente o mecanismo seguro para descobrir se o usuário consegue fornecer o dado. Preconditions de todas as demais capabilities continuam não resolvidas até que exista um mecanismo baseado em World, Claims ou Verification para demonstrá-las.
+
+Plans persistidos antes do catálogo continuam válidos historicamente. Capabilities antigas em texto livre não são convertidas por similaridade e permanecem `CAPABILITY_UNAVAILABLE`. A correção ocorre através de uma nova `PlanProposal` e nova revisão de Plan, preservando a estratégia anterior como histórico.
+
+`plan.readiness.evaluated` passa a registrar também `available_capabilities`, tornando reproduzível por que um step foi considerado pronto ou bloqueado naquele momento. Nenhuma Action é criada nesta etapa e o SQLite permanece no schema 9.

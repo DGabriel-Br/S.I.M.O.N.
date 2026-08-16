@@ -254,3 +254,33 @@ def test_non_active_goal_blocks_execution_even_with_active_plan(tmp_path: Path) 
 
     assert result.next_step is None
     assert result.steps[0].blockers[0].kind == "GOAL_NOT_ACTIVE"
+
+
+def test_user_ask_is_available_by_default_and_can_resolve_its_own_preconditions(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Solicitar ao usuário o script e a falha observada.",
+                "capability": "user.ask",
+                "preconditions": [
+                    "O usuário pode fornecer o conteúdo do script.",
+                    "O usuário conhece a mensagem de erro.",
+                ],
+            },
+        ),
+    )
+
+    result = evaluate_active_plan(database_path, goal_id=goal.id)
+
+    assert result.available_capabilities == ("user.ask",)
+    assert result.next_step is not None
+    assert result.next_step.step_id == "step_01"
+    assert result.next_step.state == "READY"
+    assert result.next_step.blockers == ()

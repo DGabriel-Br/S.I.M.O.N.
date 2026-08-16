@@ -585,6 +585,8 @@ def _plan_propose(
     for step in result.output.steps:
         print(f"- {step.id} [{step.kind}] {step.description}")
         print(f"  Capability: {step.capability}")
+        if step.capability_detail is not None:
+            print(f"  Detalhe da capability: {step.capability_detail}")
         if step.depends_on:
             print(f"  Depende de: {', '.join(step.depends_on)}")
         else:
@@ -646,7 +648,13 @@ def _plan_next(database_path: Path, goal_id: str) -> int:
     print(f"Goal: {readiness.plan.goal_id}")
     print(f"Plan: {readiness.plan.id}")
     print(f"Revisão: {readiness.plan.revision}")
-    print("Capabilities executáveis registradas: nenhuma")
+    if readiness.available_capabilities:
+        print(
+            "Capabilities executáveis registradas: "
+            + ", ".join(readiness.available_capabilities)
+        )
+    else:
+        print("Capabilities executáveis registradas: nenhuma")
 
     if readiness.next_step is None:
         print("Próximo passo executável: nenhum")
@@ -679,6 +687,7 @@ def _record_plan_readiness(
             payload={
                 "plan_id": readiness.plan.id,
                 "plan_revision": readiness.plan.revision,
+                "available_capabilities": list(readiness.available_capabilities),
                 "next_step_id": (
                     readiness.next_step.step_id if readiness.next_step is not None else None
                 ),

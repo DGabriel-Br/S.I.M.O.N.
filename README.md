@@ -158,13 +158,17 @@ uv run simon plan-next gol_ID_DO_GOAL
 
 A seleção é determinística. Um step somente pode aparecer como `READY` quando o Goal está `ACTIVE`, todas as dependências possuem Action concluída com Verification `VERIFIED`, não existe tentativa em andamento, as preconditions estão resolvidas e a capability requerida está disponível.
 
-No corte atual ainda não existe Capability Registry nem resolvedor de preconditions. Por isso, capabilities não registradas e preconditions textuais são bloqueadores explícitos. Uma Action `COMPLETED` sem Verification também não libera dependências. Tentativas anteriores com falha, bloqueio, negação, interrupção ou cancelamento exigem revisão antes de retry.
+O corte atual possui um catálogo mínimo de IDs estáveis de capability. O Planner escolhe entre `user.ask`, `file.read`, `process.run`, `logs.read`, `cognition.analyze` e `unknown`, em vez de inventar descrições livres impossíveis de resolver deterministicamente. Apenas `user.ask` está disponível no runtime neste estágio.
 
-A avaliação registra apenas um Event `plan.readiness.evaluated`; ela não cria Action.
+`user.ask` representa solicitar ao usuário uma informação ou confirmação ausente. Preconditions textuais desse tipo de step não bloqueiam a tentativa, porque perguntar ao usuário é justamente o mecanismo para descobrir se a informação pode ser fornecida. As demais preconditions continuam `PRECONDITION_UNRESOLVED` até existir evidência real que as resolva.
+
+Plans antigos com capability em texto livre continuam legíveis, mas permanecem `CAPABILITY_UNAVAILABLE`; não há fuzzy matching nem migração silenciosa. Uma nova proposta deve usar os IDs estáveis do catálogo. Uma Action `COMPLETED` sem Verification também não libera dependências, e tentativas anteriores com falha, bloqueio, negação, interrupção ou cancelamento exigem revisão antes de retry.
+
+A avaliação registra `plan.readiness.evaluated`, incluindo o conjunto de capabilities disponível naquela avaliação, e ainda não cria Action.
 
 ## Próximo passo
 
-Introduzir a primeira capability operacional mínima exigida por um Plan real, mantendo Policy e Tool execution fora do caminho até que o step esteja efetivamente pronto.
+Usar um step `user.ask` realmente `READY` para criar a primeira Action de interação com o usuário, definindo um estado de espera que sobreviva a reinicializações sem ser confundido com falha de execução.
 
 ## Primeira interpretação cognitiva
 

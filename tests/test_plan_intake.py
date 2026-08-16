@@ -37,7 +37,7 @@ def _proposal_event(
                 description="Obter o script e a falha observada do usuário.",
                 kind="EPISTEMIC",
                 preconditions=[],
-                capability="obter contexto do usuário",
+                capability="user.ask",
                 verification="Script e falha foram fornecidos e registrados.",
             ),
             PlanStepProposal(
@@ -45,7 +45,7 @@ def _proposal_event(
                 description="Analisar o material fornecido.",
                 kind="EPISTEMIC",
                 depends_on=["step_01"],
-                capability="analisar código e evidência",
+                capability="cognition.analyze",
                 verification="Hipótese causal foi registrada com base na evidência.",
             ),
         ],
@@ -82,7 +82,7 @@ def test_materialization_persists_exact_plan_and_provenance(tmp_path: Path) -> N
     assert result.plan.revision == 1
     assert result.plan.status == "ACTIVE"
     assert result.plan.steps[0]["kind"] == "EPISTEMIC"
-    assert result.plan.steps[0]["capability"] == "obter contexto do usuário"
+    assert result.plan.steps[0]["capability"] == "user.ask"
     assert result.plan.steps[1]["depends_on"] == ["step_01"]
     assert get_active_plan(database_path, goal.id) == result.plan
 
