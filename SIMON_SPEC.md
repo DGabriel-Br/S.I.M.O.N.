@@ -4984,3 +4984,138 @@ O Event `cognition.plan_proposal.completed` passa a preservar `source_goal_asses
 Se o Goal Assessment mais recente estiver `SATISFIED`, `plan-propose` não gera uma nova estratégia. O sistema aguarda um gate separado de promoção epistemológica no nível do Goal, mantendo planejamento fora da decisão de conclusão do objetivo.
 
 Nenhuma migration é necessária. O SQLite permanece no schema 10.
+
+### 32.19. Guarda causal contra mudanças de estado pressupostas
+
+> Nota histórica: esta guarda textual foi supersedida para novas propostas geradas pelo Planner pela fronteira tipada descrita em 32.20 e 32.21. Ela permanece documentada porque explica os experimentos que levaram ao compilador determinístico, mas não governa o caminho atual de geração.
+
+Structured output válido não basta para uma `PlanProposal`. O Planner também precisa respeitar causalidade mínima entre passos. Quando um passo descreve uma ação que pressupõe uma mudança anterior, como `reexecutar com as correções aplicadas`, essa mudança precisa ter sido produzida por um passo `WORLD` anterior e aparecer explicitamente em `depends_on`.
+
+O Core aplica uma validação determinística para padrões observados de pressuposição de correções, alterações, modificações ou fixes já aplicados. Se nenhuma dependência `WORLD` anterior sustentar essa condição, a proposta é rejeitada antes de qualquer materialização.
+
+Se a mudança ainda precisa acontecer e não existe capability adequada no catálogo, a representação correta é um passo `WORLD` com `capability=unknown` e `capability_detail`. A ausência de capability deve permanecer visível em vez de ser escondida dentro da linguagem da descrição.
+
+Essa regra não cria um novo objeto persistente, não altera o schema e mantém o SQLite no schema 10.
+
+
+### 32.20. Planner de intenção + compilador determinístico
+
+Os testes reais de replanejamento mostraram que descrições em linguagem natural estavam acumulando responsabilidade operacional demais. O modelo escolhia ao mesmo tempo `kind`, `capability`, `depends_on`, `preconditions` e a própria estratégia; em seguida o Core tentava recuperar causalidade por padrões textuais como `script corrigido`, `correções aplicadas` ou referências indiretas a passos anteriores. Isso criou um ciclo de guards e reparos dependentes da redação do modelo.
+
+A fronteira v0.1 é substituída por duas etapas:
+
+```text
+Goal + contexto + evidência
+          ↓
+        modelo
+          ↓
+   PlanIntentDraft
+          ↓
+ compilador determinístico
+          ↓
+     PlanProposal
+          ↓
+ readiness / materialização
+```
+
+`PlanIntentDraft` é transitório e contém somente estratégia cognitiva:
+
+```text
+summary
+steps[]:
+  subject
+  role = COLLECT | ANALYZE | CHANGE | EXECUTE
+  source = USER | SIMON   # somente quando role=COLLECT
+  verification
+open_questions[]
+```
+
+O modelo não escolhe `kind`, `capability`, `depends_on`, `preconditions`, Tool ou comando. Também não recebe o catálogo de capabilities para tentar adaptar a estratégia ao que o runtime consegue executar. Trabalho necessário deve continuar aparecendo mesmo quando a capability correspondente ainda estiver indisponível.
+
+O Core compila deterministicamente a intenção tipada:
+
+```text
+COLLECT + source USER  -> actor USER  -> EPISTEMIC + user.ask
+COLLECT + source SIMON -> actor SIMON -> EPISTEMIC + unknown
+ANALYZE                 -> actor SIMON -> EPISTEMIC + cognition.analyze
+EXECUTE                 -> actor SIMON -> WORLD     + process.run
+CHANGE                  -> actor SIMON -> WORLD     + unknown
+```
+
+No Planner v0.1, `USER` não é um executor genérico de trabalho substantivo. O usuário participa de novas PlanProposals somente como fonte de informação ou evidência já existente através de `COLLECT`. `ANALYZE`, `CHANGE` e `EXECUTE` permanecem responsabilidade do SIMON mesmo quando a capability correspondente ainda está indisponível. `user.perform` continua existindo no catálogo e em Plans históricos, mas não é emitido pelo compilador de novas intenções nesta fase.
+
+Quando a compilação produz `unknown`, `capability_detail` é derivada do próprio `subject`. A ausência operacional fica explícita e será tratada pelo readiness como `CAPABILITY_UNAVAILABLE`; ela não torna o Plan semanticamente inválido.
+
+IDs são produzidos pelo Core como `step_01`, `step_02`, ... e a política serial do v0.1 também é aplicada por construção: todo passo após o primeiro depende do passo imediatamente anterior. Novas propostas compiladas recebem `preconditions=[]`. Preconditions livres deixam de fazer parte da saída cognitiva até existir uma necessidade real e um mecanismo verificável para resolvê-las.
+
+Cada passo compilado preserva `intent_role` e `intent_actor` como proveniência tipada. `PlanProposal` continua validando invariantes de campos, grafo, cadeia serial, compatibilidade de capability/kind e proveniência compilada, mas sua `description` deixa de ser tratada como protocolo. O Core não interpreta mais expressões como `script corrigido` por regex para decidir validade operacional.
+
+As guards textuais introduzidas durante os experimentos anteriores permanecem apenas como histórico de desenvolvimento e deixam de participar do caminho de geração de novas PlanProposals. O reparo semântico específico do Planner também deixa de ser necessário nessa fronteira: structured output pode continuar usando o reparo genérico do ModelProvider para JSON ou contrato inválido, mas a estratégia válida é compilada uma única vez pelo Core.
+
+Essa separação estabelece duas responsabilidades:
+
+```text
+modelo -> decide o que precisa acontecer e, em COLLECT, de onde vem a evidência
+Core   -> atribui a responsabilidade operacional e compila a intenção no v0.1
+```
+
+Plan válido não significa Plan executável. Um Plan pode conter `cognition.analyze`, `process.run` ou `unknown` indisponíveis e ainda ser uma representação correta da estratégia. O bloqueio operacional pertence a `plan-next`, não ao Planner. Nenhuma migration é necessária; o SQLite permanece no schema 10.
+
+
+### 32.21. Texto humano não escolhe a operação
+
+O primeiro teste real do Planner de intenção mostrou uma ambiguidade residual: o modelo marcou um passo como `COLLECT/USER`, mas escreveu no texto algo equivalente a “solicitar ao usuário que execute o script”. O compilador tipado classificou corretamente `COLLECT/USER` como `user.ask`, porém a `description` ainda reutilizava literalmente o texto produzido pelo modelo. Isso permitia que linguagem humana e campos operacionais se contradissessem.
+
+A fronteira é refinada sem reintroduzir regex ou guards semânticas. `PlanIntentStep` passa a usar `subject` como objeto neutro da intenção, e não `purpose` como instrução executável. O modelo informa:
+
+```text
+subject
+role
+source   # somente para COLLECT
+verification
+```
+
+O `subject` nomeia a informação, material, mudança ou execução em questão. A `description` operacional é gerada deterministicamente pelo Core a partir de `role + source + subject`, com actor efetivo definido pelo compilador. Exemplos:
+
+```text
+COLLECT + source USER
+subject = logs da última execução já realizada
+-> actor efetivo USER
+-> Obter do usuário informação ou evidência já existente sobre: logs da última execução já realizada
+-> user.ask
+
+EXECUTE
+subject = o script para produzir uma nova saída observável
+-> actor efetivo SIMON
+-> Executar: o script para produzir uma nova saída observável
+-> process.run
+
+ANALYZE
+subject = código atual e erro observado
+-> actor efetivo SIMON
+-> Analisar: código atual e erro observado
+-> cognition.analyze
+```
+
+Assim, linguagem livre deixa de poder alterar silenciosamente a natureza operacional do passo. Se o modelo classificar incorretamente uma necessidade de nova execução como `COLLECT`, o sistema continuará tratando aquele passo apenas como coleta de evidência já existente; ele não converterá a frase em execução. Para `ANALYZE`, `CHANGE` e `EXECUTE`, o modelo também não escolhe mais um executor humano: o Core atribui esses trabalhos ao SIMON. A eventual ausência dessa evidência será tratada pelo ciclo normal de Action, Verification e replanejamento.
+
+O contexto de continuidade também passa a expor uma projeção determinística `verified_user_responses`, extraída somente de Events `user.response.received` que já sustentam o Goal Assessment. Essa projeção não resume nem interpreta as respostas: apenas torna visíveis `event_id`, `step_id` e `response` para reduzir repetição de coleta já concluída. O Planner é instruído a não criar `COLLECT/USER` para dados já presentes nessa projeção.
+
+Nenhum novo objeto persistente é criado e nenhuma migration é necessária. SQLite permanece no schema 10.
+
+
+### 32.22. Responsabilidade substantiva permanece com o SIMON
+
+O primeiro Plan estável produzido após a introdução de `subject` revelou uma última ambiguidade do campo `actor`: o modelo planejou análise e execução pelo SIMON, mas atribuiu a correção do código ao usuário. A estratégia era tipada e causalmente coerente, porém terceirizava ao usuário justamente o trabalho substantivo delegado ao sistema.
+
+No v0.1, essa decisão deixa de pertencer ao modelo. `PlanIntentStep` passa a usar `source` somente em passos `COLLECT`. A source informa de onde uma evidência já existente deve ser obtida. Os demais roles possuem responsabilidade fixa:
+
+```text
+ANALYZE -> SIMON
+CHANGE  -> SIMON
+EXECUTE -> SIMON
+```
+
+Isso não significa que o SIMON já consiga executar essas operações. Quando a capability estiver ausente, o Plan continua válido e o readiness deve expor `CAPABILITY_UNAVAILABLE`. Em particular, `CHANGE` compila para `unknown` até existir uma capability concreta de modificação. A ausência deixa de ser escondida através de `user.perform`.
+
+`user.perform` não é removido do catálogo, pois Plans históricos e uma futura necessidade real de ação humana ainda podem justificá-lo. Ele apenas deixa de ser produzido automaticamente pelo Planner v0.1. Essa restrição pode ser revisada quando aparecer um caso concreto em que uma ação humana externa seja parte essencial do Goal e não simples terceirização de trabalho que pertence ao SIMON.

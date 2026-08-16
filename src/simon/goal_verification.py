@@ -106,6 +106,17 @@ class GoalAssessmentContext:
                 }
                 for event in self.evidence_events
             ],
+            "verified_user_responses": [
+                {
+                    "event_id": event.id,
+                    "step_id": event.payload.get("step_id"),
+                    "response": event.payload.get("response"),
+                }
+                for event in self.evidence_events
+                if event.kind == "user.response.received"
+                and event.source == "user"
+                and isinstance(event.payload.get("response"), str)
+            ],
         }
 
 

@@ -5,6 +5,7 @@ from typing import Literal
 
 CapabilityId = Literal[
     "user.ask",
+    "user.perform",
     "file.read",
     "process.run",
     "logs.read",
@@ -27,6 +28,15 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
             "Solicitar ao usuário uma informação, confirmação ou dado ausente e aguardar resposta."
         ),
         available=True,
+    ),
+    CapabilitySpec(
+        id="user.perform",
+        description=(
+            "Solicitar explicitamente ao usuário que realize uma ação externa, como executar, "
+            "modificar, instalar ou testar algo, e depois reporte o resultado. Não use user.ask "
+            "para delegar esse tipo de ação."
+        ),
+        available=False,
     ),
     CapabilitySpec(
         id="file.read",

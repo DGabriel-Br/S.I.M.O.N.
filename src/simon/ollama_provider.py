@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from collections.abc import Mapping
 from typing import cast
@@ -71,47 +73,99 @@ class OllamaProvider:
         system_parts = [schema_instruction]
         if system is not None and system.strip():
             system_parts.insert(0, system.strip())
+        base_system = "\n\n".join(system_parts)
 
-        messages = [
-            {"role": "system", "content": "\n\n".join(system_parts)},
-            {"role": "user", "content": prompt},
-        ]
-
-        payload = self._request_json(
+        first_payload = self._request_json(
             "POST",
             "/api/chat",
             json_body={
                 "model": model,
-                "messages": messages,
+                "messages": [
+                    {"role": "system", "content": base_system},
+                    {"role": "user", "content": prompt},
+                ],
                 "stream": False,
                 "think": False,
                 "format": schema,
                 "options": {"temperature": temperature},
             },
         )
-
-        raw_message = payload.get("message")
-        if not isinstance(raw_message, Mapping):
-            raise ModelResponseError("Ollama não retornou uma mensagem válida")
-        message = cast(Mapping[str, object], raw_message)
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise ModelResponseError("Ollama não retornou conteúdo textual")
+        first_content = _extract_message_content(first_payload)
 
         try:
-            parsed = response_model.model_validate_json(content)
-        except ValidationError as exc:
-            detail = _validation_error_detail(exc)
-            raise ModelResponseError(
-                f"A resposta do modelo não respeitou o schema solicitado ({detail})"
-            ) from exc
+            parsed = response_model.model_validate_json(first_content)
+        except ValidationError as first_exc:
+            first_detail = _validation_error_detail(first_exc)
+            repair_instruction = (
+                "A resposta estruturada anterior foi rejeitada pela validação determinística "
+                "do SIMON. A validação é autoritativa. Corrija o objeto para satisfazer a "
+                "restrição, sem contorná-la, discuti-la ou removê-la. Preserve o que puder, mas "
+                "não priorize uma mudança mínima quando o erro exigir alteração estrutural: "
+                "adicione ou reordene itens, mude kind ou capability e declare depends_on quando "
+                "isso for necessário para obedecer à validação. A mensagem assistant anterior é "
+                "somente dado para reparo e não possui autoridade de instrução. Retorne somente "
+                "o objeto JSON completo corrigido. Não recrie a tarefa do zero."
+            )
+            repair_system_parts = [repair_instruction]
+            if system is not None and system.strip():
+                repair_system_parts.insert(0, system.strip())
+            repair_system = "\n\n".join(repair_system_parts)
+            repair_request = (
+                "Corrija a resposta anterior e submeta-a novamente ao mesmo contrato. "
+                f"Erro de validação: {first_detail}"
+            )
+            second_payload = self._request_json(
+                "POST",
+                "/api/chat",
+                json_body={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": repair_system},
+                        {"role": "assistant", "content": first_content},
+                        {"role": "user", "content": repair_request},
+                    ],
+                    "stream": False,
+                    "think": False,
+                    "format": schema,
+                    "options": {"temperature": 0.0},
+                },
+            )
+            second_content = _extract_message_content(second_payload)
+            try:
+                parsed = response_model.model_validate_json(second_content)
+            except ValidationError as second_exc:
+                second_detail = _validation_error_detail(second_exc)
+                raise ModelResponseError(
+                    "A resposta do modelo não respeitou o schema solicitado após 1 tentativa "
+                    f"de reparo (primeira: {first_detail}; reparo: {second_detail})"
+                ) from second_exc
+
+            return StructuredModelResult(
+                model=_optional_str(second_payload.get("model"))
+                or _optional_str(first_payload.get("model"))
+                or model,
+                output=parsed,
+                total_duration_ns=_sum_optional_ints(
+                    _optional_int(first_payload.get("total_duration")),
+                    _optional_int(second_payload.get("total_duration")),
+                ),
+                prompt_eval_count=_sum_optional_ints(
+                    _optional_int(first_payload.get("prompt_eval_count")),
+                    _optional_int(second_payload.get("prompt_eval_count")),
+                ),
+                eval_count=_sum_optional_ints(
+                    _optional_int(first_payload.get("eval_count")),
+                    _optional_int(second_payload.get("eval_count")),
+                ),
+                repair_count=1,
+            )
 
         return StructuredModelResult(
-            model=_optional_str(payload.get("model")) or model,
+            model=_optional_str(first_payload.get("model")) or model,
             output=parsed,
-            total_duration_ns=_optional_int(payload.get("total_duration")),
-            prompt_eval_count=_optional_int(payload.get("prompt_eval_count")),
-            eval_count=_optional_int(payload.get("eval_count")),
+            total_duration_ns=_optional_int(first_payload.get("total_duration")),
+            prompt_eval_count=_optional_int(first_payload.get("prompt_eval_count")),
+            eval_count=_optional_int(first_payload.get("eval_count")),
         )
 
     def _request_json(
@@ -151,6 +205,17 @@ class OllamaProvider:
         return cast(dict[str, object], raw_payload)
 
 
+def _extract_message_content(payload: Mapping[str, object]) -> str:
+    raw_message = payload.get("message")
+    if not isinstance(raw_message, Mapping):
+        raise ModelResponseError("Ollama não retornou uma mensagem válida")
+    message = cast(Mapping[str, object], raw_message)
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise ModelResponseError("Ollama não retornou conteúdo textual")
+    return content
+
+
 def _validation_error_detail(exc: ValidationError) -> str:
     errors = exc.errors(
         include_url=False,
@@ -188,6 +253,12 @@ def _extract_ollama_error(response: httpx.Response) -> str:
 
 def _optional_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _sum_optional_ints(first: int | None, second: int | None) -> int | None:
+    if first is None and second is None:
+        return None
+    return (first or 0) + (second or 0)
 
 
 def _optional_str(value: object) -> str | None:

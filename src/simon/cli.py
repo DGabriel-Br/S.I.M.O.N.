@@ -759,6 +759,7 @@ def _plan_propose(
             "prompt_eval_count": result.prompt_eval_count,
             "eval_count": result.eval_count,
             "total_duration_ns": result.total_duration_ns,
+            "repair_count": result.repair_count,
         },
         trace_id=trace_id,
         goal_id=goal.id,
@@ -782,6 +783,8 @@ def _plan_propose(
     print("Passos:")
     for step in result.output.steps:
         print(f"- {step.id} [{step.kind}] {step.description}")
+        if step.intent_role is not None and step.intent_actor is not None:
+            print(f"  Intent: {step.intent_role} / {step.intent_actor}")
         print(f"  Capability: {step.capability}")
         if step.capability_detail is not None:
             print(f"  Detalhe da capability: {step.capability_detail}")
@@ -1087,6 +1090,8 @@ def _print_context_summary(context: CognitiveContext) -> None:
 def _print_model_metrics[OutputT: BaseModel](
     result: StructuredModelResult[OutputT],
 ) -> None:
+    if result.repair_count:
+        print(f"Reparos estruturados: {result.repair_count}")
     if result.prompt_eval_count is not None:
         print(f"Tokens de entrada: {result.prompt_eval_count}")
     if result.eval_count is not None:

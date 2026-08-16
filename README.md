@@ -140,9 +140,9 @@ Um Goal já autorizado pode ser enviado ao primeiro Planner cognitivo:
 uv run simon plan-propose --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
 ```
 
-O Planner recebe o Goal persistente, as questões em aberto ainda relevantes, um recorte determinístico do contexto e, quando já existe um Plan concluído avaliado no nível do Goal, o assessment persistido dessa tentativa. A saída contém uma estratégia curta com passos `EPISTEMIC` ou `WORLD`, dependências, precondições, capability abstrata e forma de verificação.
+O Planner recebe o Goal persistente, as questões em aberto ainda relevantes, um recorte determinístico do contexto e, quando já existe um Plan concluído avaliado no nível do Goal, o assessment persistido dessa tentativa. O modelo produz apenas uma intenção estratégica tipada com `subject`, `role`, `source` e `verification`.
 
-Quando falta informação, o Planner deve preferir trabalho epistêmico para obtê-la em vez de inventar arquivos, erros ou caminhos. Quando existe um `Goal Assessment`, o Planner recebe também o veredito por critério, a evidência ausente e os Events que sustentaram a tentativa anterior. O novo Plan deve avançar a partir desse estado, sem repetir coleta já comprovada. A proposta é registrada como `cognition.plan_proposal.completed` e não executa nenhuma Action.
+O Core compila essa intenção em `PlanProposal`: define `kind`, capability, actor efetivo, IDs, cadeia serial de `depends_on` e `preconditions=[]`. `source` só existe em `COLLECT`; `ANALYZE`, `CHANGE` e `EXECUTE` pertencem ao SIMON no Planner v0.1. A descrição operacional também é gerada pelo Core, portanto texto livre do modelo não decide silenciosamente a operação. Quando existe um `Goal Assessment`, o Planner recebe o veredito por critério, a evidência ausente e uma projeção das respostas do usuário já verificadas, para avançar sem repetir coleta comprovada. A proposta é registrada como `cognition.plan_proposal.completed` e não executa nenhuma Action.
 
 Uma proposta validada pode ser materializada sem nova chamada ao modelo:
 
@@ -162,11 +162,11 @@ uv run simon plan-next gol_ID_DO_GOAL
 
 A seleção é determinística. Um step somente pode aparecer como `READY` quando o Goal está `ACTIVE`, todas as dependências possuem Action concluída com Verification `VERIFIED`, não existe tentativa em andamento, as preconditions estão resolvidas e a capability requerida está disponível.
 
-O corte atual possui um catálogo mínimo de IDs estáveis de capability. O Planner escolhe entre `user.ask`, `file.read`, `process.run`, `logs.read`, `cognition.analyze` e `unknown`, em vez de inventar descrições livres impossíveis de resolver deterministicamente. Apenas `user.ask` está disponível no runtime neste estágio.
+O corte atual possui um catálogo mínimo de IDs estáveis de capability. O modelo não escolhe esses IDs diretamente. `COLLECT` usa `source` para distinguir evidência fornecida pelo usuário de coleta que o próprio sistema precisará realizar; `ANALYZE`, `CHANGE` e `EXECUTE` são atribuídos ao SIMON e compilam para `cognition.analyze`, `unknown` ou `process.run`. Apenas `user.ask` está disponível no runtime neste estágio; as demais necessidades aparecem honestamente como `CAPABILITY_UNAVAILABLE`. `user.perform` permanece no catálogo para histórico e uma futura necessidade explícita, mas não é emitido por novas PlanProposals do Planner v0.1.
 
-`user.ask` representa solicitar ao usuário uma informação ou confirmação ausente. Preconditions textuais desse tipo de step não bloqueiam a tentativa, porque perguntar ao usuário é justamente o mecanismo para descobrir se a informação pode ser fornecida. As demais preconditions continuam `PRECONDITION_UNRESOLVED` até existir evidência real que as resolva.
+Novas PlanProposals compiladas recebem `preconditions=[]`. Preconditions textuais permanecem suportadas apenas para Plans históricos e, quando existem, são tratadas conservadoramente como `PRECONDITION_UNRESOLVED` até surgir um mecanismo verificável para resolvê-las.
 
-Plans antigos com capability em texto livre continuam legíveis, mas permanecem `CAPABILITY_UNAVAILABLE`; não há fuzzy matching nem migração silenciosa. Uma nova proposta deve usar os IDs estáveis do catálogo. Uma Action `COMPLETED` sem Verification também não libera dependências, e tentativas anteriores com falha, bloqueio, negação, interrupção ou cancelamento exigem revisão antes de retry.
+Plans antigos com capability em texto livre continuam legíveis, mas permanecem `CAPABILITY_UNAVAILABLE`; não há fuzzy matching nem migração silenciosa. Uma Action `COMPLETED` sem Verification também não libera dependências, e tentativas anteriores com falha, bloqueio, negação, interrupção ou cancelamento exigem revisão antes de retry.
 
 A avaliação registra `plan.readiness.evaluated`, incluindo o conjunto de capabilities disponível naquela avaliação, e não cria Action por conta própria.
 
@@ -273,6 +273,13 @@ Quando um Goal continua `ACTIVE` após um assessment `NOT_SATISFIED` ou `INSUFFI
 Questões de intake antigas deixam de ser carregadas automaticamente nessa continuação. A evidência observada e o assessment mais recente passam a representar o estado epistemológico atual, evitando que uma nova revisão repita perguntas já respondidas apenas porque elas existiam no `goal.proposal.accepted`.
 
 O Event `cognition.plan_proposal.completed` registra `source_goal_assessment_id` e `source_completed_plan_id`, preservando a proveniência da nova estratégia. Se o assessment mais recente estiver `SATISFIED`, `plan-propose` não gera outra estratégia; esse caso pertence ao futuro gate de promoção epistemológica do Goal.
+
+
+## Planner de intenção e compilação operacional
+
+O modelo não gera mais campos operacionais diretamente. Ele escolhe o `role` estratégico e, somente em `COLLECT`, a `source` da evidência. O Core atribui `ANALYZE`, `CHANGE` e `EXECUTE` ao SIMON no v0.1 e compila a intenção para as capabilities do runtime. Trabalho necessário pode resultar em `CAPABILITY_UNAVAILABLE` e ainda assim formar um Plan válido; executabilidade é avaliada depois pelo readiness.
+
+A linguagem natural permanece descritiva. `COLLECT` com `source=USER` compila para coleta de evidência já existente via `user.ask`; uma nova execução compila para `process.run` e uma mudança ainda sem executor concreto compila para `unknown`. O Core não usa regex sobre a descrição para decidir a operação.
 
 ## Próximo passo
 

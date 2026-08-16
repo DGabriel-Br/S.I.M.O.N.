@@ -430,7 +430,7 @@ def test_plan_propose_records_strategy_without_persisting_plan(
 ) -> None:
     from simon.events import Event, append_event
     from simon.model_provider import StructuredModelResult
-    from simon.planning import PlanProposal, PlanStepProposal
+    from simon.planning import PlanIntentDraft, PlanIntentStep
 
     database_path, _ = initialize_storage(tmp_path)
     goal = Goal.create(
@@ -457,18 +457,17 @@ def test_plan_propose_records_strategy_without_persisting_plan(
         def __init__(self, **kwargs: object) -> None:
             pass
 
-        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanProposal]:
-            assert kwargs["response_model"] is PlanProposal
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanIntentDraft]:
+            assert kwargs["response_model"] is PlanIntentDraft
             return StructuredModelResult(
                 model="fake-model",
-                output=PlanProposal(
+                output=PlanIntentDraft(
                     summary="Coletar evidência antes da correção.",
                     steps=[
-                        PlanStepProposal(
-                            id="step_1",
-                            description="Identificar o script e a falha observada.",
-                            kind="EPISTEMIC",
-                            capability="user.ask",
+                        PlanIntentStep(
+                            subject="Identificar o script e a falha observada.",
+                            role="COLLECT",
+                            source="USER",
                             verification="Script e erro foram identificados.",
                         )
                     ],
@@ -494,7 +493,8 @@ def test_plan_propose_records_strategy_without_persisting_plan(
 
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert f"Goal: {goal.id}" in output
-    assert "step_1 [EPISTEMIC]" in output
+    assert "step_01 [EPISTEMIC]" in output
+    assert "Intent: COLLECT / USER" in output
     assert "ID da proposta: evt_" in output
     assert "Plan persistido: não" in output
 
@@ -1159,7 +1159,7 @@ def test_plan_propose_uses_goal_assessment_instead_of_stale_intake_questions(
 ) -> None:
     from simon.events import Event, append_event
     from simon.model_provider import StructuredModelResult
-    from simon.planning import PlanProposal, PlanStepProposal
+    from simon.planning import PlanIntentDraft, PlanIntentStep
     from simon.verification import create_verification_result
 
     database_path, _ = initialize_storage(tmp_path)
@@ -1219,7 +1219,7 @@ def test_plan_propose_uses_goal_assessment_instead_of_stale_intake_questions(
         def __init__(self, **kwargs: object) -> None:
             pass
 
-        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanProposal]:
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanIntentDraft]:
             prompt = kwargs.get("prompt")
             assert isinstance(prompt, str)
             assert assessment.id in prompt
@@ -1227,14 +1227,12 @@ def test_plan_propose_uses_goal_assessment_instead_of_stale_intake_questions(
             assert "NameError: resultado is not defined" in prompt
             return StructuredModelResult(
                 model="fake-model",
-                output=PlanProposal(
+                output=PlanIntentDraft(
                     summary="Investigar e corrigir antes de reexecutar.",
                     steps=[
-                        PlanStepProposal(
-                            id="step_01",
-                            description="Analisar a falha já observada.",
-                            kind="EPISTEMIC",
-                            capability="cognition.analyze",
+                        PlanIntentStep(
+                            subject="Analisar a falha já observada.",
+                            role="ANALYZE",
                             verification="Existe uma hipótese causal sustentada pela evidência.",
                         )
                     ],

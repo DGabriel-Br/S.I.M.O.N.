@@ -256,9 +256,7 @@ def test_non_active_goal_blocks_execution_even_with_active_plan(tmp_path: Path) 
     assert result.steps[0].blockers[0].kind == "GOAL_NOT_ACTIVE"
 
 
-def test_user_ask_is_available_by_default_and_can_resolve_its_own_preconditions(
-    tmp_path: Path,
-) -> None:
+def test_user_ask_with_persisted_preconditions_remains_blocked(tmp_path: Path) -> None:
     database_path, _ = initialize_storage(tmp_path)
     goal = _goal(database_path)
     create_plan(
@@ -269,10 +267,7 @@ def test_user_ask_is_available_by_default_and_can_resolve_its_own_preconditions(
                 "id": "step_01",
                 "description": "Solicitar ao usuário o script e a falha observada.",
                 "capability": "user.ask",
-                "preconditions": [
-                    "O usuário pode fornecer o conteúdo do script.",
-                    "O usuário conhece a mensagem de erro.",
-                ],
+                "preconditions": ["Um contexto anterior precisa estar disponível."],
             },
         ),
     )
@@ -280,7 +275,29 @@ def test_user_ask_is_available_by_default_and_can_resolve_its_own_preconditions(
     result = evaluate_active_plan(database_path, goal_id=goal.id)
 
     assert result.available_capabilities == ("user.ask",)
+    assert result.next_step is None
+    assert result.steps[0].state == "BLOCKED"
+    assert result.steps[0].blockers[0].kind == "PRECONDITION_UNRESOLVED"
+
+
+def test_user_ask_without_preconditions_is_ready_by_default(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Solicitar ao usuário o script.",
+                "capability": "user.ask",
+                "preconditions": [],
+            },
+        ),
+    )
+
+    result = evaluate_active_plan(database_path, goal_id=goal.id)
+
     assert result.next_step is not None
     assert result.next_step.step_id == "step_01"
     assert result.next_step.state == "READY"
-    assert result.next_step.blockers == ()

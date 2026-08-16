@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -23,6 +25,7 @@ class StructuredModelResult[OutputT: BaseModel]:
     total_duration_ns: int | None = None
     prompt_eval_count: int | None = None
     eval_count: int | None = None
+    repair_count: int = 0
 
 
 class ModelProvider(Protocol):

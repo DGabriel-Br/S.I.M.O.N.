@@ -153,14 +153,13 @@ def evaluate_active_plan(
                 )
             )
 
-        if capability != "user.ask":
-            for precondition in _preconditions(raw_step):
-                blockers.append(
-                    StepBlocker(
-                        kind="PRECONDITION_UNRESOLVED",
-                        detail=precondition,
-                    )
+        for precondition in _preconditions(raw_step):
+            blockers.append(
+                StepBlocker(
+                    kind="PRECONDITION_UNRESOLVED",
+                    detail=precondition,
                 )
+            )
 
         if capability is None:
             blockers.append(
