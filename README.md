@@ -18,10 +18,13 @@ O projeto já consegue:
 - persistir Events imutáveis;
 - persistir Entities com identidade estável e aliases;
 - manter uma Entity canônica para o próprio SIMON;
-- relacionar `system.started` à Entity do SIMON;
-- reconstruir Events e Entities em uma nova conexão com o banco.
+- persistir Claims com estado epistemológico e evidência de origem;
+- manter Claims contraditórias sem sobrescrevê-las silenciosamente;
+- substituir explicitamente Claims de estado atual preservando o histórico;
+- materializar o schema atual do próprio SIMON como uma Claim observada;
+- reconstruir Events, Entities e Claims em novas conexões com o banco.
 
-Ainda não existem Claims, World State, Goals, Cognition, modelos, Memory ou Lab executáveis.
+Ainda não existem Goals, Plans, Actions, Cognition, modelos, Memory ou Lab executáveis.
 
 ## Preparação
 
@@ -59,4 +62,4 @@ uv run mypy src
 
 ## Próximo passo
 
-Introduzir `Claim`, a primeira representação persistente de algo que o SIMON acredita sobre uma Entity, mantendo evidência e estado epistemológico separados do Event Log.
+Introduzir `Goal`, a primeira representação persistente de um estado desejado que o SIMON está autorizado a perseguir.

@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from simon import __version__
+from simon.claims import set_current_claim
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.storage import initialize_storage
@@ -35,14 +36,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         aliases=("S.I.M.O.N.",),
     )
 
-    append_event(
+    startup_event = Event.create(
+        kind="system.started",
+        source="system",
+        payload={"version": __version__, "schema_version": schema_version},
+        related_entity_ids=(simon_entity.id,),
+    )
+    append_event(database_path, startup_event)
+
+    set_current_claim(
         database_path,
-        Event.create(
-            kind="system.started",
-            source="system",
-            payload={"version": __version__, "schema_version": schema_version},
-            related_entity_ids=(simon_entity.id,),
-        ),
+        subject_id=simon_entity.id,
+        predicate="storage.schema_version",
+        value=schema_version,
+        epistemic_status="DIRECT_OBSERVATION",
+        evidence_event_ids=(startup_event.id,),
+        valid_from=startup_event.occurred_at,
     )
 
     print(f"S.I.M.O.N. {__version__}")
