@@ -4457,3 +4457,55 @@ cognition.interpretation.completed
 O Event de contexto registra apenas IDs selecionados. O payload completo usado no prompt não é duplicado na telemetria.
 
 Não é criado um objeto persistente `CognitiveContext` ou `CognitiveJob`. A projeção existe apenas durante a chamada cognitiva.
+
+
+### 32.6. Goal Proposal
+
+Depois que uma entrada é interpretada como `REQUEST`, Cognition pode formular uma proposta estruturada de Goal. Essa proposta ainda não é um objeto `Goal` persistente e não possui autoridade para alterar o estado operacional do sistema.
+
+A fronteira inicial é:
+
+```text
+REQUEST interpretada
+      ↓
+propose_goal
+      ↓
+GoalProposal
+      ↓
+nenhuma persistência de Goal
+```
+
+A saída mínima contém:
+
+```text
+title
+desired_state
+success_criteria
+open_questions
+```
+
+`desired_state` descreve o estado que deve ser verdadeiro ao final. Ele não deve conter um roteiro de execução. `success_criteria` contém resultados observáveis ou verificáveis que permitirão decidir posteriormente se o Goal foi atingido.
+
+A proposta não inclui `origin`, porque uma proposta derivada diretamente de uma solicitação do usuário terá origem determinada pelo sistema caso seja aceita. Também não inclui Plan, Tool, Action ou permissões. Esses elementos pertencem a etapas posteriores.
+
+Informações ausentes não devem ser inventadas. Quando uma lacuna realmente impede a formulação precisa do Goal, ela é preservada em `open_questions`.
+
+A capability é exposta inicialmente por:
+
+```text
+simon goal-propose --model <modelo> "<solicitação>"
+```
+
+O comando executa interpretação e formulação sob o mesmo `trace_id`. Quando a intenção não é `REQUEST`, nenhuma proposta é produzida. Quando uma proposta é produzida, ela gera:
+
+```text
+cognition.goal_proposal.completed
+```
+
+Falhas da segunda chamada cognitiva geram:
+
+```text
+cognition.goal_proposal.failed
+```
+
+O resultado cognitivo pode ser auditado nos Events, mas a tabela `goals` permanece inalterada. Persistir a proposta exigirá um gate explícito separado.

@@ -288,3 +288,88 @@ def test_interpret_records_context_selection_before_model_result(
     assert len(payload["claim_ids"]) == 1
     assert input_trace is not None
     assert row[1] == input_trace[0]
+
+
+def test_goal_propose_records_proposal_without_persisting_goal(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.cognition import GoalProposal, UserInputInterpretation
+    from simon.model_provider import StructuredModelResult
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[object]:
+            response_model = kwargs["response_model"]
+            if response_model is UserInputInterpretation:
+                return StructuredModelResult(
+                    model="fake-model",
+                    output=UserInputInterpretation(
+                        intent="REQUEST",
+                        objective="corrigir a falha do script",
+                        entity_mentions=[],
+                        ambiguities=[],
+                    ),
+                )
+            if response_model is GoalProposal:
+                return StructuredModelResult(
+                    model="fake-model",
+                    output=GoalProposal(
+                        title="Corrigir falha do script",
+                        desired_state="O script executa sem a falha relatada.",
+                        success_criteria=["A falha original não é reproduzida."],
+                        open_questions=[],
+                    ),
+                    prompt_eval_count=20,
+                    eval_count=12,
+                    total_duration_ns=1_500_000_000,
+                )
+            raise AssertionError("response_model inesperado")
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "goal-propose",
+            "--model",
+            "fake-model",
+            "Veja por que esse script está falhando e corrija",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Intenção: REQUEST" in output
+    assert "Título: Corrigir falha do script" in output
+    assert "Goal persistido: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        goal_count = connection.execute("SELECT COUNT(*) FROM goals").fetchone()
+        rows = connection.execute(
+            """
+            SELECT kind, payload_json, trace_id
+            FROM events
+            WHERE kind IN (
+                'user.input.received',
+                'cognition.context.built',
+                'cognition.interpretation.completed',
+                'cognition.goal_proposal.completed'
+            )
+            ORDER BY occurred_at
+            """
+        ).fetchall()
+
+    assert goal_count == (0,)
+    assert [row[0] for row in rows] == [
+        "user.input.received",
+        "cognition.context.built",
+        "cognition.interpretation.completed",
+        "cognition.goal_proposal.completed",
+    ]
+    proposal_payload = json.loads(str(rows[-1][1]))
+    assert proposal_payload["proposal"]["title"] == "Corrigir falha do script"
+    assert len({str(row[2]) for row in rows}) == 1

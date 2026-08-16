@@ -9,12 +9,16 @@ from pydantic import BaseModel, ConfigDict
 from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.claims import set_current_claim
-from simon.cognition import interpret_user_input
-from simon.context import build_cognitive_context
+from simon.cognition import (
+    UserInputInterpretation,
+    interpret_user_input,
+    propose_goal,
+)
+from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
-from simon.model_provider import ModelProviderError
+from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
 from simon.storage import initialize_storage
 
@@ -61,6 +65,18 @@ def build_parser() -> argparse.ArgumentParser:
     interpret.add_argument("--model", required=True, help="nome do modelo já instalado no Ollama")
     interpret.add_argument("text", nargs="+", help="texto que será interpretado")
     _add_ollama_arguments(interpret)
+
+    goal_propose = commands.add_parser(
+        "goal-propose",
+        help="formula uma proposta de Goal a partir de uma solicitação sem persistir o Goal",
+    )
+    goal_propose.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    goal_propose.add_argument("text", nargs="+", help="solicitação usada para formular o Goal")
+    _add_ollama_arguments(goal_propose)
 
     return parser
 
@@ -123,6 +139,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.model,
             " ".join(args.text),
         )
+    if args.command == "goal-propose":
+        return _goal_propose(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            " ".join(args.text),
+        )
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -176,23 +200,24 @@ def _model_test(base_url: str, timeout_seconds: float, model: str) -> int:
     return 0
 
 
-def _interpret(
+def _run_interpretation(
     database_path: Path,
-    base_url: str,
-    timeout_seconds: float,
+    provider: ModelProvider,
+    *,
     model: str,
     text: str,
-) -> int:
-    trace_id = f"trc_{uuid4().hex}"
-    input_event = Event.create(
-        kind="user.input.received",
-        source="user",
-        payload={"text": text},
-        trace_id=trace_id,
+    trace_id: str,
+) -> tuple[CognitiveContext, StructuredModelResult[UserInputInterpretation]]:
+    append_event(
+        database_path,
+        Event.create(
+            kind="user.input.received",
+            source="user",
+            payload={"text": text},
+            trace_id=trace_id,
+        ),
     )
-    append_event(database_path, input_event)
 
-    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
     try:
         context = build_cognitive_context(database_path, text=text)
         append_event(
@@ -225,8 +250,7 @@ def _interpret(
                 trace_id=trace_id,
             ),
         )
-        print(f"Interpretação: falha ({exc})")
-        return 1
+        raise
 
     append_event(
         database_path,
@@ -243,15 +267,32 @@ def _interpret(
             trace_id=trace_id,
         ),
     )
+    return context, result
+
+
+def _interpret(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    text: str,
+) -> int:
+    trace_id = f"trc_{uuid4().hex}"
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        context, result = _run_interpretation(
+            database_path,
+            provider,
+            model=model,
+            text=text,
+            trace_id=trace_id,
+        )
+    except (ModelProviderError, ValueError) as exc:
+        print(f"Interpretação: falha ({exc})")
+        return 1
 
     print(f"Modelo: {result.model}")
-    print(
-        "Contexto: "
-        f"{len(context.goals)} goal(s), "
-        f"{len(context.entities)} entity(s), "
-        f"{len(context.claims)} claim(s), "
-        f"{len(context.memories)} memory(s)"
-    )
+    _print_context_summary(context)
     print(f"Intenção: {result.output.intent}")
     print(f"Objetivo: {result.output.objective or 'nenhum explícito'}")
 
@@ -269,10 +310,114 @@ def _interpret(
     else:
         print("Ambiguidades: nenhuma")
 
+    _print_model_metrics(result)
+    return 0
+
+
+def _goal_propose(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    text: str,
+) -> int:
+    trace_id = f"trc_{uuid4().hex}"
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+
+    try:
+        context, interpretation_result = _run_interpretation(
+            database_path,
+            provider,
+            model=model,
+            text=text,
+            trace_id=trace_id,
+        )
+    except (ModelProviderError, ValueError) as exc:
+        print(f"Interpretação: falha ({exc})")
+        return 1
+
+    interpretation = interpretation_result.output
+    print(f"Modelo: {interpretation_result.model}")
+    _print_context_summary(context)
+    print(f"Intenção: {interpretation.intent}")
+
+    if interpretation.intent != "REQUEST":
+        print("Proposta de Goal: não gerada (a intenção não é REQUEST)")
+        return 0
+
+    try:
+        proposal_result = propose_goal(
+            provider,
+            model=model,
+            text=text,
+            interpretation=interpretation,
+            context=context,
+        )
+    except (ModelProviderError, ValueError) as exc:
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.goal_proposal.failed",
+                source="cognition",
+                payload={"model": model, "error": str(exc)},
+                trace_id=trace_id,
+            ),
+        )
+        print(f"Proposta de Goal: falha ({exc})")
+        return 1
+
+    append_event(
+        database_path,
+        Event.create(
+            kind="cognition.goal_proposal.completed",
+            source="cognition",
+            payload={
+                "model": proposal_result.model,
+                "proposal": proposal_result.output.model_dump(mode="json"),
+                "prompt_eval_count": proposal_result.prompt_eval_count,
+                "eval_count": proposal_result.eval_count,
+                "total_duration_ns": proposal_result.total_duration_ns,
+            },
+            trace_id=trace_id,
+        ),
+    )
+
+    proposal = proposal_result.output
+    print("Proposta de Goal:")
+    print(f"Título: {proposal.title}")
+    print(f"Estado desejado: {proposal.desired_state}")
+    print("Critérios de sucesso:")
+    for criterion in proposal.success_criteria:
+        print(f"- {criterion}")
+
+    if proposal.open_questions:
+        print("Questões em aberto:")
+        for question in proposal.open_questions:
+            print(f"- {question}")
+    else:
+        print("Questões em aberto: nenhuma")
+
+    _print_model_metrics(proposal_result)
+    print("Goal persistido: não")
+    return 0
+
+
+def _print_context_summary(context: CognitiveContext) -> None:
+    print(
+        "Contexto: "
+        f"{len(context.goals)} goal(s), "
+        f"{len(context.entities)} entity(s), "
+        f"{len(context.claims)} claim(s), "
+        f"{len(context.memories)} memory(s)"
+    )
+
+
+def _print_model_metrics[OutputT: BaseModel](
+    result: StructuredModelResult[OutputT],
+) -> None:
     if result.prompt_eval_count is not None:
         print(f"Tokens de entrada: {result.prompt_eval_count}")
     if result.eval_count is not None:
         print(f"Tokens gerados: {result.eval_count}")
     if result.total_duration_ns is not None:
         print(f"Duração: {result.total_duration_ns / 1_000_000_000:.2f}s")
-    return 0

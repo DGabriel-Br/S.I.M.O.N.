@@ -40,7 +40,8 @@ O projeto já consegue:
 - retirar Memories arquivadas, substituídas ou retraídas do retrieval normal;
 - interpretar entradas do usuário em um contrato cognitivo estruturado;
 - montar contexto cognitivo determinístico com Goals abertos, Entities explicitamente mencionadas, Claims atuais e Memories relacionadas;
-- registrar a seleção de contexto como Event sem criar um objeto persistente adicional.
+- registrar a seleção de contexto como Event sem criar um objeto persistente adicional;
+- formular propostas estruturadas de Goal para solicitações (`REQUEST`) sem persistir o Goal automaticamente.
 
 O primeiro adapter de modelo local já existe:
 
@@ -102,9 +103,19 @@ uv run simon model-test --model NOME_DO_MODELO
 
 O SIMON não baixa nem escolhe um modelo automaticamente neste estágio.
 
+## Proposta de Goal
+
+Uma solicitação já classificada como `REQUEST` pode ser transformada em uma proposta explícita de Goal:
+
+```powershell
+uv run simon goal-propose --model qwen3.5:4b-q4_K_M "Veja por que esse script está falhando e corrija"
+```
+
+A proposta contém título, estado desejado, critérios de sucesso e questões em aberto. Ela é registrada como resultado cognitivo, mas não é inserida na tabela de Goals. O modelo também não cria Plan, não escolhe Tools e não executa ações nessa etapa.
+
 ## Próximo passo
 
-Validar interpretação contextual com estado persistente real e então conectar solicitações (`REQUEST`) a uma proposta explícita de Goal, ainda sem criação ou execução automática.
+Criar o primeiro gate determinístico de aceitação da proposta, permitindo transformar uma proposta revisada em um Goal `USER` persistente somente após uma decisão explícita fora do modelo.
 
 ## Primeira interpretação cognitiva
 
