@@ -39,7 +39,15 @@ O projeto já consegue:
 - preservar proveniência de Experiences, Claims e Entities nas Memories;
 - retirar Memories arquivadas, substituídas ou retraídas do retrieval normal.
 
-Ainda não existem Cognition, modelos ou Lab executáveis.
+O primeiro adapter de modelo local já existe:
+
+- `ModelProvider` define o contrato mínimo usado pelo SIMON;
+- `OllamaProvider` implementa o primeiro runtime local sem acoplar o restante do sistema ao Ollama;
+- respostas estruturadas usam JSON Schema gerado por Pydantic e são validadas antes de entrar no sistema;
+- `model-check` verifica o runtime e lista modelos já instalados;
+- `model-test` executa uma chamada estruturada de diagnóstico em um modelo escolhido explicitamente.
+
+Ainda não existe um Cognition Controller, roteamento entre modelos ou escolha automática de modelo.
 
 ## Preparação
 
@@ -75,6 +83,22 @@ uv run ruff check .
 uv run mypy src
 ```
 
+## Diagnóstico do runtime local
+
+Com o Ollama em execução:
+
+```powershell
+uv run simon model-check
+```
+
+Para testar structured output com um modelo já instalado:
+
+```powershell
+uv run simon model-test --model NOME_DO_MODELO
+```
+
+O SIMON não baixa nem escolhe um modelo automaticamente neste estágio.
+
 ## Próximo passo
 
-Introduzir o primeiro `ModelProvider` local e uma chamada cognitiva estruturada, sem acoplar o Core a um modelo específico.
+Escolher o primeiro modelo local por medição no hardware real e então introduzir o primeiro `CognitiveJob` que use o `ModelProvider` sem carregar histórico de chat como estado.

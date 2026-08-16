@@ -4248,3 +4248,98 @@ Não trocar tecnologia apenas por novidade.
 ### 30.25. Princípio final da stack
 
 > **A stack do SIMON deve ser pequena o suficiente para ser compreendida por inteiro e sólida o suficiente para que a complexidade futura nasça do próprio sistema, não das ferramentas usadas para construí-lo.**
+
+## 31. Primeiro Model Provider executável
+
+O primeiro runtime cognitivo conectado ao v0.1 é o Ollama, mas o restante do SIMON não depende de sua API diretamente.
+
+A fronteira mínima é `ModelProvider`:
+
+```text
+SIMON / Cognition
+      ↓
+ModelProvider
+      ↓
+OllamaProvider
+      ↓
+Ollama REST API
+```
+
+O contrato inicial suporta apenas as necessidades já existentes:
+
+```text
+listar modelos disponíveis
+gerar uma resposta estruturada por JSON Schema
+```
+
+Não entram ainda:
+
+```text
+streaming
+tool calling pelo modelo
+roteamento entre modelos
+fallback automático
+multi-model ensemble
+histórico de chat persistido no provider
+```
+
+### 31.1. Structured output
+
+Uma resposta que será consumida pelo sistema deve possuir contrato explícito quando o caso exigir estrutura.
+
+O primeiro adapter utiliza modelos Pydantic para:
+
+```text
+gerar JSON Schema
+↓
+enviar o schema ao runtime
+↓
+receber JSON textual
+↓
+validar novamente localmente
+↓
+aceitar ou rejeitar o resultado
+```
+
+O fato de o runtime declarar suporte a structured output não elimina a validação local.
+
+### 31.2. Independência do runtime
+
+Ollama é o primeiro provider, não a identidade cognitiva do SIMON.
+
+Nenhum Goal, Plan, Memory, Experience ou componente persistente deve depender de tipos específicos do Ollama.
+
+Trocar o runtime futuramente deve exigir um novo adapter, não uma reconstrução do Core.
+
+### 31.3. Seleção do primeiro modelo
+
+Nenhum modelo específico é hardcoded nesta etapa.
+
+O usuário escolhe explicitamente o modelo usado no diagnóstico. A seleção automática só será criada depois que houver pelo menos duas alternativas reais ou dados de desempenho suficientes para justificar um Router.
+
+### 31.4. Falhas tratadas no primeiro adapter
+
+O adapter trata apenas falhas concretas desta fronteira:
+
+```text
+runtime inacessível
+timeout HTTP
+erro HTTP retornado pelo runtime
+JSON de resposta inválido
+resposta incompatível com o schema solicitado
+```
+
+Não serão criadas antecipadamente estratégias complexas de retry, fallback ou circuit breaker.
+
+### 31.5. Diagnóstico
+
+O CLI passa a oferecer:
+
+```text
+simon model-check
+simon model-test --model <modelo_instalado>
+```
+
+`model-check` verifica a API local e lista modelos instalados.
+
+`model-test` realiza uma chamada estruturada mínima. Ele existe para provar a integração real antes da construção de Cognition.

@@ -1,6 +1,9 @@
 import argparse
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from simon import __version__
 from simon.actions import interrupt_running_actions
@@ -8,7 +11,16 @@ from simon.claims import set_current_claim
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
+from simon.model_provider import ModelProviderError
+from simon.ollama_provider import OllamaProvider
 from simon.storage import initialize_storage
+
+
+class ModelDiagnosticResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"]
+    message: str
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,7 +35,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="diretório local usado pelo SIMON para persistência",
     )
     parser.add_argument("--version", action="version", version=f"S.I.M.O.N. {__version__}")
+
+    commands = parser.add_subparsers(dest="command")
+
+    model_check = commands.add_parser(
+        "model-check",
+        help="verifica o runtime Ollama e lista modelos locais instalados",
+    )
+    _add_ollama_arguments(model_check)
+
+    model_test = commands.add_parser(
+        "model-test",
+        help="executa uma chamada estruturada de diagnóstico em um modelo local",
+    )
+    model_test.add_argument("--model", required=True, help="nome do modelo já instalado no Ollama")
+    _add_ollama_arguments(model_test)
+
     return parser
+
+
+def _add_ollama_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ollama-url",
+        default="http://127.0.0.1:11434",
+        help="URL local da API do Ollama",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="timeout da chamada ao runtime em segundos",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -58,7 +100,58 @@ def main(argv: Sequence[str] | None = None) -> int:
         valid_from=startup_event.occurred_at,
     )
 
+    if args.command == "model-check":
+        return _model_check(args.ollama_url, args.timeout)
+    if args.command == "model-test":
+        return _model_test(args.ollama_url, args.timeout, args.model)
+
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
     print(f"SQLite: pronto (schema {schema_version})")
+    return 0
+
+
+def _model_check(base_url: str, timeout_seconds: float) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        models = provider.list_models()
+    except ModelProviderError as exc:
+        print(f"Ollama: indisponível ({exc})")
+        return 1
+
+    print(f"Ollama: pronto ({base_url.rstrip('/')})")
+    if not models:
+        print("Modelos locais: nenhum")
+        return 0
+
+    print(f"Modelos locais: {len(models)}")
+    for model in models:
+        print(f"- {model}")
+    return 0
+
+
+def _model_test(base_url: str, timeout_seconds: float, model: str) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        result = provider.generate_structured(
+            model=model,
+            system=(
+                "Você está respondendo a um diagnóstico interno do SIMON. "
+                "Siga estritamente o schema solicitado."
+            ),
+            prompt=(
+                "Confirme que recebeu esta mensagem. Use status 'ok' e uma mensagem curta "
+                "em português."
+            ),
+            response_model=ModelDiagnosticResponse,
+        )
+    except ModelProviderError as exc:
+        print(f"Modelo: falha ({exc})")
+        return 1
+
+    print(f"Modelo: {result.model}")
+    print(f"Status estruturado: {result.output.status}")
+    print(f"Mensagem: {result.output.message}")
+    if result.eval_count is not None:
+        print(f"Tokens gerados: {result.eval_count}")
     return 0

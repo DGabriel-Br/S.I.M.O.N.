@@ -133,3 +133,24 @@ def test_startup_suspends_previous_active_experience(
     assert restored is not None
     assert restored.status == "SUSPENDED"
     assert restored.outcome is None
+
+
+def test_model_check_lists_local_models(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def list_models(self) -> tuple[str, ...]:
+            return ("model-a:latest", "model-b:q4")
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(["--data-dir", str(tmp_path), "model-check"]) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Ollama: pronto" in output
+    assert "model-a:latest" in output
+    assert "model-b:q4" in output
