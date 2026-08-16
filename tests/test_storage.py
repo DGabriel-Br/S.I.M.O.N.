@@ -8,26 +8,26 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
     database_path, schema_version = initialize_storage(tmp_path)
 
     assert database_path.exists()
-    assert schema_version == 4
+    assert schema_version == 5
 
     with sqlite3.connect(database_path) as connection:
         tables = {
             str(row[0])
             for row in connection.execute(
                 "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name IN ('events', 'entities', 'claims', 'goals')"
+                "WHERE type = 'table' AND name IN ('events', 'entities', 'claims', 'goals', 'plans')"
             ).fetchall()
         }
 
-    assert tables == {"events", "entities", "claims", "goals"}
+    assert tables == {"events", "entities", "claims", "goals", "plans"}
 
 
-def test_initialize_storage_upgrades_schema_three_without_losing_data(tmp_path: Path) -> None:
+def test_initialize_storage_upgrades_schema_four_without_losing_data(tmp_path: Path) -> None:
     database_path = tmp_path / "simon.db"
     tmp_path.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(database_path) as connection:
-        for version in range(1, 4):
+        for version in range(1, 5):
             migration = next(MIGRATIONS_DIR.glob(f"{version:04d}_*.sql"))
             connection.executescript(migration.read_text(encoding="utf-8"))
 
@@ -89,6 +89,31 @@ def test_initialize_storage_upgrades_schema_three_without_losing_data(tmp_path: 
             ),
         )
 
+        connection.execute(
+            """
+            INSERT INTO goals (
+                id,
+                title,
+                origin,
+                desired_state_json,
+                success_criteria_json,
+                status,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "gol_existing",
+                "Existing Goal",
+                "USER",
+                '{"status":"resolved"}',
+                '[{"kind":"test_passes"}]',
+                "ACTIVE",
+                "2026-08-16T12:00:00+00:00",
+                "2026-08-16T12:00:00+00:00",
+            ),
+        )
+
     upgraded_path, schema_version = initialize_storage(tmp_path)
 
     with sqlite3.connect(upgraded_path) as connection:
@@ -104,15 +129,20 @@ def test_initialize_storage_upgrades_schema_three_without_losing_data(tmp_path: 
             "SELECT id, predicate FROM claims WHERE id = ?",
             ("clm_existing",),
         ).fetchone()
-        goals_table = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'goals'"
+        goal = connection.execute(
+            "SELECT id, title FROM goals WHERE id = ?",
+            ("gol_existing",),
+        ).fetchone()
+        plans_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plans'"
         ).fetchone()
 
-    assert schema_version == 4
+    assert schema_version == 5
     assert event == ("evt_existing", "system.started")
     assert entity == ("ent_existing", "Existing Project")
     assert claim == ("clm_existing", "status")
-    assert goals_table == ("goals",)
+    assert goal == ("gol_existing", "Existing Goal")
+    assert plans_table == ("plans",)
 
 
 def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
@@ -120,5 +150,5 @@ def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
     second_database_path, second_schema_version = initialize_storage(tmp_path)
 
     assert second_database_path == first_database_path
-    assert first_schema_version == 4
-    assert second_schema_version == 4
+    assert first_schema_version == 5
+    assert second_schema_version == 5
