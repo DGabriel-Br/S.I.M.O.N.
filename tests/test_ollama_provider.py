@@ -40,12 +40,17 @@ def test_generate_structured_sends_json_schema_and_validates_response() -> None:
         payload = json.loads(request.content)
         assert payload["model"] == "model-a"
         assert payload["stream"] is False
+        assert payload["think"] is False
         assert payload["format"] == ExampleOutput.model_json_schema()
         assert payload["options"] == {"temperature": 0.0}
-        assert payload["messages"] == [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "question"},
-        ]
+        assert payload["messages"][1] == {"role": "user", "content": "question"}
+
+        system_message = payload["messages"][0]
+        assert system_message["role"] == "system"
+        assert system_message["content"].startswith("system\n\n")
+        assert "JSON Schema:" in system_message["content"]
+        assert '"answer"' in system_message["content"]
+
         return httpx.Response(
             200,
             json={
@@ -72,16 +77,39 @@ def test_generate_structured_sends_json_schema_and_validates_response() -> None:
     assert result.eval_count == 3
 
 
-def test_generate_structured_rejects_invalid_model_output() -> None:
+def test_generate_structured_adds_schema_instruction_without_custom_system() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        messages = payload["messages"]
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert "JSON Schema:" in messages[0]["content"]
         return httpx.Response(
             200,
-            json={"model": "model-a", "message": {"content": '{"wrong":"value"}'}},
+            json={"model": "model-a", "message": {"content": '{"answer":"ok"}'}},
         )
 
     provider = OllamaProvider(transport=httpx.MockTransport(handler))
 
-    with pytest.raises(ModelResponseError, match="schema"):
+    result = provider.generate_structured(
+        model="model-a",
+        prompt="question",
+        response_model=ExampleOutput,
+    )
+
+    assert result.output.answer == "ok"
+
+
+def test_generate_structured_rejects_invalid_model_output_with_detail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"model": "model-a", "message": {"content": '{"answer":[]}'}},
+        )
+
+    provider = OllamaProvider(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ModelResponseError, match=r"schema solicitado \(answer:"):
         provider.generate_structured(
             model="model-a",
             prompt="question",

@@ -154,3 +154,68 @@ def test_model_check_lists_local_models(
     assert "Ollama: pronto" in output
     assert "model-a:latest" in output
     assert "model-b:q4" in output
+
+
+
+def test_interpret_records_input_and_structured_result(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.cognition import EntityMention, UserInputInterpretation
+    from simon.model_provider import StructuredModelResult
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(
+            self, **kwargs: object
+        ) -> StructuredModelResult[UserInputInterpretation]:
+            return StructuredModelResult(
+                model="fake-model",
+                output=UserInputInterpretation(
+                    intent="REQUEST",
+                    objective="continuar o projeto SIMON",
+                    entity_mentions=[EntityMention(text="SIMON", kind="PROJECT")],
+                    ambiguities=[],
+                ),
+                prompt_eval_count=12,
+                eval_count=8,
+                total_duration_ns=2_000_000_000,
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "interpret",
+            "--model",
+            "fake-model",
+            "Vamos continuar o projeto SIMON",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Intenção: REQUEST" in output
+    assert "Objetivo: continuar o projeto SIMON" in output
+    assert "SIMON (PROJECT)" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        rows = connection.execute(
+            """
+            SELECT kind, source, payload_json, trace_id
+            FROM events
+            WHERE kind IN ('user.input.received', 'cognition.interpretation.completed')
+            ORDER BY occurred_at
+            """
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0][0:2] == ("user.input.received", "user")
+    assert json.loads(str(rows[0][2]))["text"] == "Vamos continuar o projeto SIMON"
+    assert rows[1][0:2] == ("cognition.interpretation.completed", "cognition")
+    assert json.loads(str(rows[1][2]))["interpretation"]["intent"] == "REQUEST"
+    assert rows[0][3] == rows[1][3]

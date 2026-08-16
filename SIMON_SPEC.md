@@ -4343,3 +4343,86 @@ simon model-test --model <modelo_instalado>
 `model-check` verifica a API local e lista modelos instalados.
 
 `model-test` realiza uma chamada estruturada mínima. Ele existe para provar a integração real antes da construção de Cognition.
+
+## 32. Primeira função cognitiva executável
+
+Com o Model Provider validado contra um modelo local real, o primeiro uso cognitivo do v0.1 é a interpretação estruturada de uma entrada do usuário.
+
+A fronteira permanece pequena:
+
+```text
+texto do usuário
+      ↓
+interpret_user_input
+      ↓
+ModelProvider
+      ↓
+UserInputInterpretation
+```
+
+### 32.1. Saída mínima
+
+A primeira interpretação contém apenas informações que já possuem uso concreto:
+
+```text
+intent
+objective
+entity_mentions
+ambiguities
+```
+
+`intent` usa as categorias:
+
+```text
+QUESTION
+REQUEST
+INFORM
+CONTINUE
+UNKNOWN
+```
+
+Uma `entity_mention` ainda não é uma Entity canônica do World. Ela representa apenas um termo explicitamente detectado na mensagem. Entity Resolution será criada quando existir necessidade de transformar essas menções em identidades persistentes.
+
+### 32.2. Limite de autoridade
+
+Interpretar uma mensagem não concede autoridade para agir.
+
+A primeira função cognitiva:
+
+```text
+não cria Goal
+não cria Plan
+não executa Tool
+não escreve Claim no World
+```
+
+Ela produz uma representação estruturada que outros componentes poderão consumir posteriormente.
+
+### 32.3. Proveniência operacional
+
+Uma execução real de `simon interpret` gera dois Events correlacionados pelo mesmo `trace_id`:
+
+```text
+user.input.received
+cognition.interpretation.completed
+```
+
+Em caso de falha cognitiva:
+
+```text
+cognition.interpretation.failed
+```
+
+O resultado registra também os metadados de inferência disponibilizados pelo provider, como modelo, tokens e duração quando presentes.
+
+Não é criado um objeto persistente `CognitiveJob` nesta etapa. Events já são suficientes para a necessidade atual de rastreabilidade.
+
+### 32.4. CLI
+
+A capability é exposta inicialmente por:
+
+```text
+simon interpret --model <modelo> "<mensagem>"
+```
+
+Esse comando existe para validar interpretação cognitiva real com entradas variadas antes de conectá-la automaticamente à criação de Goals.

@@ -1,3 +1,4 @@
+import json
 from collections.abc import Mapping
 from typing import cast
 
@@ -56,10 +57,25 @@ class OllamaProvider:
         if not prompt.strip():
             raise ValueError("prompt não pode ser vazio")
 
-        messages: list[dict[str, str]] = []
+        schema = response_model.model_json_schema()
+        schema_text = json.dumps(
+            schema,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        schema_instruction = (
+            "Retorne somente um objeto JSON que respeite exatamente o JSON Schema a seguir. "
+            f"JSON Schema: {schema_text}"
+        )
+
+        system_parts = [schema_instruction]
         if system is not None and system.strip():
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+            system_parts.insert(0, system.strip())
+
+        messages = [
+            {"role": "system", "content": "\n\n".join(system_parts)},
+            {"role": "user", "content": prompt},
+        ]
 
         payload = self._request_json(
             "POST",
@@ -68,7 +84,8 @@ class OllamaProvider:
                 "model": model,
                 "messages": messages,
                 "stream": False,
-                "format": response_model.model_json_schema(),
+                "think": False,
+                "format": schema,
                 "options": {"temperature": temperature},
             },
         )
@@ -84,8 +101,9 @@ class OllamaProvider:
         try:
             parsed = response_model.model_validate_json(content)
         except ValidationError as exc:
+            detail = _validation_error_detail(exc)
             raise ModelResponseError(
-                "A resposta do modelo não respeitou o schema solicitado"
+                f"A resposta do modelo não respeitou o schema solicitado ({detail})"
             ) from exc
 
         return StructuredModelResult(
@@ -131,6 +149,28 @@ class OllamaProvider:
         if not isinstance(raw_payload, dict):
             raise ModelResponseError("Ollama retornou uma resposta em formato inválido")
         return cast(dict[str, object], raw_payload)
+
+
+def _validation_error_detail(exc: ValidationError) -> str:
+    errors = exc.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )
+    if not errors:
+        return "violação de schema sem detalhes"
+
+    first_error = errors[0]
+    raw_location = first_error.get("loc", ())
+    if isinstance(raw_location, tuple):
+        location = ".".join(str(part) for part in raw_location) or "raiz"
+    else:
+        location = "raiz"
+
+    message = first_error.get("msg")
+    if not isinstance(message, str) or not message:
+        message = "valor inválido"
+    return f"{location}: {message}"
 
 
 def _extract_ollama_error(response: httpx.Response) -> str:

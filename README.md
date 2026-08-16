@@ -102,3 +102,16 @@ O SIMON não baixa nem escolhe um modelo automaticamente neste estágio.
 ## Próximo passo
 
 Escolher o primeiro modelo local por medição no hardware real e então introduzir o primeiro `CognitiveJob` que use o `ModelProvider` sem carregar histórico de chat como estado.
+
+## Primeira interpretação cognitiva
+
+Com um modelo local já instalado no Ollama, o SIMON pode executar sua primeira função cognitiva estruturada:
+
+```powershell
+uv run simon interpret --model qwen3.5:4b-q4_K_M "Veja por que esse script está falhando"
+```
+
+A interpretação retorna intenção, objetivo explícito, entidades mencionadas e ambiguidades. Ela não cria Goal nem executa ações automaticamente.
+
+A entrada e o resultado estruturado são preservados como Events com o mesmo `trace_id`, preparando a base de observabilidade sem criar ainda um objeto persistente `CognitiveJob`.
+
