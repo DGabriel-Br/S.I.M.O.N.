@@ -281,9 +281,17 @@ O modelo não gera mais campos operacionais diretamente. Ele escolhe o `role` es
 
 A linguagem natural permanece descritiva. `COLLECT` com `source=USER` compila para coleta de evidência já existente via `user.ask`; uma nova execução compila para `process.run` e uma mudança ainda sem executor concreto compila para `unknown`. O Core não usa regex sobre a descrição para decidir a operação.
 
+## Binding estruturado de `process.run`
+
+A revisão atual do Plan expôs `process.run` como a primeira capability operacional ausente. Antes de existir um executor, o Core agora possui um contrato transitório para ligar um step `process.run` a parâmetros concretos sem interpretar a descrição humana do Plan como comando.
+
+`ProcessRunRequest` mantém `executable`, `arguments`, `working_directory` e `timeout_seconds` separados. Não existe campo de shell nem conversão por regex da descrição do step. `bind_process_run_step` aceita somente um Plan `ACTIVE` e um step `WORLD` cuja capability já seja `process.run`, preservando o critério de verificação que deverá acompanhar a futura Action.
+
+O binding não cria Action, não executa processo, não persiste nova estrutura e não altera o catálogo de capabilities. `process.run` continua `available=False` até existir uma implementação real capaz de consumir esse contrato com lifecycle, autorização e resultado observável. O SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Usar a nova revisão proposta pelo Planner para descobrir quais capabilities concretas faltam para continuar o Goal. O catálogo permanece honesto: uma capability só é marcada como disponível quando existe execução real correspondente.
+Implementar o primeiro executor controlado de `process.run` consumindo somente `ProcessRunRequest`. A execução deverá usar argumentos estruturados, sem shell implícito, passar por um gate determinístico mínimo de autorização, registrar o lifecycle da Action e capturar resultado técnico observável. Somente depois de esse caminho existir de ponta a ponta `process.run` poderá ser marcado como disponível.
 
 ## Primeira interpretação cognitiva
 
