@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,9 +20,11 @@ from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
-from simon.goal_intake import accept_goal_proposal
+from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
+from simon.goals import OPEN_STATUSES, get_goal
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
+from simon.planning import propose_plan
 from simon.storage import initialize_storage
 
 
@@ -87,6 +91,18 @@ def build_parser() -> argparse.ArgumentParser:
         "proposal_event_id",
         help="ID do Event cognition.goal_proposal.completed que será aceito",
     )
+
+    plan_propose = commands.add_parser(
+        "plan-propose",
+        help="formula uma proposta cognitiva de Plan para um Goal autorizado",
+    )
+    plan_propose.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    plan_propose.add_argument("goal_id", help="ID do Goal autorizado que será planejado")
+    _add_ollama_arguments(plan_propose)
 
     return parser
 
@@ -159,6 +175,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "goal-accept":
         return _goal_accept(database_path, args.proposal_event_id)
+    if args.command == "plan-propose":
+        return _plan_propose(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.goal_id,
+        )
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -434,6 +458,129 @@ def _goal_accept(database_path: Path, proposal_event_id: str) -> int:
         print("Goal persistido: sim")
     else:
         print("Goal persistido: já existia para esta proposta")
+    return 0
+
+
+def _plan_propose(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    goal_id: str,
+) -> int:
+    goal = get_goal(database_path, goal_id)
+    if goal is None:
+        print(f"Proposta de Plan: falha (goal não encontrado: {goal_id})")
+        return 1
+    if goal.status not in OPEN_STATUSES:
+        print(f"Proposta de Plan: falha (goal não está aberto: {goal.status})")
+        return 1
+
+    desired_description = goal.desired_state.get("description")
+    context_query = " ".join(
+        part
+        for part in (
+            goal.title,
+            desired_description if isinstance(desired_description, str) else "",
+            *(
+                str(criterion.get("description", ""))
+                for criterion in goal.success_criteria
+                if isinstance(criterion, dict)
+            ),
+        )
+        if part.strip()
+    )
+    if not context_query:
+        context_query = goal.title
+
+    trace_id = f"trc_{uuid4().hex}"
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+
+    try:
+        context = build_cognitive_context(database_path, text=context_query)
+        open_questions = get_goal_acceptance_open_questions(database_path, goal.id)
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.context.built",
+                source="cognition",
+                payload={
+                    "purpose": "plan",
+                    "goal_ids": [item.id for item in context.goals],
+                    "entity_ids": [entity.id for entity in context.entities],
+                    "claim_ids": [claim.id for claim in context.claims],
+                    "memory_ids": [memory.id for memory in context.memories],
+                },
+                trace_id=trace_id,
+                goal_id=goal.id,
+            ),
+        )
+        result = propose_plan(
+            provider,
+            model=model,
+            goal=goal,
+            open_questions=open_questions,
+            context=context,
+        )
+    except (ModelProviderError, TypeError, ValueError) as exc:
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.plan_proposal.failed",
+                source="cognition",
+                payload={"model": model, "error": str(exc)},
+                trace_id=trace_id,
+                goal_id=goal.id,
+            ),
+        )
+        print(f"Proposta de Plan: falha ({exc})")
+        return 1
+
+    proposal_event = Event.create(
+        kind="cognition.plan_proposal.completed",
+        source="cognition",
+        payload={
+            "model": result.model,
+            "proposal": result.output.model_dump(mode="json"),
+            "source_open_questions": list(open_questions),
+            "prompt_eval_count": result.prompt_eval_count,
+            "eval_count": result.eval_count,
+            "total_duration_ns": result.total_duration_ns,
+        },
+        trace_id=trace_id,
+        goal_id=goal.id,
+    )
+    append_event(database_path, proposal_event)
+
+    print(f"Modelo: {result.model}")
+    print(f"Goal: {goal.id} ({goal.title})")
+    _print_context_summary(context)
+    print("Proposta de Plan:")
+    print(f"Resumo: {result.output.summary}")
+    print("Passos:")
+    for step in result.output.steps:
+        print(f"- {step.id} [{step.kind}] {step.description}")
+        print(f"  Capability: {step.capability}")
+        if step.depends_on:
+            print(f"  Depende de: {', '.join(step.depends_on)}")
+        else:
+            print("  Depende de: nenhum")
+        if step.preconditions:
+            print(f"  Preconditions: {'; '.join(step.preconditions)}")
+        else:
+            print("  Preconditions: nenhuma")
+        print(f"  Verificação: {step.verification}")
+
+    if result.output.open_questions:
+        print("Questões em aberto:")
+        for question in result.output.open_questions:
+            print(f"- {question}")
+    else:
+        print("Questões em aberto: nenhuma")
+
+    _print_model_metrics(result)
+    print(f"ID da proposta: {proposal_event.id}")
+    print("Plan persistido: não")
     return 0
 
 

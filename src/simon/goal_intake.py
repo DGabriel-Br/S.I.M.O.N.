@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -193,3 +195,39 @@ def _insert_event(connection: sqlite3.Connection, event: Event) -> None:
             event.experience_id,
         ),
     )
+
+
+def get_goal_acceptance_open_questions(
+    database_path: Path,
+    goal_id: str,
+) -> tuple[str, ...]:
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT payload_json
+            FROM events
+            WHERE kind = 'goal.proposal.accepted'
+              AND goal_id = ?
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1
+            """,
+            (goal_id,),
+        ).fetchone()
+
+    if row is None:
+        return ()
+
+    payload = json.loads(str(row[0]))
+    if not isinstance(payload, dict):
+        raise TypeError(f"payload de aceitação inválido para goal: {goal_id}")
+
+    raw_questions = payload.get("open_questions", [])
+    if not isinstance(raw_questions, list):
+        raise TypeError(f"open_questions inválido para goal: {goal_id}")
+
+    questions: list[str] = []
+    for question in raw_questions:
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError(f"open_questions inválido para goal: {goal_id}")
+        questions.append(question.strip())
+    return tuple(questions)

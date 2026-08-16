@@ -4550,3 +4550,67 @@ As `open_questions` não impedem automaticamente a criação do Goal. Elas repre
 Aceitar o mesmo `proposal_event_id` mais de uma vez é idempotente. O sistema retorna o Goal já criado e não duplica nem o Goal nem o Event de aceitação. A escrita do Goal e do Event de proveniência acontece na mesma transação SQLite para evitar um Goal autorizado sem rastro de aceitação.
 
 O comando rejeita Events inexistentes, Events de outro tipo e propostas que não respeitem o contrato `GoalProposal`. Nenhum novo objeto persistente ou migration é criado nesta etapa; o SQLite permanece no schema 9.
+
+### 32.8. Primeira proposta cognitiva de Plan
+
+Depois que um Goal já possui autoridade operacional, o Planner pode produzir uma estratégia estruturada sem executar ações e sem persistir automaticamente um `Plan`. Neste primeiro corte, o Planner continua sendo uma função cognitiva com validação determinística ao redor, conforme o escopo v0.1.
+
+A fronteira executável é:
+
+```text
+Goal autorizado
+      ↓
+contexto determinístico + questões em aberto
+      ↓
+propose_plan
+      ↓
+PlanProposal
+      ↓
+nenhuma Action e nenhuma persistência de Plan
+```
+
+A saída temporária contém:
+
+```text
+summary
+steps[]:
+  id
+  description
+  kind = EPISTEMIC | WORLD
+  depends_on[]
+  preconditions[]
+  capability
+  verification
+open_questions[]
+```
+
+`EPISTEMIC` representa passos cujo efeito principal é obter informação. `WORLD` representa passos que pretendem modificar o estado externo. A distinção não concede autoridade de execução; ela apenas torna explícita a natureza da estratégia proposta.
+
+`capability` é abstrata. O Planner descreve o que precisa ser capaz de fazer, mas não escolhe Tool concreta, comando de shell ou implementação. Skill Resolver e Tool Gateway permanecem fora desta etapa.
+
+Questões preservadas em `goal.proposal.accepted` são recuperadas como entrada do planejamento. Quando uma lacuna puder ser resolvida operacionalmente, o Planner deve produzir um passo `EPISTEMIC` em vez de inventar a resposta. Questões ainda não resolvidas permanecem em `open_questions`.
+
+A proposta possui no máximo seis passos. IDs precisam ser únicos e dependências só podem apontar para passos anteriores. Cada passo declara precondições relevantes e uma forma observável de verificação. Essas invariantes são validadas pelo contrato estruturado, não apenas pelo prompt.
+
+O comando inicial é:
+
+```text
+simon plan-propose --model <modelo> <goal_id>
+```
+
+A seleção de contexto produz `cognition.context.built` com `purpose=plan` e `goal_id`. Uma proposta válida produz:
+
+```text
+cognition.plan_proposal.completed
+```
+
+Falhas produzem:
+
+```text
+cognition.plan_proposal.failed
+```
+
+Todos os Events da chamada compartilham o mesmo `trace_id` e referenciam o Goal planejado. O Event de proposta preserva o modelo, o objeto estruturado, métricas de inferência e as questões em aberto recebidas da proveniência do Goal.
+
+Nenhum novo objeto persistente ou migration é criado nesta etapa. A tabela `plans` permanece inalterada até a futura materialização determinística da proposta e o SQLite permanece no schema 9.
+

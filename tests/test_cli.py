@@ -421,3 +421,105 @@ def test_goal_accept_cli_persists_selected_proposal(
         ).fetchone()
 
     assert goal == ("Corrigir falha no script", "USER", "ACTIVE")
+
+
+def test_plan_propose_records_strategy_without_persisting_plan(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.events import Event, append_event
+    from simon.model_provider import StructuredModelResult
+    from simon.planning import PlanProposal, PlanStepProposal
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Corrigir falha no script",
+        origin="USER",
+        desired_state={"description": "O script executa sem erros."},
+        success_criteria=({"description": "A falha original não é reproduzida."},),
+    )
+    insert_goal(database_path, goal)
+    append_event(
+        database_path,
+        Event.create(
+            kind="goal.proposal.accepted",
+            source="user",
+            payload={
+                "proposal_event_id": "evt_source",
+                "open_questions": ["Qual script está falhando?"],
+            },
+            goal_id=goal.id,
+        ),
+    )
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanProposal]:
+            assert kwargs["response_model"] is PlanProposal
+            return StructuredModelResult(
+                model="fake-model",
+                output=PlanProposal(
+                    summary="Coletar evidência antes da correção.",
+                    steps=[
+                        PlanStepProposal(
+                            id="step_1",
+                            description="Identificar o script e a falha observada.",
+                            kind="EPISTEMIC",
+                            capability="obter contexto do usuário",
+                            verification="Script e erro foram identificados.",
+                        )
+                    ],
+                    open_questions=["Qual script está falhando?"],
+                ),
+                prompt_eval_count=30,
+                eval_count=18,
+                total_duration_ns=1_200_000_000,
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "plan-propose",
+            "--model",
+            "fake-model",
+            goal.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Goal: {goal.id}" in output
+    assert "step_1 [EPISTEMIC]" in output
+    assert "ID da proposta: evt_" in output
+    assert "Plan persistido: não" in output
+
+    with sqlite3.connect(database_path) as connection:
+        plan_count = connection.execute("SELECT COUNT(*) FROM plans").fetchone()
+        rows = connection.execute(
+            """
+            SELECT kind, payload_json, trace_id, goal_id
+            FROM events
+            WHERE kind IN ('cognition.context.built', 'cognition.plan_proposal.completed')
+              AND goal_id = ?
+            ORDER BY occurred_at
+            """,
+            (goal.id,),
+        ).fetchall()
+
+    assert plan_count == (0,)
+    assert [row[0] for row in rows] == [
+        "cognition.context.built",
+        "cognition.plan_proposal.completed",
+    ]
+    assert json.loads(str(rows[0][1]))["purpose"] == "plan"
+    proposal_payload = json.loads(str(rows[1][1]))
+    assert proposal_payload["source_open_questions"] == ["Qual script está falhando?"]
+    assert proposal_payload["proposal"]["steps"][0]["kind"] == "EPISTEMIC"
+    assert rows[0][2] == rows[1][2]
+    assert rows[0][3] == goal.id
+    assert rows[1][3] == goal.id

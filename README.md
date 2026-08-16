@@ -43,6 +43,7 @@ O projeto já consegue:
 - registrar a seleção de contexto como Event sem criar um objeto persistente adicional;
 - formular propostas estruturadas de Goal para solicitações (`REQUEST`) sem persistir o Goal automaticamente;
 - aceitar explicitamente uma proposta registrada e convertê-la em um Goal `USER` persistente sem nova decisão do modelo.
+- formular propostas curtas de Plan para Goals autorizados, com passos epistêmicos ou de mundo, dependências, capabilities abstratas e verificação, sem persistir nem executar o Plan automaticamente.
 
 O primeiro adapter de modelo local já existe:
 
@@ -124,9 +125,21 @@ uv run simon goal-accept evt_ID_DA_PROPOSTA
 
 Questões em aberto continuam preservadas no Event de aceitação para não serem perdidas, mas não são inventadas nem resolvidas pelo gate.
 
+## Proposta de Plan
+
+Um Goal já autorizado pode ser enviado ao primeiro Planner cognitivo:
+
+```powershell
+uv run simon plan-propose --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
+```
+
+O Planner recebe o Goal persistente, as questões em aberto preservadas durante a aceitação e um recorte determinístico do contexto. A saída contém uma estratégia curta com passos `EPISTEMIC` ou `WORLD`, dependências, precondições, capability abstrata e forma de verificação.
+
+Quando falta informação, o Planner deve preferir trabalho epistêmico para obtê-la em vez de inventar arquivos, erros ou caminhos. A proposta é registrada como `cognition.plan_proposal.completed`, mas nesta etapa ainda não é inserida na tabela `plans` e não executa nenhuma Action.
+
 ## Próximo passo
 
-Usar o Goal agora autorizado como entrada para a primeira formulação de Plan, mantendo Planner como produtor de estratégia e não como executor.
+Materializar uma proposta de Plan validada no objeto persistente `Plan`, preservando a proveniência cognitiva e sem introduzir um novo gate de autoridade sobre os meios instrumentais do Goal.
 
 ## Primeira interpretação cognitiva
 
