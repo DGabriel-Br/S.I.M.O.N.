@@ -4624,3 +4624,45 @@ A operação deve ser idempotente por `proposal_event_id`: repetir a materializa
 
 A criação da revisão e o Event `plan.proposal.materialized` pertencem à mesma transação SQLite. Nenhuma Action é criada nesta etapa. Preconditions continuam sendo requisitos a verificar antes da execução, não fatos presumidos como verdadeiros.
 
+### 32.10. Avaliação determinística de prontidão de steps
+
+Antes de transformar um step persistido em `Action`, o Core precisa demonstrar que o step está operacionalmente elegível. Essa decisão não pertence ao modelo e não exige novo objeto persistente.
+
+A primeira fronteira executável é:
+
+```text
+Goal ACTIVE
+   ↓
+Plan ACTIVE
+   ↓
+steps persistidos
+   ↓
+evaluate_active_plan
+   ↓
+READY | BLOCKED | IN_PROGRESS | VERIFIED
+   ↓
+nenhuma Action criada
+```
+
+A avaliação considera apenas fatos que o sistema consegue demonstrar. Dependências entre steps só são satisfeitas quando existe uma `Action` `COMPLETED` para o step dependência e ao menos um `VerificationResult` `VERIFIED` associado àquela Action. `COMPLETED` sem Verification não é suficiente para liberar o próximo step.
+
+Um step com `Action` `PENDING` ou `RUNNING` é `IN_PROGRESS` e não recebe uma tentativa concorrente. Um step já demonstrado por Action verificada é `VERIFIED` e deixa de competir como próximo trabalho.
+
+Falhas anteriores não geram retry silencioso. `FAILED`, `BLOCKED`, `DENIED`, `INTERRUPTED` e `CANCELLED` produzem um bloqueador `PREVIOUS_ATTEMPT_REQUIRES_REVIEW` até que uma política de retry ou replanning seja implementada.
+
+Preconditions continuam sendo requisitos, não fatos. Enquanto o v0.1 não possuir um resolvedor que as conecte ao World ou a evidência observável, cada precondition textual permanece `PRECONDITION_UNRESOLVED`. O sistema não assume que uma frase declarada pelo Planner é verdadeira.
+
+Da mesma forma, `capability` continua sendo um requisito abstrato. O avaliador recebe um conjunto explícito de capabilities realmente disponíveis. Se a capability do step não estiver nesse conjunto, o step recebe `CAPABILITY_UNAVAILABLE`. O runtime inicial fornece conjunto vazio porque nenhuma capability de Tool execution foi registrada ainda.
+
+A ordem do Plan só desempata steps que já estão `READY`; um step bloqueado não impede que outro step independente e comprovadamente pronto seja selecionado. O primeiro `READY` na ordem persistida é retornado como `next_step`.
+
+O comando diagnóstico inicial é:
+
+```text
+simon plan-next <goal_id>
+```
+
+Ele resolve o Plan `ACTIVE`, avalia todos os steps, mostra bloqueadores e registra `plan.readiness.evaluated` com IDs, estados e categorias de bloqueio. O Event não duplica o conteúdo completo do Plan e nenhuma `Action` é criada.
+
+Nenhuma migration é necessária. O SQLite permanece no schema 9. Essa etapa torna observável a fronteira entre planejamento e ação e impede que JSON estruturalmente válido seja confundido com trabalho executável.
+

@@ -590,3 +590,59 @@ def test_plan_materialize_cli_persists_selected_proposal(
     ) == 0
     repeated_output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert "Plan persistido: já existia para esta proposta" in repeated_output
+
+
+def test_plan_next_reports_blockers_without_creating_action(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.actions import list_actions_for_plan
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Corrigir falha no script",
+        origin="USER",
+        desired_state={"description": "O script executa sem erros."},
+        success_criteria=({"description": "A falha não é reproduzida."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Obter o conteúdo do script.",
+                "capability": "filesystem.read",
+                "preconditions": ["O caminho do script foi confirmado."],
+            },
+        ),
+    )
+
+    assert main(["--data-dir", str(tmp_path), "plan-next", goal.id]) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Plan: {plan.id}" in output
+    assert "Próximo passo executável: nenhum" in output
+    assert "PRECONDITION_UNRESOLVED" in output
+    assert "CAPABILITY_UNAVAILABLE" in output
+    assert "Action criada: não" in output
+    assert list_actions_for_plan(database_path, plan.id) == ()
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT payload_json, goal_id
+            FROM events
+            WHERE kind = 'plan.readiness.evaluated'
+            ORDER BY occurred_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    payload = json.loads(str(row[0]))
+    assert row[1] == goal.id
+    assert payload["plan_id"] == plan.id
+    assert payload["next_step_id"] is None
+    assert payload["steps"][0]["step_id"] == "step_01"

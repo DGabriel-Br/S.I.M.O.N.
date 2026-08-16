@@ -42,8 +42,11 @@ O projeto já consegue:
 - montar contexto cognitivo determinístico com Goals abertos, Entities explicitamente mencionadas, Claims atuais e Memories relacionadas;
 - registrar a seleção de contexto como Event sem criar um objeto persistente adicional;
 - formular propostas estruturadas de Goal para solicitações (`REQUEST`) sem persistir o Goal automaticamente;
-- aceitar explicitamente uma proposta registrada e convertê-la em um Goal `USER` persistente sem nova decisão do modelo.
-- formular propostas curtas de Plan para Goals autorizados, com passos epistêmicos ou de mundo, dependências, capabilities abstratas e verificação, sem persistir nem executar o Plan automaticamente.
+- aceitar explicitamente uma proposta registrada e convertê-la em um Goal `USER` persistente sem nova decisão do modelo;
+- formular propostas curtas de Plan para Goals autorizados, com passos epistêmicos ou de mundo, dependências, capabilities abstratas e verificação, sem executar o Plan automaticamente;
+- materializar uma proposta validada como revisão persistente de Plan, preservando proveniência e idempotência;
+- avaliar deterministicamente a prontidão dos steps de um Plan antes de criar qualquer Action;
+- exigir dependências verificadas, preconditions resolvidas e capability disponível antes de considerar um step executável.
 
 O primeiro adapter de modelo local já existe:
 
@@ -135,11 +138,33 @@ uv run simon plan-propose --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
 
 O Planner recebe o Goal persistente, as questões em aberto preservadas durante a aceitação e um recorte determinístico do contexto. A saída contém uma estratégia curta com passos `EPISTEMIC` ou `WORLD`, dependências, precondições, capability abstrata e forma de verificação.
 
-Quando falta informação, o Planner deve preferir trabalho epistêmico para obtê-la em vez de inventar arquivos, erros ou caminhos. A proposta é registrada como `cognition.plan_proposal.completed`, mas nesta etapa ainda não é inserida na tabela `plans` e não executa nenhuma Action.
+Quando falta informação, o Planner deve preferir trabalho epistêmico para obtê-la em vez de inventar arquivos, erros ou caminhos. A proposta é registrada como `cognition.plan_proposal.completed` e não executa nenhuma Action.
+
+Uma proposta validada pode ser materializada sem nova chamada ao modelo:
+
+```powershell
+uv run simon plan-materialize evt_ID_DA_PROPOSTA
+```
+
+A materialização é idempotente por Event de proposta. Uma nova proposta para o mesmo Goal cria nova revisão e marca o Plan anterior como `SUPERSEDED`.
+
+## Prontidão do próximo step
+
+O SIMON pode avaliar o Plan ativo de um Goal sem criar nem executar uma Action:
+
+```powershell
+uv run simon plan-next gol_ID_DO_GOAL
+```
+
+A seleção é determinística. Um step somente pode aparecer como `READY` quando o Goal está `ACTIVE`, todas as dependências possuem Action concluída com Verification `VERIFIED`, não existe tentativa em andamento, as preconditions estão resolvidas e a capability requerida está disponível.
+
+No corte atual ainda não existe Capability Registry nem resolvedor de preconditions. Por isso, capabilities não registradas e preconditions textuais são bloqueadores explícitos. Uma Action `COMPLETED` sem Verification também não libera dependências. Tentativas anteriores com falha, bloqueio, negação, interrupção ou cancelamento exigem revisão antes de retry.
+
+A avaliação registra apenas um Event `plan.readiness.evaluated`; ela não cria Action.
 
 ## Próximo passo
 
-Materializar uma proposta de Plan validada no objeto persistente `Plan`, preservando a proveniência cognitiva e sem introduzir um novo gate de autoridade sobre os meios instrumentais do Goal.
+Introduzir a primeira capability operacional mínima exigida por um Plan real, mantendo Policy e Tool execution fora do caminho até que o step esteja efetivamente pronto.
 
 ## Primeira interpretação cognitiva
 

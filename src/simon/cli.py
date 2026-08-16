@@ -26,6 +26,7 @@ from simon.model_provider import ModelProvider, ModelProviderError, StructuredMo
 from simon.ollama_provider import OllamaProvider
 from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
+from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 
 
@@ -114,6 +115,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="ID do Event cognition.plan_proposal.completed que será materializado",
     )
 
+    plan_next = commands.add_parser(
+        "plan-next",
+        help="avalia deterministicamente o próximo step executável de um Plan ativo",
+    )
+    plan_next.add_argument(
+        "goal_id",
+        help="ID do Goal cujo Plan ativo será avaliado",
+    )
+
     return parser
 
 
@@ -195,6 +205,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "plan-materialize":
         return _plan_materialize(database_path, args.proposal_event_id)
+    if args.command == "plan-next":
+        return _plan_next(database_path, args.goal_id)
 
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
@@ -619,6 +631,71 @@ def _plan_materialize(database_path: Path, proposal_event_id: str) -> int:
     else:
         print("Plan persistido: já existia para esta proposta")
     return 0
+
+
+def _plan_next(database_path: Path, goal_id: str) -> int:
+    trace_id = f"trc_{uuid4().hex}"
+    try:
+        readiness = evaluate_active_plan(database_path, goal_id=goal_id)
+    except (TypeError, ValueError) as exc:
+        print(f"Avaliação de Plan: falha ({exc})")
+        return 1
+
+    _record_plan_readiness(database_path, readiness, trace_id=trace_id)
+
+    print(f"Goal: {readiness.plan.goal_id}")
+    print(f"Plan: {readiness.plan.id}")
+    print(f"Revisão: {readiness.plan.revision}")
+    print("Capabilities executáveis registradas: nenhuma")
+
+    if readiness.next_step is None:
+        print("Próximo passo executável: nenhum")
+    else:
+        print(f"Próximo passo executável: {readiness.next_step.step_id}")
+        print(f"Descrição: {readiness.next_step.description}")
+        print(f"Capability: {readiness.next_step.capability or 'não especificada'}")
+
+    print("Avaliação dos passos:")
+    for step in readiness.steps:
+        print(f"- {step.step_id}: {step.state}")
+        for blocker in step.blockers:
+            print(f"  {blocker.kind}: {blocker.detail}")
+
+    print("Action criada: não")
+    return 0
+
+
+def _record_plan_readiness(
+    database_path: Path,
+    readiness: PlanReadiness,
+    *,
+    trace_id: str,
+) -> None:
+    append_event(
+        database_path,
+        Event.create(
+            kind="plan.readiness.evaluated",
+            source="system",
+            payload={
+                "plan_id": readiness.plan.id,
+                "plan_revision": readiness.plan.revision,
+                "next_step_id": (
+                    readiness.next_step.step_id if readiness.next_step is not None else None
+                ),
+                "steps": [
+                    {
+                        "step_id": step.step_id,
+                        "state": step.state,
+                        "blockers": [blocker.kind for blocker in step.blockers],
+                        "related_action_id": step.related_action_id,
+                    }
+                    for step in readiness.steps
+                ],
+            },
+            trace_id=trace_id,
+            goal_id=readiness.plan.goal_id,
+        ),
+    )
 
 
 def _print_context_summary(context: CognitiveContext) -> None:
