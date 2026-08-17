@@ -5186,3 +5186,42 @@ Como o filesystem pode mudar depois de uma observação, verificações repetida
 
 Nenhuma migration é necessária e o SQLite permanece no schema 10.
 
+### 32.25. Promoção epistemológica e conclusão de Goal
+
+Um `Goal Assessment` `SATISFIED` continua sendo apenas julgamento cognitivo `ASSESSED`. O modelo não ganha autoridade para transformar seu próprio veredito em verdade operacional nem para encerrar o lifecycle do Goal. O bloqueio observado depois de `goal-assess` justifica um gate explícito:
+
+```text
+simon goal-complete <assessment_verification_id>
+```
+
+A operação aceita somente `VerificationResult` com:
+
+```text
+subject_type = GOAL
+status = ASSESSED
+assessment_type = goal.semantic
+verdict = SATISFIED
+```
+
+Todos os `criterion_assessments` precisam permanecer `SATISFIED` e `missing_evidence` precisa estar vazio. O assessment também precisa continuar sendo o `goal.semantic` mais recente do Goal e apontar para o Plan `COMPLETED` mais recente, com revisão e Event `plan.completed` íntegros. Isso impede que uma avaliação antiga encerre o Goal depois que evidência epistemológica posterior mudou a conclusão.
+
+A confirmação explícita do usuário produz, na mesma transação:
+
+```text
+verification.goal_assessment.confirmed
+        ↓
+VerificationResult(subject_type=GOAL, status=VERIFIED, strength=3)
+        ↓
+Goal ACTIVE -> COMPLETED
+        ↓
+goal.completed
+```
+
+A Verification final preserva o assessment confirmado, Plan, revisão, Event de conclusão do Plan, toda a linhagem de evidências do assessment e o Event de confirmação. O Event `goal.completed` referencia a Verification que autorizou a transição.
+
+A transação é atômica: falha ao criar a Verification, alterar o Goal ou persistir os Events reverte a operação inteira. A conclusão é idempotente para o mesmo assessment; uma repetição recupera a conclusão já persistida sem criar novos registros ou atualizar timestamps.
+
+`Plan COMPLETED`, `Goal ASSESSED` e `Goal COMPLETED` permanecem três fatos distintos. A estratégia ter terminado não prova o objetivo; o modelo considerar o objetivo satisfeito também não prova sozinho o objetivo; somente o gate confirmado promove a evidência para `VERIFIED` e encerra o Goal.
+
+Nenhuma migration é necessária e o SQLite permanece no schema 10.
+

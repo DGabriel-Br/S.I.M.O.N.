@@ -25,6 +25,7 @@ from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
 from simon.file_patch import FilePatchRequest, execute_next_file_patch
 from simon.file_patch_verification import verify_file_patch_state
+from simon.goal_completion import complete_goal_from_assessment
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
 from simon.goal_verification import assess_goal_outcome, get_latest_goal_assessment_context
 from simon.goals import OPEN_STATUSES, get_goal
@@ -117,6 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     goal_assess.add_argument("goal_id", help="ID do Goal ACTIVE que será avaliado")
     _add_ollama_arguments(goal_assess)
+
+    goal_complete = commands.add_parser(
+        "goal-complete",
+        help="confirma um assessment SATISFIED e conclui o Goal",
+    )
+    goal_complete.add_argument(
+        "assessment_verification_id",
+        help="ID da Verification goal.semantic ASSESSED que será confirmada",
+    )
 
     plan_propose = commands.add_parser(
         "plan-propose",
@@ -396,6 +406,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.model,
             args.goal_id,
         )
+    if args.command == "goal-complete":
+        return _goal_complete(database_path, args.assessment_verification_id)
     if args.command == "plan-propose":
         return _plan_propose(
             database_path,
@@ -811,6 +823,30 @@ def _goal_assess(
     return 0
 
 
+def _goal_complete(database_path: Path, assessment_verification_id: str) -> int:
+    try:
+        receipt = complete_goal_from_assessment(
+            database_path,
+            assessment_verification_id=assessment_verification_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Conclusão de Goal: falha ({exc})")
+        return 1
+
+    print(f"Goal: {receipt.goal.id} ({receipt.goal.title})")
+    print(f"Assessment confirmado: {receipt.assessment.id}")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status epistemológico: {receipt.verification.status}")
+    print(f"Status do Goal: {receipt.goal.status}")
+    print(f"Confirmação: {receipt.confirmation_event_id}")
+    print(f"Conclusão: {receipt.completion_event_id}")
+    if receipt.created:
+        print("Goal concluído: sim")
+    else:
+        print("Goal concluído: não (esta confirmação já havia sido aplicada)")
+    return 0
+
+
 def _plan_propose(
     database_path: Path,
     base_url: str,
@@ -852,7 +888,7 @@ def _plan_propose(
         if goal_assessment is not None and goal_assessment.verdict == "SATISFIED":
             print(
                 "Proposta de Plan: não gerada "
-                "(assessment de Goal SATISFIED aguarda promoção epistemológica)"
+                "(assessment de Goal SATISFIED aguarda goal-complete)"
             )
             return 0
         intake_open_questions = get_goal_acceptance_open_questions(database_path, goal.id)

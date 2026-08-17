@@ -1559,3 +1559,108 @@ def test_cli_file_verify_confirms_current_patch_state_without_semantic_claim(
     assert "Critério do Plan preservado, sem avaliação semântica" in output
     assert "Verification criada: sim" in output
     assert target.read_text(encoding="utf-8") == "valor = 2\n"
+
+
+def test_goal_complete_cli_confirms_satisfied_assessment_and_closes_goal(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.events import Event, append_event
+    from simon.plan_completion import complete_verified_plan
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Concluir correção",
+        origin="USER",
+        desired_state={"description": "O script executa corretamente."},
+        success_criteria=({"description": "A execução final está correta."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar verificação final.",
+                "verification": "Execução observada.",
+            },
+        ),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="test.observe",
+    )
+    transition_action(database_path, action.id, "RUNNING")
+    transition_action(database_path, action.id, "COMPLETED", reported_result={"ok": True})
+    evidence = Event.create(
+        kind="test.goal.complete.cli.evidence",
+        source="test",
+        payload={"ok": True},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action.id,
+        criteria=({"description": "execução observada"},),
+        status="VERIFIED",
+        evidence_event_ids=(evidence.id,),
+        observed={"ok": True},
+        strength=3,
+    )
+    completion = complete_verified_plan(database_path, goal_id=goal.id)
+    assessment = create_verification_result(
+        database_path,
+        subject_type="GOAL",
+        subject_id=goal.id,
+        criteria=goal.success_criteria,
+        status="ASSESSED",
+        evidence_event_ids=(completion.completion_event_id, evidence.id),
+        observed={
+            "assessment_type": "goal.semantic",
+            "verdict": "SATISFIED",
+            "criterion_assessments": [
+                {
+                    "criterion_index": 1,
+                    "verdict": "SATISFIED",
+                    "rationale": "A evidência final satisfaz o critério.",
+                    "supporting_step_ids": ["step_01"],
+                }
+            ],
+            "missing_evidence": [],
+            "plan_id": plan.id,
+            "plan_revision": plan.revision,
+            "plan_completion_event_id": completion.completion_event_id,
+            "model": "fake-model",
+        },
+        strength=2,
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "goal-complete",
+            assessment.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Goal: {goal.id} (Concluir correção)" in output
+    assert f"Assessment confirmado: {assessment.id}" in output
+    assert "Status epistemológico: VERIFIED" in output
+    assert "Status do Goal: COMPLETED" in output
+    assert "Goal concluído: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT status FROM goals WHERE id = ?",
+            (goal.id,),
+        ).fetchone()
+    assert row == ("COMPLETED",)

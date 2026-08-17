@@ -407,9 +407,27 @@ Como o arquivo pode mudar depois de uma verificação, o readiness considera ago
 
 Nenhuma migration foi necessária; o SQLite permanece no schema 10.
 
+## Conclusão confirmada de Goal
+
+Um Goal não transita para `COMPLETED` apenas porque `goal-assess` retornou `SATISFIED`. Esse resultado continua sendo um `VerificationResult(subject_type=GOAL, status=ASSESSED)` produzido por julgamento cognitivo.
+
+A promoção explícita usa:
+
+```powershell
+uv run simon goal-complete ver_ID_DO_ASSESSMENT
+```
+
+O gate aceita somente um assessment `goal.semantic` `SATISFIED` que seja o mais recente para o Goal, avalie todos os critérios como `SATISFIED`, não declare `missing_evidence` e continue apontando para o Plan `COMPLETED` mais recente e para seu Event `plan.completed` íntegro.
+
+Dentro de uma única transação, o comando registra `verification.goal_assessment.confirmed` com autoridade do usuário, cria uma nova Verification `VERIFIED` no nível do Goal, transita o lifecycle de `ACTIVE` para `COMPLETED` e registra `goal.completed`. Se qualquer parte falhar, nenhuma conclusão parcial permanece persistida.
+
+A operação é idempotente para o mesmo assessment. Repetir `goal-complete` recupera a Verification e os Events já existentes sem duplicar a conclusão. Assessments antigos, negativos, inconclusivos ou contraditórios com evidência ainda ausente não podem fechar o Goal.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Retomar o Plan real depois da alteração verificada. O próximo step já utiliza `process.run`, capability que existe no runtime, portanto não será criada uma nova Tool por antecipação. O objetivo imediato é fechar o ciclo concreto `patch -> verify -> reexecute -> analyze -> verify` e observar qual lacuna real aparece antes de adicionar qualquer nova abstração.
+Fechar a primeira `Experience` operacional real a partir de um Goal concluído. A infraestrutura de Experience já existe, mas ainda não participa do ciclo causal de ponta a ponta. O próximo corte deve usar um caso concluído para registrar início, suspensão/retomada quando necessário e `CLOSED` com outcome, preservando referências ao Goal, Plans, Actions, Verifications e Events relevantes sem criar uma segunda cópia do histórico.
 
 ## Primeira interpretação cognitiva
 
