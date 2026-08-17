@@ -397,7 +397,7 @@ def test_confirmation_rolls_back_event_if_verified_insert_fails(
         raise RuntimeError("falha simulada")
 
     monkeypatch.setattr(
-        "simon.user_ask_verification.create_verification_result_in_connection",
+        "simon.assessment_confirmation.create_verification_result_in_connection",
         fail_insert,
     )
 

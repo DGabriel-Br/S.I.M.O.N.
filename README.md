@@ -54,7 +54,11 @@ O projeto já consegue:
 - ligar steps `process.run` a parâmetros estruturados sem interpretar descrição humana como comando;
 - executar o próximo step `process.run` READY sem shell implícito;
 - verificar deterministicamente a evidência técnica produzida por uma Action `process.run` concluída;
-- registrar autorização explícita, lifecycle da Action, stdout, stderr, exit code e duração da execução.
+- registrar autorização explícita, lifecycle da Action, stdout, stderr, exit code e duração da execução;
+- executar `cognition.analyze` sobre evidências previamente verificadas sem alterar World, Goal ou Plan;
+- persistir análises estruturadas com findings explicitamente ligados aos Events que os sustentam;
+- avaliar semanticamente uma análise contra o critério do step como `ASSESSED`;
+- confirmar explicitamente assessments positivos de `user.ask` e `cognition.analyze` antes de promovê-los a `VERIFIED`.
 
 O primeiro adapter de modelo local já existe:
 
@@ -339,9 +343,31 @@ Em sucesso, a análise é preservada no Event `cognition.analysis.completed`, a 
 
 Nenhuma nova tabela ou migration foi necessária; o SQLite permanece no schema 10.
 
+## Assessment epistemológico de `cognition.analyze`
+
+Uma Action `cognition.analyze` concluída pode ser comparada semanticamente com o critério explícito do step:
+
+```powershell
+uv run simon analysis-assess --model qwen3.5:4b-q4_K_M act_ID_DA_ACTION
+```
+
+O avaliador recebe a análise persistida, o critério do step e os Events que a própria análise consumiu. O resultado usa `SATISFIED`, `NOT_SATISFIED` ou `UNCLEAR` e é persistido como `VerificationResult(status=ASSESSED, strength=2)`. O Event `cognition.analysis.completed` e suas evidências de origem permanecem na linhagem da avaliação.
+
+A operação revalida a integridade entre Action, Event de análise, Plan, step, modelo e `evidence_event_ids`. Findings que deixem de estar grounded nas evidências consumidas são rejeitados antes da chamada ao avaliador. O assessment é idempotente para a mesma análise e o mesmo modelo e somente a tentativa mais recente do step pode ser avaliada.
+
+Um veredito `SATISFIED` ainda não libera o step. A confirmação explícita continua sendo:
+
+```powershell
+uv run simon verification-confirm ver_ID_DO_ASSESSMENT
+```
+
+O gate de confirmação agora suporta os dois tipos concretos que existem no runtime: `user.ask.semantic` e `cognition.analyze.semantic`. Cada tipo permanece ligado ao `kind` correto da Action; tipos desconhecidos são recusados. A confirmação registra `verification.assessment.confirmed`, preserva todas as evidências do assessment e cria uma nova Verification `VERIFIED` sem modificar o julgamento original.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Implementar a verificação epistemológica de `cognition.analyze`. O próximo corte deverá avaliar o Event `cognition.analysis.completed` contra o critério do step, persistir o julgamento como `ASSESSED` e exigir confirmação explícita antes de promover uma conclusão positiva para `VERIFIED`, generalizando somente o mínimo necessário do gate que hoje existe para `user.ask`.
+Usar o Plan real depois da confirmação de `cognition.analyze` para chegar ao próximo bloqueio operacional. A revisão atual deve expor o step `CHANGE` ainda compilado como `unknown`; somente então será definida a menor capability concreta de modificação necessária para esse caso, sem introduzir escrita genérica de arquivos antes de existir um alvo e um contrato reais.
 
 ## Primeira interpretação cognitiva
 

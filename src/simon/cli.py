@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from simon import __version__
 from simon.actions import interrupt_running_actions
+from simon.assessment_confirmation import confirm_action_assessment
 from simon.claims import set_current_claim
 from simon.cognition import (
     UserInputInterpretation,
@@ -17,6 +18,7 @@ from simon.cognition import (
     propose_goal,
 )
 from simon.cognition_analysis import execute_next_cognition_analysis
+from simon.cognition_analysis_verification import assess_cognition_analysis
 from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
@@ -35,10 +37,7 @@ from simon.process_verification import verify_process_run_execution
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
-from simon.user_ask_verification import (
-    assess_user_ask_response,
-    confirm_user_ask_assessment,
-)
+from simon.user_ask_verification import assess_user_ask_response
 
 
 class ModelDiagnosticResponse(BaseModel):
@@ -209,6 +208,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ollama_arguments(plan_analyze)
 
+    analysis_assess = commands.add_parser(
+        "analysis-assess",
+        help="avalia semanticamente uma Action cognition.analyze concluída",
+    )
+    analysis_assess.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    analysis_assess.add_argument(
+        "action_id",
+        help="ID da Action cognition.analyze COMPLETED",
+    )
+    _add_ollama_arguments(analysis_assess)
+
     process_verify = commands.add_parser(
         "process-verify",
         help="verifica objetivamente a evidência técnica de uma Action process.run concluída",
@@ -253,7 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     verification_confirm = commands.add_parser(
         "verification-confirm",
-        help="confirma explicitamente um assessment SATISFIED como VERIFIED",
+        help="confirma explicitamente um assessment de Action SATISFIED como VERIFIED",
     )
     verification_confirm.add_argument(
         "assessment_verification_id",
@@ -371,6 +385,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.timeout,
             args.model,
             args.goal_id,
+        )
+    if args.command == "analysis-assess":
+        return _analysis_assess(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.action_id,
         )
     if args.command == "process-verify":
         return _process_verify(database_path, args.action_id)
@@ -1109,6 +1131,52 @@ def _plan_analyze(
     return 0
 
 
+def _analysis_assess(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    action_id: str,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        receipt = assess_cognition_analysis(
+            database_path,
+            provider,
+            model=model,
+            action_id=action_id,
+        )
+    except (ModelProviderError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Assessment cognition.analyze: falha ({exc})")
+        return 1
+
+    criterion = receipt.verification.criteria[0].get("description")
+    print(f"Modelo avaliador: {receipt.model}")
+    print(f"Action: {receipt.verification.subject_id}")
+    print(f"Critério: {criterion}")
+    print(f"Veredito: {receipt.assessment.verdict}")
+    print(f"Justificativa: {receipt.assessment.rationale}")
+    if receipt.assessment.missing_information:
+        print("Informações ausentes:")
+        for item in receipt.assessment.missing_information:
+            print(f"- {item}")
+    else:
+        print("Informações ausentes: nenhuma")
+    if receipt.prompt_eval_count is not None:
+        print(f"Tokens de entrada: {receipt.prompt_eval_count}")
+    if receipt.eval_count is not None:
+        print(f"Tokens gerados: {receipt.eval_count}")
+    if receipt.total_duration_ns is not None:
+        print(f"Duração: {receipt.total_duration_ns / 1_000_000_000:.2f}s")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status persistido: {receipt.verification.status}")
+    if receipt.created:
+        print("Assessment criada: sim")
+    else:
+        print("Assessment criada: não (já existia para esta análise e modelo)")
+    return 0
+
+
 def _process_verify(database_path: Path, action_id: str) -> int:
     try:
         receipt = verify_process_run_execution(database_path, action_id=action_id)
@@ -1236,7 +1304,7 @@ def _verification_confirm(
     assessment_verification_id: str,
 ) -> int:
     try:
-        receipt = confirm_user_ask_assessment(
+        receipt = confirm_action_assessment(
             database_path,
             assessment_verification_id=assessment_verification_id,
         )
@@ -1245,6 +1313,7 @@ def _verification_confirm(
         return 1
 
     print(f"Assessment: {receipt.assessment.id}")
+    print(f"Tipo: {receipt.assessment.observed.get('assessment_type')}")
     print(f"Action: {receipt.verification.subject_id}")
     print(f"Veredito avaliado: {receipt.assessment.observed.get('verdict')}")
     print(f"Verification: {receipt.verification.id}")
