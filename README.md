@@ -391,9 +391,25 @@ A Action termina `COMPLETED` quando a alteração foi realmente aplicada ao arqu
 
 Nenhuma migration foi necessária; o SQLite permanece no schema 10.
 
+## Verification objetiva de `file.patch`
+
+Uma Action `file.patch` concluída pode ter o estado atual do arquivo revalidado com:
+
+```powershell
+uv run simon file-verify act_ID_DA_ACTION
+```
+
+A operação revalida a integridade entre Action, autorização e Event `file.patch.completed`, resolve novamente o target dentro do workspace originalmente autorizado e calcula o SHA-256 atual. Se ele for exatamente igual ao `after_sha256` registrado pela Action, cria uma Verification `VERIFIED` com `strength=4`. Se o conteúdo mudou ou o target deixou de estar disponível de forma segura, cria `FAILED`.
+
+A conclusão é deliberadamente estrutural. `semantic_effect_assessed=false` registra que o S.I.M.O.N. comprovou o estado do arquivo, não que a correção de software está conceitualmente certa. O critério textual do Plan permanece preservado para etapas cognitivas posteriores.
+
+Como o arquivo pode mudar depois de uma verificação, o readiness considera agora o VerificationResult mais recente de cada Action. Uma nova observação divergente pode voltar a bloquear o step mesmo que exista um `VERIFIED` histórico; restaurar o estado esperado e verificar novamente cria uma nova conclusão imutável. Verificações consecutivas do mesmo estado permanecem idempotentes.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Adicionar a Verification objetiva de `file.patch`: reler o arquivo atual, confirmar que ele ainda corresponde ao `after_sha256` registrado pela Action e provar que a substituição autorizada foi aplicada sem tratar essa constatação estrutural como prova automática de que a correção de software está semanticamente certa.
+Retomar o Plan real depois da alteração verificada. O próximo step já utiliza `process.run`, capability que existe no runtime, portanto não será criada uma nova Tool por antecipação. O objetivo imediato é fechar o ciclo concreto `patch -> verify -> reexecute -> analyze -> verify` e observar qual lacuna real aparece antes de adicionar qualquer nova abstração.
 
 ## Primeira interpretação cognitiva
 

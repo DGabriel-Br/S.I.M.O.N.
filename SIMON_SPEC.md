@@ -5165,3 +5165,24 @@ O conteúdo do patch permanece no `input_data` da Action e não precisa ser dupl
 
 Nenhuma migration é necessária e o SQLite permanece no schema 10.
 
+
+### 32.24. Verification objetiva do estado produzido por `file.patch`
+
+Uma Action `file.patch` `COMPLETED` prova que uma substituição localizada foi aplicada naquele momento, mas o arquivo pode ser alterado novamente por outro processo antes que o Plan avance. Por isso, o estado atual do target precisa ser observado separadamente.
+
+A operação `file-verify` aceita somente a tentativa mais recente do step e revalida a linhagem persistida da Action: request original, Event `file.patch.authorized`, Event `file.patch.completed`, Goal, Plan, step, caminho relativo e hashes registrados. O workspace canônico usado na verificação vem do Event de autorização, evitando que um workspace relativo dependa do diretório corrente de uma execução posterior.
+
+A verificação relê o arquivo somente quando ele ainda resolve de forma segura dentro do workspace autorizado, sem atravessar links simbólicos. O resultado objetivo possui três estados observados:
+
+```text
+MATCHED
+HASH_MISMATCH
+TARGET_UNAVAILABLE
+```
+
+`MATCHED` significa que o SHA-256 atual é exatamente igual ao `after_sha256` produzido pela Action e gera `VerificationResult(status=VERIFIED, strength=4)`. `HASH_MISMATCH` e `TARGET_UNAVAILABLE` geram `FAILED`. Esses resultados comprovam apenas o estado estrutural do arquivo; `semantic_effect_assessed=false` permanece explícito porque igualdade de bytes não prova que a correção de software está conceitualmente certa.
+
+Como o filesystem pode mudar depois de uma observação, verificações repetidas são idempotentes somente quando o estado mais recente observado continua igual. Se o arquivo mudar, uma nova Verification imutável é criada. Se depois ele voltar ao hash esperado, outra Verification `VERIFIED` pode ser criada. Consequentemente, o readiness passa a considerar o `VerificationResult` mais recente de uma Action, e não qualquer `VERIFIED` histórico, ao decidir se um step continua verificado.
+
+Nenhuma migration é necessária e o SQLite permanece no schema 10.
+

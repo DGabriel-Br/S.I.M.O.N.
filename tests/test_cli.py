@@ -1483,3 +1483,79 @@ def test_cli_process_verify_promotes_observed_execution_without_semantic_claim(
     observed = json.loads(str(row[2]))
     assert observed["exit_code"] == 7
     assert observed["semantic_effect_assessed"] is False
+
+
+def test_cli_file_verify_confirms_current_patch_state_without_semantic_claim(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    workspace = tmp_path / "workspace-file-verify"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 1\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data-file-verify")
+    goal = Goal.create(
+        title="Corrigir script local",
+        origin="USER",
+        desired_state={"description": "script corrigido"},
+        success_criteria=({"description": "arquivo modificado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Realizar a mudança: corrigir variável",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "unknown",
+                "capability_detail": "Correção localizada da variável",
+                "verification": "Arquivo modificado e salvo.",
+                "intent_role": "CHANGE",
+                "intent_actor": "SIMON",
+            },
+        ),
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data-file-verify"),
+            "plan-patch",
+            goal.id,
+            "--workspace",
+            str(workspace),
+            "--file",
+            "script.py",
+            "--old",
+            "valor = 1",
+            "--new",
+            "valor = 2",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert len(actions) == 1
+    action = actions[0]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data-file-verify"),
+            "file-verify",
+            action.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action: {action.id}" in output
+    assert "Status persistido: VERIFIED" in output
+    assert "Estado observado: MATCHED" in output
+    assert "Critério do Plan preservado, sem avaliação semântica" in output
+    assert "Verification criada: sim" in output
+    assert target.read_text(encoding="utf-8") == "valor = 2\n"

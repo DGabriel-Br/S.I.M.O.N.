@@ -24,6 +24,7 @@ from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
 from simon.file_patch import FilePatchRequest, execute_next_file_patch
+from simon.file_patch_verification import verify_file_patch_state
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
 from simon.goal_verification import assess_goal_outcome, get_latest_goal_assessment_context
 from simon.goals import OPEN_STATUSES, get_goal
@@ -265,6 +266,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="ID da Action process.run COMPLETED que será verificada",
     )
 
+    file_verify = commands.add_parser(
+        "file-verify",
+        help="verifica objetivamente o estado atual produzido por uma Action file.patch",
+    )
+    file_verify.add_argument(
+        "action_id",
+        help="ID da Action file.patch COMPLETED que será verificada",
+    )
+
     action_answer = commands.add_parser(
         "action-answer",
         help="registra a resposta do usuário para uma Action user.ask em espera",
@@ -438,6 +448,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "process-verify":
         return _process_verify(database_path, args.action_id)
+    if args.command == "file-verify":
+        return _file_verify(database_path, args.action_id)
     if args.command == "action-answer":
         return _action_answer(database_path, args.action_id, " ".join(args.text))
     if args.command == "action-assess":
@@ -1286,6 +1298,39 @@ def _process_verify(database_path: Path, action_id: str) -> int:
     else:
         print("Verification criada: não (já existia para esta execução)")
     return 0
+
+
+def _file_verify(database_path: Path, action_id: str) -> int:
+    try:
+        receipt = verify_file_patch_state(database_path, action_id=action_id)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Verification file.patch: falha ({exc})")
+        return 1
+
+    observed = receipt.verification.observed
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status persistido: {receipt.verification.status}")
+    print(f"Força: {receipt.verification.strength}")
+    print(f"Arquivo: {observed.get('target_path')}")
+    print(f"SHA-256 esperado: {observed.get('expected_after_sha256')}")
+    current_sha256 = observed.get("current_sha256")
+    print(f"SHA-256 observado: {current_sha256 if current_sha256 is not None else 'indisponível'}")
+    print(f"Estado observado: {observed.get('current_state')}")
+    if observed.get("detail"):
+        print(f"Detalhe: {observed.get('detail')}")
+    print(
+        "Critério do Plan preservado, sem avaliação semântica: "
+        f"{observed.get('plan_verification_intent')}"
+    )
+    if receipt.created:
+        print("Verification criada: sim")
+    else:
+        print("Verification criada: não (mesmo estado já havia sido observado)")
+    return 0 if receipt.verification.status == "VERIFIED" else 1
 
 
 def _action_answer(database_path: Path, action_id: str, text: str) -> int:

@@ -204,7 +204,7 @@ def _verified_action(database_path: Path, actions: list[Action]) -> Action | Non
             subject_type="ACTION",
             subject_id=action.id,
         )
-        if any(result.status == "VERIFIED" for result in results):
+        if results and results[-1].status == "VERIFIED":
             return action
     return None
 
