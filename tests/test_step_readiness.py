@@ -175,8 +175,8 @@ def test_unavailable_capability_blocks_step_without_creating_action(tmp_path: Pa
         steps=(
             {
                 "id": "step_01",
-                "description": "Executar processo",
-                "capability": "process.run",
+                "description": "Ler arquivo",
+                "capability": "file.read",
             },
         ),
     )
@@ -185,7 +185,7 @@ def test_unavailable_capability_blocks_step_without_creating_action(tmp_path: Pa
 
     assert result.next_step is None
     assert result.steps[0].blockers[0].kind == "CAPABILITY_UNAVAILABLE"
-    assert result.steps[0].blockers[0].detail == "process.run"
+    assert result.steps[0].blockers[0].detail == "file.read"
 
     assert list_actions_for_plan(database_path, plan.id) == ()
 
@@ -274,7 +274,7 @@ def test_user_ask_with_persisted_preconditions_remains_blocked(tmp_path: Path) -
 
     result = evaluate_active_plan(database_path, goal_id=goal.id)
 
-    assert result.available_capabilities == ("user.ask",)
+    assert result.available_capabilities == ("process.run", "user.ask")
     assert result.next_step is None
     assert result.steps[0].state == "BLOCKED"
     assert result.steps[0].blockers[0].kind == "PRECONDITION_UNRESOLVED"

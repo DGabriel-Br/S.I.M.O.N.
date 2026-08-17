@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 from simon.actions import create_action, get_action, list_actions_for_plan, transition_action
@@ -623,7 +624,7 @@ def test_plan_next_reports_blockers_without_creating_action(
 
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert f"Plan: {plan.id}" in output
-    assert "Capabilities executáveis registradas: user.ask" in output
+    assert "Capabilities executáveis registradas: process.run, user.ask" in output
     assert "Próximo passo executável: nenhum" in output
     assert "PRECONDITION_UNRESOLVED" in output
     assert "CAPABILITY_UNAVAILABLE" in output
@@ -645,7 +646,7 @@ def test_plan_next_reports_blockers_without_creating_action(
     payload = json.loads(str(row[0]))
     assert row[1] == goal.id
     assert payload["plan_id"] == plan.id
-    assert payload["available_capabilities"] == ["user.ask"]
+    assert payload["available_capabilities"] == ["process.run", "user.ask"]
     assert payload["next_step_id"] is None
     assert payload["steps"][0]["step_id"] == "step_01"
 
@@ -1273,3 +1274,58 @@ def test_plan_propose_uses_goal_assessment_instead_of_stale_intake_questions(
     assert payload["source_open_questions"] == []
     assert payload["source_goal_assessment_id"] == assessment.id
     assert payload["source_completed_plan_id"] == "pln_completed"
+
+
+def test_cli_plan_run_executes_next_process_step_without_auto_verification(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Executar script local",
+        origin="USER",
+        desired_state={"description": "execução observada"},
+        success_criteria=({"description": "resultado registrado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar script de teste.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "process.run",
+                "verification": "A execução produziu saída observável.",
+            },
+        ),
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "plan-run",
+            goal.id,
+            "--cwd",
+            str(tmp_path),
+            sys.executable,
+            "-c",
+            "print('cli-ok')",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Plan: {plan.id}" in output
+    assert "Capability: process.run" in output
+    assert "Status: COMPLETED" in output
+    assert "Exit code: 0" in output
+    assert "cli-ok" in output
+    assert "Verification criada: não" in output
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert len(actions) == 1
+    assert actions[0].status == "COMPLETED"

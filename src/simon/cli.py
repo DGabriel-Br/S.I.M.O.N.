@@ -28,6 +28,8 @@ from simon.ollama_provider import OllamaProvider
 from simon.plan_completion import complete_verified_plan
 from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
+from simon.process_binding import ProcessRunRequest
+from simon.process_execution import execute_next_process_run
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
@@ -159,6 +161,35 @@ def build_parser() -> argparse.ArgumentParser:
     plan_ask.add_argument(
         "goal_id",
         help="ID do Goal cujo próximo step user.ask será iniciado",
+    )
+
+    plan_run = commands.add_parser(
+        "plan-run",
+        help="executa o próximo step process.run READY do Plan ativo",
+    )
+    plan_run.add_argument(
+        "goal_id",
+        help="ID do Goal cujo próximo step process.run será executado",
+    )
+    plan_run.add_argument(
+        "--cwd",
+        required=True,
+        help="diretório de trabalho explícito da execução",
+    )
+    plan_run.add_argument(
+        "--process-timeout",
+        type=float,
+        default=120.0,
+        help="timeout do processo em segundos",
+    )
+    plan_run.add_argument(
+        "executable",
+        help="executável iniciado diretamente, sem shell implícito",
+    )
+    plan_run.add_argument(
+        "arguments",
+        nargs=argparse.REMAINDER,
+        help="argumentos entregues diretamente ao executável",
     )
 
     action_answer = commands.add_parser(
@@ -298,6 +329,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan_complete(database_path, args.goal_id)
     if args.command == "plan-ask":
         return _plan_ask(database_path, args.goal_id)
+    if args.command == "plan-run":
+        return _plan_run(
+            database_path,
+            args.goal_id,
+            args.executable,
+            args.arguments,
+            args.cwd,
+            args.process_timeout,
+        )
     if args.command == "action-answer":
         return _action_answer(database_path, args.action_id, " ".join(args.text))
     if args.command == "action-assess":
@@ -920,6 +960,55 @@ def _plan_ask(database_path: Path, goal_id: str) -> int:
     else:
         print("Action criada: não (já aguardava resposta)")
     return 0
+
+
+def _plan_run(
+    database_path: Path,
+    goal_id: str,
+    executable: str,
+    arguments: Sequence[str],
+    working_directory: str,
+    timeout_seconds: float,
+) -> int:
+    try:
+        request = ProcessRunRequest(
+            executable=executable,
+            arguments=tuple(arguments),
+            working_directory=working_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        receipt = execute_next_process_run(
+            database_path,
+            goal_id=goal_id,
+            request=request,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Action process.run: falha ({exc})")
+        return 1
+
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Capability: {receipt.action.kind}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Autorização registrada: {receipt.authorization_event_id}")
+    print(f"Execução registrada: {receipt.execution_event_id}")
+    if receipt.exit_code is not None:
+        print(f"Exit code: {receipt.exit_code}")
+    print(f"Duração: {receipt.duration_seconds:.3f}s")
+    if receipt.stdout:
+        print("stdout:")
+        print(receipt.stdout, end="" if receipt.stdout.endswith("\n") else "\n")
+    else:
+        print("stdout: vazio")
+    if receipt.stderr:
+        print("stderr:")
+        print(receipt.stderr, end="" if receipt.stderr.endswith("\n") else "\n")
+    else:
+        print("stderr: vazio")
+    print("Verification criada: não")
+    return 0 if receipt.action.status == "COMPLETED" else 1
 
 
 def _action_answer(database_path: Path, action_id: str, text: str) -> int:

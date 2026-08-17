@@ -46,7 +46,7 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(
         id="process.run",
         description="Executar um processo ou comando controlado no ambiente local.",
-        available=False,
+        available=True,
     ),
     CapabilitySpec(
         id="logs.read",

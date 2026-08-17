@@ -50,7 +50,10 @@ O projeto já consegue:
 - avaliar deterministicamente a prontidão dos steps de um Plan antes de criar qualquer Action;
 - exigir dependências verificadas, preconditions resolvidas e capability disponível antes de considerar um step executável;
 - iniciar o primeiro step `user.ask` READY como Action persistente;
-- registrar respostas humanas como Events e concluir a Action sem inventar Verification automática.
+- registrar respostas humanas como Events e concluir a Action sem inventar Verification automática;
+- ligar steps `process.run` a parâmetros estruturados sem interpretar descrição humana como comando;
+- executar o próximo step `process.run` READY sem shell implícito;
+- registrar autorização explícita, lifecycle da Action, stdout, stderr, exit code e duração da execução.
 
 O primeiro adapter de modelo local já existe:
 
@@ -162,7 +165,7 @@ uv run simon plan-next gol_ID_DO_GOAL
 
 A seleção é determinística. Um step somente pode aparecer como `READY` quando o Goal está `ACTIVE`, todas as dependências possuem Action concluída com Verification `VERIFIED`, não existe tentativa em andamento, as preconditions estão resolvidas e a capability requerida está disponível.
 
-O corte atual possui um catálogo mínimo de IDs estáveis de capability. O modelo não escolhe esses IDs diretamente. `COLLECT` usa `source` para distinguir evidência fornecida pelo usuário de coleta que o próprio sistema precisará realizar; `ANALYZE`, `CHANGE` e `EXECUTE` são atribuídos ao SIMON e compilam para `cognition.analyze`, `unknown` ou `process.run`. Apenas `user.ask` está disponível no runtime neste estágio; as demais necessidades aparecem honestamente como `CAPABILITY_UNAVAILABLE`. `user.perform` permanece no catálogo para histórico e uma futura necessidade explícita, mas não é emitido por novas PlanProposals do Planner v0.1.
+O corte atual possui um catálogo mínimo de IDs estáveis de capability. O modelo não escolhe esses IDs diretamente. `COLLECT` usa `source` para distinguir evidência fornecida pelo usuário de coleta que o próprio sistema precisará realizar; `ANALYZE`, `CHANGE` e `EXECUTE` são atribuídos ao SIMON e compilam para `cognition.analyze`, `unknown` ou `process.run`. `user.ask` e `process.run` estão disponíveis no runtime neste estágio; as demais necessidades aparecem honestamente como `CAPABILITY_UNAVAILABLE`. `user.perform` permanece no catálogo para histórico e uma futura necessidade explícita, mas não é emitido por novas PlanProposals do Planner v0.1.
 
 Novas PlanProposals compiladas recebem `preconditions=[]`. Preconditions textuais permanecem suportadas apenas para Plans históricos e, quando existem, são tratadas conservadoramente como `PRECONDITION_UNRESOLVED` até surgir um mecanismo verificável para resolvê-las.
 
@@ -283,15 +286,31 @@ A linguagem natural permanece descritiva. `COLLECT` com `source=USER` compila pa
 
 ## Binding estruturado de `process.run`
 
-A revisão atual do Plan expôs `process.run` como a primeira capability operacional ausente. Antes de existir um executor, o Core agora possui um contrato transitório para ligar um step `process.run` a parâmetros concretos sem interpretar a descrição humana do Plan como comando.
+A revisão atual do Plan expôs `process.run` como a primeira capability operacional ausente. O passo anterior introduziu um contrato transitório para ligar um step `process.run` a parâmetros concretos sem interpretar a descrição humana do Plan como comando.
 
 `ProcessRunRequest` mantém `executable`, `arguments`, `working_directory` e `timeout_seconds` separados. Não existe campo de shell nem conversão por regex da descrição do step. `bind_process_run_step` aceita somente um Plan `ACTIVE` e um step `WORLD` cuja capability já seja `process.run`, preservando o critério de verificação que deverá acompanhar a futura Action.
 
-O binding não cria Action, não executa processo, não persiste nova estrutura e não altera o catálogo de capabilities. `process.run` continua `available=False` até existir uma implementação real capaz de consumir esse contrato com lifecycle, autorização e resultado observável. O SQLite permanece no schema 10.
+O binding continua transitório e não cria nova estrutura persistente. Ele é consumido pelo primeiro executor real de `process.run`, portanto a capability agora pode ser marcada como disponível sem transformar linguagem natural em protocolo de execução. O SQLite permanece no schema 10.
+
+## Primeira execução controlada de `process.run`
+
+Quando `plan-next` identifica um step `process.run` como `READY`, o usuário pode fornecer explicitamente os parâmetros concretos da execução:
+
+```powershell
+uv run simon plan-run gol_ID_DO_GOAL --cwd C:\projeto python script.py --modo teste
+```
+
+`plan-run` só opera sobre o próximo step `process.run` READY do Plan ativo. O comando cria um `ProcessRunRequest`, registra `process.run.authorized` com `source=user`, cria a Action, transita `PENDING -> RUNNING` e inicia o executável diretamente com `shell=False`. Executável, argumentos, diretório de trabalho e timeout permanecem campos separados.
+
+Uma execução que inicia e termina é registrada como `COMPLETED` mesmo quando o programa retorna exit code diferente de zero. `stdout`, `stderr`, exit code e duração ficam preservados no Event `process.execution.completed`; a Action referencia esse Event no resultado reportado. Isso representa que a operação ocorreu, não que o efeito desejado foi provado.
+
+Falha ao iniciar o processo e timeout operacional encerram a Action como `FAILED` e registram `process.execution.failed`. Depois de qualquer tentativa, o mesmo step não é repetido silenciosamente: uma Action `COMPLETED` permanece `VERIFICATION_PENDING`, enquanto uma tentativa `FAILED` exige review antes de retry. Nenhum `VerificationResult` é criado automaticamente.
+
+O executor não introduz Tool Gateway genérico, Policy framework, nova tabela ou migration. O gate atual é deliberadamente pequeno: Goal e Plan precisam continuar ativos, o step precisa ser o próximo READY com capability `process.run`, o diretório de trabalho precisa existir e a execução precisa ter sido solicitada explicitamente pela fronteira CLI.
 
 ## Próximo passo
 
-Implementar o primeiro executor controlado de `process.run` consumindo somente `ProcessRunRequest`. A execução deverá usar argumentos estruturados, sem shell implícito, passar por um gate determinístico mínimo de autorização, registrar o lifecycle da Action e capturar resultado técnico observável. Somente depois de esse caminho existir de ponta a ponta `process.run` poderá ser marcado como disponível.
+Implementar a primeira Verification de `process.run` usando o Event de execução como evidência. A Verification deve continuar distinguindo execução técnica de efeito desejado: exit code, stdout e stderr são observações, não prova automática de que o critério semântico do step foi satisfeito.
 
 ## Primeira interpretação cognitiva
 
