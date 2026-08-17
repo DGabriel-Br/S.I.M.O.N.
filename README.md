@@ -166,7 +166,7 @@ uv run simon plan-next gol_ID_DO_GOAL
 
 A seleção é determinística. Um step somente pode aparecer como `READY` quando o Goal está `ACTIVE`, todas as dependências possuem Action concluída com Verification `VERIFIED`, não existe tentativa em andamento, as preconditions estão resolvidas e a capability requerida está disponível.
 
-O corte atual possui um catálogo mínimo de IDs estáveis de capability. O modelo não escolhe esses IDs diretamente. `COLLECT` usa `source` para distinguir evidência fornecida pelo usuário de coleta que o próprio sistema precisará realizar; `ANALYZE`, `CHANGE` e `EXECUTE` são atribuídos ao SIMON e compilam para `cognition.analyze`, `unknown` ou `process.run`. `user.ask` e `process.run` estão disponíveis no runtime neste estágio; as demais necessidades aparecem honestamente como `CAPABILITY_UNAVAILABLE`. `user.perform` permanece no catálogo para histórico e uma futura necessidade explícita, mas não é emitido por novas PlanProposals do Planner v0.1.
+O corte atual possui um catálogo mínimo de IDs estáveis de capability. O modelo não escolhe esses IDs diretamente. `COLLECT` usa `source` para distinguir evidência fornecida pelo usuário de coleta que o próprio sistema precisará realizar; `ANALYZE`, `CHANGE` e `EXECUTE` são atribuídos ao SIMON e compilam para `cognition.analyze`, `unknown` ou `process.run`. `user.ask`, `process.run` e `cognition.analyze` estão disponíveis no runtime neste estágio; as demais necessidades aparecem honestamente como `CAPABILITY_UNAVAILABLE`. `user.perform` permanece no catálogo para histórico e uma futura necessidade explícita, mas não é emitido por novas PlanProposals do Planner v0.1.
 
 Novas PlanProposals compiladas recebem `preconditions=[]`. Preconditions textuais permanecem suportadas apenas para Plans históricos e, quando existem, são tratadas conservadoramente como `PRECONDITION_UNRESOLVED` até surgir um mecanismo verificável para resolvê-las.
 
@@ -323,9 +323,25 @@ Essa prova não interpreta o significado da saída. Um processo que termina com 
 
 A operação é idempotente para o mesmo Event de execução e só aceita a tentativa mais recente do step. Nenhuma nova tabela ou migration foi necessária; o SQLite permanece no schema 10.
 
+## Primeira execução operacional de `cognition.analyze`
+
+Quando `plan-next` identifica um step `cognition.analyze` como `READY`, a análise pode ser iniciada com um modelo local já disponível no Ollama:
+
+```powershell
+uv run simon plan-analyze --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
+```
+
+`cognition.analyze` agora é uma capability operacional real. O comando cria uma Action `cognition.analyze`, transita `PENDING -> RUNNING`, reúne somente Events que já sustentam Verification `VERIFIED` de steps anteriores do mesmo Plan e entrega esse material ao modelo como dados sem autoridade de instrução. A tarefa humana do step e seu critério de verificação também entram apenas como contexto.
+
+A saída usa um contrato estruturado com `summary`, `findings` e `uncertainties`. Cada finding precisa citar IDs de Events que realmente foram fornecidos ao modelo; referências a Events externos à evidência recebida tornam a tentativa `FAILED` em vez de serem aceitas como grounding implícito. Falhas do ModelProvider também encerram a Action como `FAILED` e ficam registradas em `cognition.analysis.failed`.
+
+Em sucesso, a análise é preservada no Event `cognition.analysis.completed`, a Action termina `COMPLETED` e referencia esse Event em `reported_result`. Nenhum Claim, World state, Plan ou Goal é alterado pela capability. Ela também não cria Verification automaticamente: uma análise cognitiva concluída continua `VERIFICATION_PENDING` até existir um gate epistemológico separado capaz de avaliar o resultado sem permitir que a própria execução se declare verdadeira.
+
+Nenhuma nova tabela ou migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Implementar `cognition.analyze` como a próxima capability operacional. Ela deverá consumir evidências já persistidas de steps anteriores, incluindo os Events de `process.run`, e produzir uma análise cognitiva estruturada sem ganhar autoridade para alterar o World ou confirmar sozinha uma conclusão sem evidência adequada.
+Implementar a verificação epistemológica de `cognition.analyze`. O próximo corte deverá avaliar o Event `cognition.analysis.completed` contra o critério do step, persistir o julgamento como `ASSESSED` e exigir confirmação explícita antes de promover uma conclusão positiva para `VERIFIED`, generalizando somente o mínimo necessário do gate que hoje existe para `user.ask`.
 
 ## Primeira interpretação cognitiva
 

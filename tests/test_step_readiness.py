@@ -274,7 +274,7 @@ def test_user_ask_with_persisted_preconditions_remains_blocked(tmp_path: Path) -
 
     result = evaluate_active_plan(database_path, goal_id=goal.id)
 
-    assert result.available_capabilities == ("process.run", "user.ask")
+    assert result.available_capabilities == ("cognition.analyze", "process.run", "user.ask")
     assert result.next_step is None
     assert result.steps[0].state == "BLOCKED"
     assert result.steps[0].blockers[0].kind == "PRECONDITION_UNRESOLVED"

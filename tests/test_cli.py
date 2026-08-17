@@ -624,7 +624,7 @@ def test_plan_next_reports_blockers_without_creating_action(
 
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert f"Plan: {plan.id}" in output
-    assert "Capabilities executáveis registradas: process.run, user.ask" in output
+    assert "Capabilities executáveis registradas: cognition.analyze, process.run, user.ask" in output
     assert "Próximo passo executável: nenhum" in output
     assert "PRECONDITION_UNRESOLVED" in output
     assert "CAPABILITY_UNAVAILABLE" in output
@@ -646,7 +646,11 @@ def test_plan_next_reports_blockers_without_creating_action(
     payload = json.loads(str(row[0]))
     assert row[1] == goal.id
     assert payload["plan_id"] == plan.id
-    assert payload["available_capabilities"] == ["process.run", "user.ask"]
+    assert payload["available_capabilities"] == [
+        "cognition.analyze",
+        "process.run",
+        "user.ask",
+    ]
     assert payload["next_step_id"] is None
     assert payload["steps"][0]["step_id"] == "step_01"
 

@@ -55,8 +55,8 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
     ),
     CapabilitySpec(
         id="cognition.analyze",
-        description="Analisar cognitivamente dados já disponíveis no contexto do SIMON.",
-        available=False,
+        description="Analisar cognitivamente evidências já verificadas e persistidas pelo SIMON.",
+        available=True,
     ),
     CapabilitySpec(
         id="unknown",

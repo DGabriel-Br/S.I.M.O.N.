@@ -16,6 +16,7 @@ from simon.cognition import (
     interpret_user_input,
     propose_goal,
 )
+from simon.cognition_analysis import execute_next_cognition_analysis
 from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
@@ -193,6 +194,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="argumentos entregues diretamente ao executável",
     )
 
+    plan_analyze = commands.add_parser(
+        "plan-analyze",
+        help="executa o próximo step cognition.analyze READY do Plan ativo",
+    )
+    plan_analyze.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    plan_analyze.add_argument(
+        "goal_id",
+        help="ID do Goal cujo próximo step cognition.analyze será executado",
+    )
+    _add_ollama_arguments(plan_analyze)
+
     process_verify = commands.add_parser(
         "process-verify",
         help="verifica objetivamente a evidência técnica de uma Action process.run concluída",
@@ -347,6 +363,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.arguments,
             args.cwd,
             args.process_timeout,
+        )
+    if args.command == "plan-analyze":
+        return _plan_analyze(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.goal_id,
         )
     if args.command == "process-verify":
         return _process_verify(database_path, args.action_id)
@@ -1021,6 +1045,68 @@ def _plan_run(
         print("stderr: vazio")
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
+
+
+def _plan_analyze(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    goal_id: str,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        receipt = execute_next_cognition_analysis(
+            database_path,
+            provider,
+            model=model,
+            goal_id=goal_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Action cognition.analyze: falha ({exc})")
+        return 1
+
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Capability: {receipt.action.kind}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Modelo: {receipt.model}")
+    print(f"Evidências consumidas: {len(receipt.evidence_event_ids)}")
+    for event_id in receipt.evidence_event_ids:
+        print(f"- {event_id}")
+    print(f"Resultado registrado: {receipt.result_event_id}")
+
+    if receipt.analysis is None:
+        failure = receipt.action.failure or {}
+        print(f"Falha cognitiva: {failure.get('message', 'não especificada')}")
+        print("Verification criada: não")
+        return 1
+
+    print("Análise:")
+    print(receipt.analysis.summary)
+    if receipt.analysis.findings:
+        print("Findings:")
+        for finding in receipt.analysis.findings:
+            print(f"- {finding.statement}")
+            print(f"  Evidência: {', '.join(finding.evidence_event_ids)}")
+    else:
+        print("Findings: nenhum")
+    if receipt.analysis.uncertainties:
+        print("Incertezas:")
+        for uncertainty in receipt.analysis.uncertainties:
+            print(f"- {uncertainty}")
+    else:
+        print("Incertezas: nenhuma")
+    if receipt.prompt_eval_count is not None:
+        print(f"Tokens de entrada: {receipt.prompt_eval_count}")
+    if receipt.eval_count is not None:
+        print(f"Tokens gerados: {receipt.eval_count}")
+    if receipt.total_duration_ns is not None:
+        print(f"Duração: {receipt.total_duration_ns / 1_000_000_000:.2f}s")
+    print("Verification criada: não")
+    return 0
 
 
 def _process_verify(database_path: Path, action_id: str) -> int:
