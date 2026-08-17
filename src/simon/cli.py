@@ -840,6 +840,12 @@ def _goal_complete(database_path: Path, assessment_verification_id: str) -> int:
     print(f"Status do Goal: {receipt.goal.status}")
     print(f"Confirmação: {receipt.confirmation_event_id}")
     print(f"Conclusão: {receipt.completion_event_id}")
+    print(f"Experience: {receipt.experience_closure.experience.id}")
+    print(f"Outcome da Experience: {receipt.experience_closure.experience.outcome}")
+    if receipt.experience_closure.created:
+        print("Experience consolidada: sim")
+    else:
+        print("Experience consolidada: não (já existia)")
     if receipt.created:
         print("Goal concluído: sim")
     else:

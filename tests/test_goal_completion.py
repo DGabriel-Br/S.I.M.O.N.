@@ -329,3 +329,145 @@ def test_goal_completion_records_confirmation_and_completion_events(tmp_path: Pa
     assert completion_payload["goal_id"] == goal.id
     assert completion_payload["goal_verification_id"] == receipt.verification.id
     assert completion_payload["status"] == "COMPLETED"
+
+
+def test_goal_completion_closes_causal_experience_without_copying_entire_event_log(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    from simon.events import Event, append_event
+    from simon.experiences import get_experience
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, _, assessment_id = _satisfied_goal_assessment(database_path)
+    unrelated = Event.create(
+        kind="debug.noise",
+        source="test",
+        payload={"note": "não é causal"},
+        goal_id=goal.id,
+    )
+    append_event(database_path, unrelated)
+
+    receipt = complete_goal_from_assessment(
+        database_path,
+        assessment_verification_id=assessment_id,
+    )
+    experience = receipt.experience_closure.experience
+
+    assert receipt.experience_closure.created is True
+    assert experience.goal_id == goal.id
+    assert experience.status == "CLOSED"
+    assert experience.outcome == "SUCCESS"
+    assert experience.started_at == goal.created_at
+    assert experience.ended_at is not None
+    assert receipt.completion_event_id in experience.event_ids
+    assert receipt.experience_closure.closure_event_id in experience.event_ids
+    assert unrelated.id not in experience.event_ids
+    assert get_experience(database_path, experience.id) == experience
+
+    with sqlite3.connect(database_path) as connection:
+        action_ids = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT id FROM actions WHERE goal_id = ? ORDER BY created_at, id",
+                (goal.id,),
+            ).fetchall()
+        )
+    assert experience.action_ids == action_ids
+    assert receipt.verification.id in experience.verification_ids
+
+
+def test_goal_completion_experience_records_plan_lineage(
+    tmp_path: Path,
+) -> None:
+    import json
+    import sqlite3
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal, plan_id, assessment_id = _satisfied_goal_assessment(database_path)
+
+    receipt = complete_goal_from_assessment(
+        database_path,
+        assessment_verification_id=assessment_id,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT payload_json, experience_id FROM events WHERE id = ?",
+            (receipt.experience_closure.closure_event_id,),
+        ).fetchone()
+    assert row is not None
+    payload = json.loads(str(row[0]))
+    assert row[1] == receipt.experience_closure.experience.id
+    assert payload["goal_id"] == goal.id
+    assert payload["goal_verification_id"] == receipt.verification.id
+    assert payload["plans"] == [
+        {"plan_id": plan_id, "revision": 1, "status": "COMPLETED"}
+    ]
+    assert payload["action_ids"] == list(receipt.experience_closure.experience.action_ids)
+    assert payload["verification_ids"] == list(
+        receipt.experience_closure.experience.verification_ids
+    )
+
+
+def test_goal_completion_reuses_same_closed_experience(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    database_path, _ = initialize_storage(tmp_path)
+    _, _, assessment_id = _satisfied_goal_assessment(database_path)
+
+    first = complete_goal_from_assessment(
+        database_path,
+        assessment_verification_id=assessment_id,
+    )
+    second = complete_goal_from_assessment(
+        database_path,
+        assessment_verification_id=assessment_id,
+    )
+
+    assert second.created is False
+    assert second.experience_closure.created is False
+    assert second.experience_closure.experience.id == first.experience_closure.experience.id
+    assert second.experience_closure.closure_event_id == first.experience_closure.closure_event_id
+    with sqlite3.connect(database_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM experiences WHERE goal_id = ?",
+            (first.goal.id,),
+        ).fetchone()
+    assert count is not None and count[0] == 1
+
+
+def test_existing_goal_completion_can_backfill_missing_experience(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    database_path, _ = initialize_storage(tmp_path)
+    _, _, assessment_id = _satisfied_goal_assessment(database_path)
+    first = complete_goal_from_assessment(
+        database_path,
+        assessment_verification_id=assessment_id,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "DELETE FROM events WHERE id = ?",
+            (first.experience_closure.closure_event_id,),
+        )
+        connection.execute(
+            "DELETE FROM experiences WHERE id = ?",
+            (first.experience_closure.experience.id,),
+        )
+
+    backfilled = complete_goal_from_assessment(
+        database_path,
+        assessment_verification_id=assessment_id,
+    )
+
+    assert backfilled.created is False
+    assert backfilled.experience_closure.created is True
+    assert backfilled.experience_closure.experience.status == "CLOSED"
+    assert backfilled.experience_closure.experience.outcome == "SUCCESS"

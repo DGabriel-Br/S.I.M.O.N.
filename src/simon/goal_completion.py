@@ -8,6 +8,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from simon.events import Event
+from simon.goal_experience import (
+    GoalExperienceClosure,
+    ensure_completed_goal_experience_in_connection,
+)
 from simon.goals import Goal
 from simon.verification import (
     VerificationResult,
@@ -29,6 +33,7 @@ class GoalCompletionReceipt:
     goal: Goal
     confirmation_event_id: str
     completion_event_id: str
+    experience_closure: GoalExperienceClosure
     created: bool
 
 
@@ -132,6 +137,13 @@ def complete_goal_from_assessment(
             goal_id=completed_goal.id,
         )
         _insert_event(connection, completion_event)
+        experience_closure = ensure_completed_goal_experience_in_connection(
+            connection,
+            goal_id=completed_goal.id,
+            goal_verification_id=verification.id,
+            goal_completion_event_id=completion_event.id,
+            trace_id=completion_trace_id,
+        )
 
     return GoalCompletionReceipt(
         assessment=current,
@@ -139,6 +151,7 @@ def complete_goal_from_assessment(
         goal=completed_goal,
         confirmation_event_id=confirmation_event.id,
         completion_event_id=completion_event.id,
+        experience_closure=experience_closure,
         created=True,
     )
 
@@ -362,12 +375,20 @@ def _find_existing_completion_in_connection(
     goal = _goal_in_connection(connection, assessment.subject_id)
     if goal.status != "COMPLETED":
         return None
+    experience_closure = ensure_completed_goal_experience_in_connection(
+        connection,
+        goal_id=goal.id,
+        goal_verification_id=verification.id,
+        goal_completion_event_id=completion_event_id,
+        trace_id=f"trc_{uuid4().hex}",
+    )
     return GoalCompletionReceipt(
         assessment=assessment,
         verification=verification,
         goal=goal,
         confirmation_event_id=confirmation_event_id,
         completion_event_id=completion_event_id,
+        experience_closure=experience_closure,
         created=False,
     )
 

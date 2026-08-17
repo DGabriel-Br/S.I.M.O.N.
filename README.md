@@ -425,9 +425,19 @@ A operação é idempotente para o mesmo assessment. Repetir `goal-complete` rec
 
 Nenhuma migration foi necessária; o SQLite permanece no schema 10.
 
+## Primeira `Experience` operacional real
+
+Quando `goal-complete` fecha um Goal confirmado, o S.I.M.O.N. agora consolida na mesma transação uma `Experience` `CLOSED` com `outcome=SUCCESS`. O primeiro corte não mantém uma Experience mutável aberta durante cada comando curto da CLI. Em vez disso, materializa no fechamento a unidade causal completa a partir do estado persistido, representando o intervalo desde a criação do Goal até seu Event `goal.completed`.
+
+A Experience referencia todas as Actions e VerificationResults pertencentes ao Goal, mas não copia seus payloads. `event_ids` contém apenas evidências usadas pelas Verifications e marcos necessários para reconstruir a causalidade, como aceitação do Goal, materialização de Plans e conclusão. Events irrelevantes do mesmo Goal ficam fora da Experience.
+
+O Event `experience.goal_cycle.closed` registra a linhagem das revisões de Plan por ID, revisão e status, além das referências para Actions e Verifications. O `summary` é determinístico e operacional; ele não substitui as evidências nem tenta produzir aprendizado automaticamente.
+
+Repetir `goal-complete` reutiliza a mesma Experience. Conclusões de Goal criadas antes deste corte podem receber a Experience retrospectivamente quando forem reencontradas, sem duplicar a Verification ou o Event `goal.completed`. Nenhuma migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Fechar a primeira `Experience` operacional real a partir de um Goal concluído. A infraestrutura de Experience já existe, mas ainda não participa do ciclo causal de ponta a ponta. O próximo corte deve usar um caso concluído para registrar início, suspensão/retomada quando necessário e `CLOSED` com outcome, preservando referências ao Goal, Plans, Actions, Verifications e Events relevantes sem criar uma segunda cópia do histórico.
+Usar uma `Experience` `CLOSED` como fonte para a primeira promoção explícita de `Memory`. O próximo corte deve exigir decisão consciente sobre o que vale preservar, manter a Experience e suas evidências como proveniência e evitar transformar todo resultado de Goal em memória automaticamente.
 
 ## Primeira interpretação cognitiva
 

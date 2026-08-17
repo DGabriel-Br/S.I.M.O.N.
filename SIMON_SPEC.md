@@ -2366,6 +2366,10 @@ No primeiro corte, verificadores serão implementados apenas para as operações
 
 Experience handling pode permanecer uma responsabilidade de fechamento de ciclo, sem um `Experience Service` complexo.
 
+No primeiro corte executável, a CLI curta não mantém uma Experience mutável viva entre comandos. Quando um Goal chega a `COMPLETED` por Verification confirmada, o Core materializa uma Experience `CLOSED` que representa o intervalo causal desde a criação do Goal até `goal.completed`. A unidade referencia Actions, VerificationResults e somente os Events necessários para evidência e marcos de lifecycle. Revisions de Plan são preservadas como referências no Event de fechamento, sem duplicar os Plans dentro da Experience.
+
+Esse corte é compatível com retomada porque a causalidade é reconstruída a partir de estado já persistido. Se um runtime futuro mantiver sessões longas reais, Experiences `ACTIVE/SUSPENDED` podem entrar no fluxo quando houver benefício concreto, sem invalidar as Experiences materializadas no fechamento.
+
 **Responsabilidade:** agregar os eventos causalmente relevantes de uma tentativa em uma unidade persistente de experiência.
 
 **Recebe:**
