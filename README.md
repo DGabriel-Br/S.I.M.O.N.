@@ -53,6 +53,7 @@ O projeto já consegue:
 - registrar respostas humanas como Events e concluir a Action sem inventar Verification automática;
 - ligar steps `process.run` a parâmetros estruturados sem interpretar descrição humana como comando;
 - executar o próximo step `process.run` READY sem shell implícito;
+- verificar deterministicamente a evidência técnica produzida por uma Action `process.run` concluída;
 - registrar autorização explícita, lifecycle da Action, stdout, stderr, exit code e duração da execução.
 
 O primeiro adapter de modelo local já existe:
@@ -308,9 +309,23 @@ Falha ao iniciar o processo e timeout operacional encerram a Action como `FAILED
 
 O executor não introduz Tool Gateway genérico, Policy framework, nova tabela ou migration. O gate atual é deliberadamente pequeno: Goal e Plan precisam continuar ativos, o step precisa ser o próximo READY com capability `process.run`, o diretório de trabalho precisa existir e a execução precisa ter sido solicitada explicitamente pela fronteira CLI.
 
+## Primeira Verification de `process.run`
+
+Depois de uma Action `process.run` terminar em `COMPLETED`, a evidência técnica pode ser verificada explicitamente:
+
+```powershell
+uv run simon process-verify act_ID_DA_ACTION
+```
+
+A verificação usa diretamente o Event `process.execution.completed` e exige consistência entre Action, Goal, Plan, step, `exit_code`, duração, `stdout` e `stderr`. Quando essa evidência estrutural está íntegra, cria um `VerificationResult` `VERIFIED` para a obrigação operacional de que a execução realmente aconteceu e produziu resultado técnico observável.
+
+Essa prova não interpreta o significado da saída. Um processo que termina com exit code diferente de zero continua sendo uma execução observada e pode ter sua Action verificada nesse sentido. O critério textual produzido pelo Planner é preservado no resultado, mas fica explicitamente marcado como não avaliado semanticamente. Assim, `process.run` prova a execução; um passo cognitivo posterior decide o que stdout, stderr e exit code significam para o Goal.
+
+A operação é idempotente para o mesmo Event de execução e só aceita a tentativa mais recente do step. Nenhuma nova tabela ou migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Implementar a primeira Verification de `process.run` usando o Event de execução como evidência. A Verification deve continuar distinguindo execução técnica de efeito desejado: exit code, stdout e stderr são observações, não prova automática de que o critério semântico do step foi satisfeito.
+Implementar `cognition.analyze` como a próxima capability operacional. Ela deverá consumir evidências já persistidas de steps anteriores, incluindo os Events de `process.run`, e produzir uma análise cognitiva estruturada sem ganhar autoridade para alterar o World ou confirmar sozinha uma conclusão sem evidência adequada.
 
 ## Primeira interpretação cognitiva
 

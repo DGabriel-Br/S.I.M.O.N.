@@ -30,6 +30,7 @@ from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
 from simon.process_binding import ProcessRunRequest
 from simon.process_execution import execute_next_process_run
+from simon.process_verification import verify_process_run_execution
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
@@ -192,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="argumentos entregues diretamente ao executável",
     )
 
+    process_verify = commands.add_parser(
+        "process-verify",
+        help="verifica objetivamente a evidência técnica de uma Action process.run concluída",
+    )
+    process_verify.add_argument(
+        "action_id",
+        help="ID da Action process.run COMPLETED que será verificada",
+    )
+
     action_answer = commands.add_parser(
         "action-answer",
         help="registra a resposta do usuário para uma Action user.ask em espera",
@@ -338,6 +348,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.cwd,
             args.process_timeout,
         )
+    if args.command == "process-verify":
+        return _process_verify(database_path, args.action_id)
     if args.command == "action-answer":
         return _action_answer(database_path, args.action_id, " ".join(args.text))
     if args.command == "action-assess":
@@ -1009,6 +1021,34 @@ def _plan_run(
         print("stderr: vazio")
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
+
+
+def _process_verify(database_path: Path, action_id: str) -> int:
+    try:
+        receipt = verify_process_run_execution(database_path, action_id=action_id)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Verification process.run: falha ({exc})")
+        return 1
+
+    observed = receipt.verification.observed
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Verification: {receipt.verification.id}")
+    print(f"Status persistido: {receipt.verification.status}")
+    print(f"Força: {receipt.verification.strength}")
+    print(f"Evidência: {receipt.verification.evidence_event_ids[0]}")
+    print(f"Exit code observado: {observed.get('exit_code')}")
+    print(
+        "Critério do Plan preservado, sem avaliação semântica: "
+        f"{observed.get('plan_verification_intent')}"
+    )
+    if receipt.created:
+        print("Verification criada: sim")
+    else:
+        print("Verification criada: não (já existia para esta execução)")
+    return 0
 
 
 def _action_answer(database_path: Path, action_id: str, text: str) -> int:

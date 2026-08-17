@@ -1329,3 +1329,83 @@ def test_cli_plan_run_executes_next_process_step_without_auto_verification(
     actions = list_actions_for_plan(database_path, plan.id)
     assert len(actions) == 1
     assert actions[0].status == "COMPLETED"
+
+
+def test_cli_process_verify_promotes_observed_execution_without_semantic_claim(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Executar script local",
+        origin="USER",
+        desired_state={"description": "execução observada"},
+        success_criteria=({"description": "resultado registrado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar script de teste.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "process.run",
+                "verification": "A execução produziu saída observável.",
+            },
+        ),
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "plan-run",
+            goal.id,
+            "--cwd",
+            str(tmp_path),
+            sys.executable,
+            "-c",
+            "import sys; print('observado'); sys.exit(7)",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert len(actions) == 1
+    action = actions[0]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "process-verify",
+            action.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action: {action.id}" in output
+    assert "Status persistido: VERIFIED" in output
+    assert "Exit code observado: 7" in output
+    assert "Critério do Plan preservado, sem avaliação semântica" in output
+    assert "Verification criada: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT status, evidence_event_ids_json, observed_json
+            FROM verification_results
+            WHERE subject_type = 'ACTION' AND subject_id = ?
+            """,
+            (action.id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == "VERIFIED"
+    observed = json.loads(str(row[2]))
+    assert observed["exit_code"] == 7
+    assert observed["semantic_effect_assessed"] is False
