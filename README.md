@@ -58,7 +58,9 @@ O projeto já consegue:
 - executar `cognition.analyze` sobre evidências previamente verificadas sem alterar World, Goal ou Plan;
 - persistir análises estruturadas com findings explicitamente ligados aos Events que os sustentam;
 - avaliar semanticamente uma análise contra o critério do step como `ASSESSED`;
-- confirmar explicitamente assessments positivos de `user.ask` e `cognition.analyze` antes de promovê-los a `VERIFIED`.
+- confirmar explicitamente assessments positivos de `user.ask` e `cognition.analyze` antes de promovê-los a `VERIFIED`;
+- resolver explicitamente um step `CHANGE/unknown` com `file.patch` sem reinterpretar a descrição humana do Plan;
+- aplicar uma substituição textual localizada em arquivo UTF-8 dentro de um workspace autorizado, preservando hashes antes/depois e sem criar Verification automática.
 
 O primeiro adapter de modelo local já existe:
 
@@ -365,9 +367,33 @@ O gate de confirmação agora suporta os dois tipos concretos que existem no run
 
 Nenhuma migration foi necessária; o SQLite permanece no schema 10.
 
+## Primeira modificação controlada com `file.patch`
+
+O Plan real confirmou um step `CHANGE/SIMON` cuja verificação exige que o arquivo do script seja modificado e salvo. Esse caso concreto introduz `file.patch` como primeira capability de alteração do filesystem, sem transformar todo `CHANGE` futuro em escrita de arquivo.
+
+O Plan persistido continua com `capability=unknown`. A resolução acontece explicitamente na fronteira operacional: `plan-patch` só aceita um step `CHANGE/unknown` atribuído ao SIMON quando `CAPABILITY_UNAVAILABLE: unknown` é o único bloqueio restante. Dependências, preconditions, tentativas anteriores e outras formas de bloqueio não são ignoradas.
+
+A operação usa um workspace explícito e um caminho relativo. Caminhos absolutos, `..`, travessia por links simbólicos e alvos que resolvem para fora do workspace são recusados. O patch v0.1 não recebe um arquivo inteiro para sobrescrever; ele exige um trecho `expected_text` que ocorra exatamente uma vez e um `replacement_text`, aplicando somente essa substituição.
+
+Exemplo:
+
+```powershell
+uv run simon plan-patch gol_ID_DO_GOAL `
+  --workspace C:\projeto `
+  --file script.py `
+  --old "valor = 1" `
+  --new "valor = 2"
+```
+
+O arquivo é lido e modificado como bytes UTF-8 para preservar o restante do conteúdo e os line endings existentes. A gravação é feita por arquivo temporário no mesmo diretório seguido de substituição atômica. O Event `file.patch.completed` registra caminho, SHA-256 anterior, SHA-256 posterior e hashes dos trechos substituído e novo; o conteúdo integral do patch permanece no `input_data` da Action para proveniência.
+
+A Action termina `COMPLETED` quando a alteração foi realmente aplicada ao arquivo. Isso ainda não prova que a correção desejada está presente ou que o Goal avançou corretamente. O step permanece `VERIFICATION_PENDING` até uma Verification separada reler o arquivo e confirmar a evidência observável.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Usar o Plan real depois da confirmação de `cognition.analyze` para chegar ao próximo bloqueio operacional. A revisão atual deve expor o step `CHANGE` ainda compilado como `unknown`; somente então será definida a menor capability concreta de modificação necessária para esse caso, sem introduzir escrita genérica de arquivos antes de existir um alvo e um contrato reais.
+Adicionar a Verification objetiva de `file.patch`: reler o arquivo atual, confirmar que ele ainda corresponde ao `after_sha256` registrado pela Action e provar que a substituição autorizada foi aplicada sem tratar essa constatação estrutural como prova automática de que a correção de software está semanticamente certa.
 
 ## Primeira interpretação cognitiva
 

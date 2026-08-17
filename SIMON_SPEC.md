@@ -5119,3 +5119,49 @@ EXECUTE -> SIMON
 Isso não significa que o SIMON já consiga executar essas operações. Quando a capability estiver ausente, o Plan continua válido e o readiness deve expor `CAPABILITY_UNAVAILABLE`. Em particular, `CHANGE` compila para `unknown` até existir uma capability concreta de modificação. A ausência deixa de ser escondida através de `user.perform`.
 
 `user.perform` não é removido do catálogo, pois Plans históricos e uma futura necessidade real de ação humana ainda podem justificá-lo. Ele apenas deixa de ser produzido automaticamente pelo Planner v0.1. Essa restrição pode ser revisada quando aparecer um caso concreto em que uma ação humana externa seja parte essencial do Goal e não simples terceirização de trabalho que pertence ao SIMON.
+
+### 32.23. Primeira modificação operacional: `file.patch`
+
+O Plan real da revisão 3 expôs um step `CHANGE/SIMON` com `capability=unknown` e critério explícito de que o arquivo do script deve ser modificado e salvo. Esse caso concreto justifica a primeira capability de mudança no filesystem.
+
+`CHANGE` continua compilando para `unknown`. Nem toda mudança futura é uma alteração de arquivo, portanto o Core não converte `CHANGE` em `file.patch` por padrão e não interpreta `capability_detail` ou `description` por regex. A resolução ocorre apenas quando o usuário invoca explicitamente a operação `plan-patch`.
+
+O binding v0.1 aceita somente um step persistido que satisfaça simultaneamente:
+
+```text
+kind = WORLD
+intent_role = CHANGE
+intent_actor = SIMON
+capability = unknown
+```
+
+Além disso, `CAPABILITY_UNAVAILABLE: unknown` precisa ser o único blocker restante do step. Assim, a resolução concreta da capability não contorna dependências, preconditions, tentativas anteriores ou Verification pendente. O Plan não é reescrito e a proveniência original permanece intacta; a Action registra `kind=file.patch` e `bound_from_capability=unknown`.
+
+A requisição concreta possui somente:
+
+```text
+workspace
+relative_path
+expected_text
+replacement_text
+```
+
+O workspace é autorizado explicitamente pela fronteira CLI. O target precisa permanecer dentro dele após resolução canônica. Caminhos absolutos, segmentos `..`, links simbólicos e targets fora do workspace são recusados.
+
+O v0.1 não oferece overwrite genérico. `expected_text` precisa existir exatamente uma vez no arquivo UTF-8 e é substituído por `replacement_text`. Zero ou múltiplas ocorrências encerram a Action como `FAILED` sem modificar o arquivo. O restante do conteúdo permanece byte a byte igual, inclusive line endings não tocados pela substituição.
+
+A escrita usa arquivo temporário no mesmo diretório e `os.replace` para reduzir risco de escrita parcial. O Event `file.patch.completed` registra:
+
+```text
+target_path
+relative_path
+before_sha256
+after_sha256
+expected_text_sha256
+replacement_text_sha256
+```
+
+O conteúdo do patch permanece no `input_data` da Action e não precisa ser duplicado no Event. A Action `COMPLETED` significa apenas que a alteração localizada foi aplicada. Nenhum `VerificationResult` é criado automaticamente; a próxima etapa deve reler o arquivo e verificar a evidência estrutural separadamente.
+
+Nenhuma migration é necessária e o SQLite permanece no schema 10.
+

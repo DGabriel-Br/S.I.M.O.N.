@@ -7,6 +7,7 @@ CapabilityId = Literal[
     "user.ask",
     "user.perform",
     "file.read",
+    "file.patch",
     "process.run",
     "logs.read",
     "cognition.analyze",
@@ -42,6 +43,14 @@ CAPABILITY_CATALOG: tuple[CapabilitySpec, ...] = (
         id="file.read",
         description="Ler conteúdo de um arquivo local já identificado e autorizado.",
         available=False,
+    ),
+    CapabilitySpec(
+        id="file.patch",
+        description=(
+            "Aplicar uma substituição textual localizada em arquivo UTF-8 dentro de um workspace "
+            "explicitamente autorizado."
+        ),
+        available=True,
     ),
     CapabilitySpec(
         id="process.run",

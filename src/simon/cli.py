@@ -23,6 +23,7 @@ from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experiences import suspend_active_experiences
+from simon.file_patch import FilePatchRequest, execute_next_file_patch
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
 from simon.goal_verification import assess_goal_outcome, get_latest_goal_assessment_context
 from simon.goals import OPEN_STATUSES, get_goal
@@ -191,6 +192,38 @@ def build_parser() -> argparse.ArgumentParser:
         "arguments",
         nargs=argparse.REMAINDER,
         help="argumentos entregues diretamente ao executável",
+    )
+
+    plan_patch = commands.add_parser(
+        "plan-patch",
+        help="resolve explicitamente um CHANGE/unknown com uma alteração textual localizada",
+    )
+    plan_patch.add_argument(
+        "goal_id",
+        help="ID do Goal cujo próximo CHANGE/unknown será modificado",
+    )
+    plan_patch.add_argument(
+        "--workspace",
+        required=True,
+        help="diretório raiz autorizado para a modificação",
+    )
+    plan_patch.add_argument(
+        "--file",
+        required=True,
+        dest="relative_path",
+        help="caminho relativo do arquivo dentro do workspace",
+    )
+    plan_patch.add_argument(
+        "--old",
+        required=True,
+        dest="expected_text",
+        help="trecho UTF-8 que precisa existir exatamente uma vez",
+    )
+    plan_patch.add_argument(
+        "--new",
+        required=True,
+        dest="replacement_text",
+        help="trecho UTF-8 substituto; use uma string vazia para remoção",
     )
 
     plan_analyze = commands.add_parser(
@@ -377,6 +410,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.arguments,
             args.cwd,
             args.process_timeout,
+        )
+    if args.command == "plan-patch":
+        return _plan_patch(
+            database_path,
+            args.goal_id,
+            args.workspace,
+            args.relative_path,
+            args.expected_text,
+            args.replacement_text,
         )
     if args.command == "plan-analyze":
         return _plan_analyze(
@@ -1065,6 +1107,47 @@ def _plan_run(
         print(receipt.stderr, end="" if receipt.stderr.endswith("\n") else "\n")
     else:
         print("stderr: vazio")
+    print("Verification criada: não")
+    return 0 if receipt.action.status == "COMPLETED" else 1
+
+
+def _plan_patch(
+    database_path: Path,
+    goal_id: str,
+    workspace: str,
+    relative_path: str,
+    expected_text: str,
+    replacement_text: str,
+) -> int:
+    try:
+        request = FilePatchRequest(
+            workspace=workspace,
+            relative_path=relative_path,
+            expected_text=expected_text,
+            replacement_text=replacement_text,
+        )
+        receipt = execute_next_file_patch(
+            database_path,
+            goal_id=goal_id,
+            request=request,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Action file.patch: falha ({exc})")
+        return 1
+
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Capability resolvida: {receipt.action.kind}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Arquivo: {receipt.target_path}")
+    print(f"Autorização registrada: {receipt.authorization_event_id}")
+    print(f"Modificação registrada: {receipt.modification_event_id}")
+    if receipt.before_sha256 is not None:
+        print(f"SHA-256 anterior: {receipt.before_sha256}")
+    if receipt.after_sha256 is not None:
+        print(f"SHA-256 atual: {receipt.after_sha256}")
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
 

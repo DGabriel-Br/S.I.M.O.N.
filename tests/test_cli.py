@@ -624,7 +624,10 @@ def test_plan_next_reports_blockers_without_creating_action(
 
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert f"Plan: {plan.id}" in output
-    assert "Capabilities executáveis registradas: cognition.analyze, process.run, user.ask" in output
+    assert (
+        "Capabilities executáveis registradas: cognition.analyze, file.patch, process.run, user.ask"
+        in output
+    )
     assert "Próximo passo executável: nenhum" in output
     assert "PRECONDITION_UNRESOLVED" in output
     assert "CAPABILITY_UNAVAILABLE" in output
@@ -648,6 +651,7 @@ def test_plan_next_reports_blockers_without_creating_action(
     assert payload["plan_id"] == plan.id
     assert payload["available_capabilities"] == [
         "cognition.analyze",
+        "file.patch",
         "process.run",
         "user.ask",
     ]
@@ -1278,6 +1282,72 @@ def test_plan_propose_uses_goal_assessment_instead_of_stale_intake_questions(
     assert payload["source_open_questions"] == []
     assert payload["source_goal_assessment_id"] == assessment.id
     assert payload["source_completed_plan_id"] == "pln_completed"
+
+
+def test_cli_plan_patch_resolves_change_unknown_without_auto_verification(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 1\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Corrigir script local",
+        origin="USER",
+        desired_state={"description": "script corrigido"},
+        success_criteria=({"description": "arquivo modificado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Realizar a mudança: corrigir variável",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "unknown",
+                "capability_detail": "Correção localizada da variável",
+                "verification": "Arquivo modificado e salvo.",
+                "intent_role": "CHANGE",
+                "intent_actor": "SIMON",
+            },
+        ),
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "plan-patch",
+            goal.id,
+            "--workspace",
+            str(workspace),
+            "--file",
+            "script.py",
+            "--old",
+            "valor = 1",
+            "--new",
+            "valor = 2",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Plan: {plan.id}" in output
+    assert "Capability resolvida: file.patch" in output
+    assert "Status: COMPLETED" in output
+    assert "Verification criada: não" in output
+    assert target.read_text(encoding="utf-8") == "valor = 2\n"
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert len(actions) == 1
+    assert actions[0].kind == "file.patch"
+    assert actions[0].status == "COMPLETED"
 
 
 def test_cli_plan_run_executes_next_process_step_without_auto_verification(
