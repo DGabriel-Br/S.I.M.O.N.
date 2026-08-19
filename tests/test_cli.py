@@ -1790,3 +1790,182 @@ def test_process_retry_cli_recovers_failed_process_attempt(
     assert f"Action anterior: {failed.id}" in output
     assert "Status: COMPLETED" in output
     assert "recovered-cli" in output
+
+
+def test_plan_propose_does_not_replace_healthy_active_plan(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Executar script",
+        origin="USER",
+        desired_state={"description": "O script foi executado."},
+        success_criteria=({"description": "Existe execução observável."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar o script.",
+                "kind": "WORLD",
+                "capability": "process.run",
+                "verification": "Existe execução observável.",
+            },
+        ),
+    )
+
+    class UnexpectedProvider:
+        def __init__(self, **kwargs: object) -> None:
+            raise AssertionError("Planner não deveria ser chamado com Plan ACTIVE saudável")
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", UnexpectedProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "plan-propose",
+            "--model",
+            "fake-model",
+            goal.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Proposta de Plan: não gerada" in output
+    assert f"Plan ACTIVE {plan.id} ainda possui step executável: step_01" in output
+
+
+def test_plan_propose_uses_failed_active_plan_as_explicit_replanning_context(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.actions import create_action, transition_action
+    from simon.events import Event, append_event
+    from simon.model_provider import StructuredModelResult
+    from simon.planning import PlanIntentDraft, PlanIntentStep
+    from simon.verification import create_verification_result
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Corrigir estratégia",
+        origin="USER",
+        desired_state={"description": "A falha deixa de ocorrer."},
+        success_criteria=({"description": "A falha não é reproduzida."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Analisar a hipótese atual.",
+                "kind": "EPISTEMIC",
+                "capability": "cognition.analyze",
+                "verification": "A hipótese explica a falha observada.",
+            },
+        ),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="cognition.analyze",
+    )
+    transition_action(database_path, action.id, "RUNNING")
+    action = transition_action(
+        database_path,
+        action.id,
+        "COMPLETED",
+        reported_result={"analysis_event_id": "evt_analysis"},
+    )
+    evidence = Event.create(
+        kind="cognition.analysis.completed",
+        source="cognition",
+        payload={"action_id": action.id, "summary": "A hipótese não explica o erro."},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    verification = create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action.id,
+        criteria=({"description": "A hipótese explica a falha observada."},),
+        status="ASSESSED",
+        evidence_event_ids=(evidence.id,),
+        observed={
+            "assessment_type": "cognition.analyze.semantic",
+            "verdict": "NOT_SATISFIED",
+            "rationale": "A hipótese foi contrariada pela evidência.",
+        },
+        strength=2,
+    )
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[PlanIntentDraft]:
+            prompt = kwargs.get("prompt")
+            assert isinstance(prompt, str)
+            assert verification.id in prompt
+            assert "CRITERION_NOT_SATISFIED" in prompt
+            return StructuredModelResult(
+                model="fake-model",
+                output=PlanIntentDraft(
+                    summary="Testar uma estratégia alternativa.",
+                    steps=[
+                        PlanIntentStep(
+                            subject="uma estratégia alternativa que discrimine a causa",
+                            role="EXECUTE",
+                            verification="Existe nova evidência observável da estratégia alternativa.",
+                        )
+                    ],
+                ),
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "plan-propose",
+            "--model",
+            "fake-model",
+            goal.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Replanejamento motivado por falha: {verification.id}" in output
+    assert f"Plan ACTIVE substituível: {plan.id} (revisão 1)" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT payload_json
+            FROM events
+            WHERE kind = 'cognition.plan_proposal.completed' AND goal_id = ?
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1
+            """,
+            (goal.id,),
+        ).fetchone()
+
+    assert row is not None
+    payload = json.loads(str(row[0]))
+    assert payload["source_active_plan_id"] == plan.id
+    assert payload["source_active_plan_revision"] == 1
+    assert payload["source_failure_step_id"] == "step_01"
+    assert payload["source_failure_action_id"] == action.id
+    assert payload["source_failure_verification_id"] == verification.id
+    assert payload["source_failure_blocker_kind"] == "CRITERION_NOT_SATISFIED"

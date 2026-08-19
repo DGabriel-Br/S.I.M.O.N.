@@ -5273,3 +5273,44 @@ Falha ao iniciar e timeout continuam produzindo `FAILED`. Uma execução que efe
 
 Esse corte não introduz retry automático, backoff, circuit breaker, limite global de tentativas, nova tabela ou migration. O SQLite permanece no schema 11. A próxima distinção a endurecer é entre falha que admite nova tentativa e evidência negativa que exige revisão da estratégia do Plan.
 
+### 32.27. Replanejamento explícito motivado por falha epistemológica
+
+O hardening posterior ao retry de `process.run` expôs a distinção complementar: uma tentativa operacional pode precisar ser repetida, mas uma conclusão epistemológica negativa pode demonstrar que o Plan atual não deve continuar pela mesma estratégia. O v0.1 não transforma qualquer blocker em replanejamento automático.
+
+`plan-propose` passa a atuar também como gate explícito de revisão quando já existe um Plan `ACTIVE`. Se o Plan ainda possui step `READY`, Action em andamento, Verification pendente, assessment positivo aguardando confirmação ou blocker com recovery local conhecido, a chamada não substitui a estratégia atual. Em particular:
+
+```text
+user.ask + NOT_SATISFIED/UNCLEAR -> action-retry
+process.run + FAILED/INTERRUPTED -> process-retry
+```
+
+Esses caminhos continuam locais porque a evidência disponível ainda não demonstra que a estratégia global precisa mudar.
+
+O primeiro `PlanFailureContext` nasce somente de blockers epistemológicos persistidos:
+
+```text
+VERIFICATION_FAILED
+VERIFICATION_INCONCLUSIVE
+CRITERION_NOT_SATISFIED
+ASSESSMENT_INCONCLUSIVE
+```
+
+A origem precisa ser uma Action `COMPLETED` do Plan `ACTIVE` e do step bloqueado. O contexto preserva Plan e revisão, step, capability, Action, Verification, `observed` e os Events de evidência da conclusão. `user.ask` permanece excluído desse corte porque já possui review/retry local explícito.
+
+Quando esse contexto existe, o Planner recebe `prior_plan_failure` como dado sem autoridade de instrução. A orientação cognitiva é produzir a menor continuação capaz de enfrentar a falha observada, não repetir cegamente a mesma estratégia nem declarar a falha resolvida sem nova evidência. `NOT_SATISFIED` exige estratégia diferente ou evidência discriminante; `INCONCLUSIVE/UNCLEAR` exige produzir a evidência ausente; `FAILED` exige restaurar ou substituir o estado ou estratégia cuja Verification falhou.
+
+O Event `cognition.plan_proposal.completed` preserva a causalidade da revisão através de:
+
+```text
+source_active_plan_id
+source_active_plan_revision
+source_failure_step_id
+source_failure_action_id
+source_failure_verification_id
+source_failure_blocker_kind
+```
+
+Essa proveniência não é apenas documental. `plan-materialize` revalida o estado antes de criar a nova revisão. O Plan fonte precisa continuar `ACTIVE`; a Action precisa continuar `COMPLETED` e ser a tentativa mais recente do step; a Verification precisa continuar sendo a conclusão mais recente daquela Action; e status/veredito precisam continuar correspondendo ao blocker registrado. Se uma nova tentativa, Verification ou revisão surgir depois da proposta, a materialização é recusada como obsoleta em vez de sobrescrever o estado novo.
+
+A criação da nova revisão continua usando o mecanismo existente de Plans: somente depois da revalidação o Plan anterior passa a `SUPERSEDED` e a revisão seguinte nasce `ACTIVE`. Nenhuma nova tabela, estado de Plan ou migration é necessária; o SQLite permanece no schema 11.
+

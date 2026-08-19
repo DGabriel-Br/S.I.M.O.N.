@@ -9,6 +9,7 @@ from simon.goal_intake import get_goal_acceptance_open_questions
 from simon.goal_verification import GoalAssessmentContext
 from simon.goals import Goal, insert_goal
 from simon.model_provider import StructuredModelResult
+from simon.plan_failure import PlanFailureContext
 from simon.planning import (
     PlanIntentDraft,
     PlanIntentStep,
@@ -549,3 +550,45 @@ def test_goal_acceptance_open_questions_are_recoverable_for_planning(tmp_path: P
         "Qual script está falhando?",
         "Qual erro foi observado?",
     )
+
+
+def test_propose_plan_uses_active_plan_failure_as_replanning_feedback() -> None:
+    provider = FakeIntentProvider()
+    goal = _goal()
+    evidence = Event.create(
+        kind="cognition.analysis.completed",
+        source="cognition",
+        payload={"summary": "A hipótese atual não explica a falha."},
+        goal_id=goal.id,
+    )
+    failure = PlanFailureContext(
+        plan_id="pln_active",
+        plan_revision=3,
+        step_id="step_02",
+        step_description="Analisar a falha observada.",
+        capability="cognition.analyze",
+        blocker_kind="CRITERION_NOT_SATISFIED",
+        action_id="act_analysis",
+        action_kind="cognition.analyze",
+        verification_id="ver_failed_assessment",
+        verification_status="ASSESSED",
+        verification_criteria=({"description": "A hipótese explica a falha."},),
+        verification_observed={
+            "verdict": "NOT_SATISFIED",
+            "rationale": "A hipótese não foi sustentada.",
+        },
+        evidence_events=(evidence,),
+    )
+
+    propose_plan(
+        provider,
+        model="fake-model",
+        goal=goal,
+        plan_failure=failure,
+    )
+
+    assert "prior_plan_failure" in provider.prompt
+    assert "ver_failed_assessment" in provider.prompt
+    assert "CRITERION_NOT_SATISFIED" in provider.prompt
+    assert "A hipótese atual não explica a falha." in provider.prompt
+    assert "replanejamento explícito" in provider.system

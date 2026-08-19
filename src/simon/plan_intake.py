@@ -38,9 +38,20 @@ def materialize_plan_proposal(
 
         existing_plan_id = _find_existing_materialization(connection, normalized_event_id)
         if existing_plan_id is None:
-            proposal, goal_id, proposal_trace_id, proposal_model = _load_proposal(
+            (
+                proposal,
+                goal_id,
+                proposal_trace_id,
+                proposal_model,
+                proposal_payload,
+            ) = _load_proposal(
                 connection,
                 normalized_event_id,
+            )
+            _validate_replanning_source(
+                connection,
+                goal_id=goal_id,
+                payload=proposal_payload,
             )
             steps = tuple(step.model_dump(mode="json") for step in proposal.steps)
             created_plan = create_plan_in_connection(
@@ -59,6 +70,10 @@ def materialize_plan_proposal(
                     "open_questions": proposal.open_questions,
                     "plan_id": created_plan.id,
                     "plan_revision": created_plan.revision,
+                    "source_active_plan_id": proposal_payload.get("source_active_plan_id"),
+                    "source_failure_verification_id": proposal_payload.get(
+                        "source_failure_verification_id"
+                    ),
                 },
                 trace_id=materialization_trace_id,
                 goal_id=goal_id,
@@ -111,7 +126,7 @@ def _find_existing_materialization(
 def _load_proposal(
     connection: sqlite3.Connection,
     proposal_event_id: str,
-) -> tuple[PlanProposal, str, str | None, str | None]:
+) -> tuple[PlanProposal, str, str | None, str | None, dict[str, object]]:
     row = connection.execute(
         """
         SELECT kind, payload_json, trace_id, goal_id
@@ -145,7 +160,151 @@ def _load_proposal(
     proposal_trace_id = str(row[2]) if row[2] is not None else None
     raw_model = payload.get("model")
     proposal_model = str(raw_model) if isinstance(raw_model, str) else None
-    return proposal, str(row[3]), proposal_trace_id, proposal_model
+    return proposal, str(row[3]), proposal_trace_id, proposal_model, payload
+
+
+def _validate_replanning_source(
+    connection: sqlite3.Connection,
+    *,
+    goal_id: str,
+    payload: dict[str, object],
+) -> None:
+    field_names = (
+        "source_active_plan_id",
+        "source_active_plan_revision",
+        "source_failure_step_id",
+        "source_failure_action_id",
+        "source_failure_verification_id",
+        "source_failure_blocker_kind",
+    )
+    values = {name: payload.get(name) for name in field_names}
+    if all(value is None for value in values.values()):
+        return
+    if any(value is None for value in values.values()):
+        raise ValueError("proposta de replanejamento possui proveniência incompleta")
+
+    plan_id = _required_source_text(values["source_active_plan_id"], "source_active_plan_id")
+    step_id = _required_source_text(values["source_failure_step_id"], "source_failure_step_id")
+    action_id = _required_source_text(values["source_failure_action_id"], "source_failure_action_id")
+    verification_id = _required_source_text(
+        values["source_failure_verification_id"],
+        "source_failure_verification_id",
+    )
+    blocker_kind = _required_source_text(
+        values["source_failure_blocker_kind"],
+        "source_failure_blocker_kind",
+    )
+    revision = values["source_active_plan_revision"]
+    if isinstance(revision, bool) or not isinstance(revision, int):
+        raise TypeError("source_active_plan_revision inválida")
+
+    plan_row = connection.execute(
+        "SELECT goal_id, revision, status FROM plans WHERE id = ?",
+        (plan_id,),
+    ).fetchone()
+    if plan_row is None:
+        raise ValueError(f"Plan fonte do replanejamento não encontrado: {plan_id}")
+    if str(plan_row[0]) != goal_id:
+        raise ValueError("Plan fonte do replanejamento pertence a outro Goal")
+    if plan_row[1] != revision:
+        raise ValueError("revisão do Plan fonte mudou ou diverge da proposta")
+    if str(plan_row[2]) != "ACTIVE":
+        raise ValueError("Plan fonte do replanejamento não está mais ACTIVE")
+
+    action_row = connection.execute(
+        "SELECT plan_id, step_id, status FROM actions WHERE id = ?",
+        (action_id,),
+    ).fetchone()
+    if action_row is None:
+        raise ValueError(f"Action fonte do replanejamento não encontrada: {action_id}")
+    if str(action_row[0]) != plan_id or str(action_row[1]) != step_id:
+        raise ValueError("Action fonte não pertence ao Plan/step registrados")
+    if str(action_row[2]) != "COMPLETED":
+        raise ValueError("Action fonte do replanejamento não está COMPLETED")
+
+    latest_action = connection.execute(
+        """
+        SELECT id
+        FROM actions
+        WHERE plan_id = ? AND step_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (plan_id, step_id),
+    ).fetchone()
+    if latest_action is None or str(latest_action[0]) != action_id:
+        raise ValueError("proposta de replanejamento ficou obsoleta por nova tentativa do step")
+
+    verification_row = connection.execute(
+        """
+        SELECT subject_type, subject_id, status, observed_json
+        FROM verification_results
+        WHERE id = ?
+        """,
+        (verification_id,),
+    ).fetchone()
+    if verification_row is None:
+        raise ValueError(
+            f"Verification fonte do replanejamento não encontrada: {verification_id}"
+        )
+    if str(verification_row[0]) != "ACTION" or str(verification_row[1]) != action_id:
+        raise ValueError("Verification fonte não pertence à Action registrada")
+
+    latest_verification = connection.execute(
+        """
+        SELECT id
+        FROM verification_results
+        WHERE subject_type = 'ACTION' AND subject_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (action_id,),
+    ).fetchone()
+    if latest_verification is None or str(latest_verification[0]) != verification_id:
+        raise ValueError("proposta de replanejamento ficou obsoleta por nova Verification")
+
+    observed = json.loads(str(verification_row[3]))
+    if not isinstance(observed, dict):
+        raise TypeError("Verification fonte possui observed inválido")
+    _validate_source_failure_status(
+        blocker_kind=blocker_kind,
+        verification_status=str(verification_row[2]),
+        observed=observed,
+    )
+
+
+def _required_source_text(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} inválido")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field} vazio")
+    return normalized
+
+
+def _validate_source_failure_status(
+    *,
+    blocker_kind: str,
+    verification_status: str,
+    observed: dict[str, object],
+) -> None:
+    if blocker_kind == "VERIFICATION_FAILED" and verification_status == "FAILED":
+        return
+    if blocker_kind == "VERIFICATION_INCONCLUSIVE" and verification_status == "INCONCLUSIVE":
+        return
+    if (
+        blocker_kind == "CRITERION_NOT_SATISFIED"
+        and verification_status == "ASSESSED"
+        and observed.get("verdict") == "NOT_SATISFIED"
+    ):
+        return
+    if (
+        blocker_kind == "ASSESSMENT_INCONCLUSIVE"
+        and verification_status == "ASSESSED"
+        and observed.get("verdict") == "UNCLEAR"
+    ):
+        return
+    raise ValueError("proveniência de replanejamento não corresponde mais à falha registrada")
 
 
 def _insert_event(connection: sqlite3.Connection, event: Event) -> None:

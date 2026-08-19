@@ -46,7 +46,9 @@ O projeto já consegue:
 - formular propostas estruturadas de Goal para solicitações (`REQUEST`) sem persistir o Goal automaticamente;
 - aceitar explicitamente uma proposta registrada e convertê-la em um Goal `USER` persistente sem nova decisão do modelo;
 - formular propostas curtas de Plan para Goals autorizados, com passos epistêmicos ou de mundo, dependências, capabilities abstratas e verificação, sem executar o Plan automaticamente;
-- materializar uma proposta validada como revisão persistente de Plan, preservando proveniência e idempotência;
+- recusar substituição cognitiva de um Plan `ACTIVE` que ainda possua caminho operacional local, evitando replanejamento silencioso;
+- formular replanejamento explícito quando uma Verification negativa ou inconclusiva demonstra que a estratégia atual não pode continuar como está;
+- materializar uma proposta validada como revisão persistente de Plan, preservando proveniência, idempotência e atualidade da falha que motivou a revisão;
 - avaliar deterministicamente a prontidão dos steps de um Plan antes de criar qualquer Action;
 - exigir dependências verificadas, preconditions resolvidas e capability disponível antes de considerar um step executável;
 - iniciar o primeiro step `user.ask` READY como Action persistente;
@@ -158,7 +160,7 @@ Um Goal já autorizado pode ser enviado ao primeiro Planner cognitivo:
 uv run simon plan-propose --model qwen3.5:4b-q4_K_M gol_ID_DO_GOAL
 ```
 
-O Planner recebe o Goal persistente, as questões em aberto ainda relevantes, um recorte determinístico do contexto e, quando já existe um Plan concluído avaliado no nível do Goal, o assessment persistido dessa tentativa. O modelo produz apenas uma intenção estratégica tipada com `subject`, `role`, `source` e `verification`.
+O Planner recebe o Goal persistente, as questões em aberto ainda relevantes, um recorte determinístico do contexto e, quando já existe um Plan concluído avaliado no nível do Goal, o assessment persistido dessa tentativa. Quando existe um Plan `ACTIVE`, uma nova proposta só é permitida se o readiness expuser uma falha epistemológica que realmente justifique revisão da estratégia. O modelo produz apenas uma intenção estratégica tipada com `subject`, `role`, `source` e `verification`.
 
 O Core compila essa intenção em `PlanProposal`: define `kind`, capability, actor efetivo, IDs, cadeia serial de `depends_on` e `preconditions=[]`. `source` só existe em `COLLECT`; `ANALYZE`, `CHANGE` e `EXECUTE` pertencem ao SIMON no Planner v0.1. A descrição operacional também é gerada pelo Core, portanto texto livre do modelo não decide silenciosamente a operação. Quando existe um `Goal Assessment`, o Planner recebe o veredito por critério, a evidência ausente e uma projeção das respostas do usuário já verificadas, para avançar sem repetir coleta comprovada. A proposta é registrada como `cognition.plan_proposal.completed` e não executa nenhuma Action.
 
@@ -168,7 +170,17 @@ Uma proposta validada pode ser materializada sem nova chamada ao modelo:
 uv run simon plan-materialize evt_ID_DA_PROPOSTA
 ```
 
-A materialização é idempotente por Event de proposta. Uma nova proposta para o mesmo Goal cria nova revisão e marca o Plan anterior como `SUPERSEDED`.
+A materialização é idempotente por Event de proposta. Uma nova proposta para o mesmo Goal cria nova revisão e marca o Plan anterior como `SUPERSEDED`. Propostas motivadas por falha são revalidadas antes dessa substituição: o Plan fonte precisa continuar `ACTIVE`, a Action precisa continuar sendo a tentativa mais recente do step e a Verification que motivou o replanejamento precisa continuar sendo a conclusão epistemológica mais recente.
+
+## Replanejamento explícito após evidência negativa
+
+`plan-propose` também é o gate explícito de replanejamento do v0.1. Se um Plan `ACTIVE` ainda possui step `READY`, Action em andamento, Verification pendente, assessment positivo aguardando confirmação, capability ausente ou apenas uma falha operacional com recovery local, nenhuma nova proposta substitutiva é gerada.
+
+O replanejamento é liberado quando o readiness expõe uma conclusão epistemológica como `VERIFICATION_FAILED`, `VERIFICATION_INCONCLUSIVE`, `CRITERION_NOT_SATISFIED` ou `ASSESSMENT_INCONCLUSIVE` e não existe um gate local mais específico que deva ser usado primeiro. `user.ask` negativo continua no fluxo `action-retry`; `process.run` `FAILED/INTERRUPTED` continua no fluxo `process-retry`. Assim, retry e replan permanecem decisões diferentes.
+
+Quando a revisão é permitida, o Planner recebe `prior_plan_failure` contendo o Plan/revisão atuais, o step afetado, a Action, a Verification e somente os Events de evidência ligados a essa conclusão. Esse material é contexto sem autoridade de instrução. A proposta resultante registra `source_active_plan_id`, `source_active_plan_revision`, `source_failure_step_id`, `source_failure_action_id`, `source_failure_verification_id` e `source_failure_blocker_kind`.
+
+Antes de `plan-materialize` superseder o Plan atual, essa proveniência é conferida novamente. Se apareceu uma tentativa mais nova, uma nova Verification, outro Plan ou qualquer mudança que torne a proposta obsoleta, a materialização é recusada. Nenhuma migration foi necessária; o SQLite permanece no schema 11.
 
 ## Prontidão do próximo step
 
@@ -530,7 +542,7 @@ Nenhuma nova tabela ou capability foi necessária neste passo; o SQLite permanec
 
 ## Próximo passo
 
-Continuar o hardening pelo caso que não deve ser resolvido por retry operacional: uma Verification negativa ou evidência semântica que invalida a estratégia atual. O próximo corte deve demonstrar quando uma tentativa precisa ser repetida e quando o Plan precisa ganhar uma nova revisão, preservando a causa da revisão sem permitir replanejamento silencioso.
+Continuar o hardening das falhas operacionais que ainda não possuem recovery local. O próximo caso concreto é `cognition.analyze` terminando `FAILED` por indisponibilidade do ModelProvider ou análise sem grounding: isso não deve obrigar uma nova estratégia de Plan quando uma nova tentativa cognitiva explicitamente autorizada é suficiente.
 
 ## Primeira interpretação cognitiva
 

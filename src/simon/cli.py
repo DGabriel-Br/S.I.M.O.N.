@@ -34,8 +34,10 @@ from simon.memories import Memory
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
 from simon.plan_completion import complete_verified_plan
+from simon.plan_failure import get_active_plan_failure_context
 from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
+from simon.plans import get_active_plan
 from simon.process_binding import ProcessRunRequest
 from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.process_verification import verify_process_run_execution
@@ -1102,6 +1104,29 @@ def _experience_remember(
     return 0
 
 
+def _active_plan_replanning_gate_message(readiness: PlanReadiness) -> str:
+    if readiness.next_step is not None:
+        return (
+            f"Plan ACTIVE {readiness.plan.id} ainda possui step executável: "
+            f"{readiness.next_step.step_id}"
+        )
+
+    pending = next((step for step in readiness.steps if step.state != "VERIFIED"), None)
+    if pending is None:
+        return f"Plan ACTIVE {readiness.plan.id} já está totalmente VERIFIED; use plan-complete"
+    if pending.state == "IN_PROGRESS":
+        return (
+            f"Plan ACTIVE {readiness.plan.id} possui step em andamento: "
+            f"{pending.step_id}"
+        )
+
+    blockers = ", ".join(blocker.kind for blocker in pending.blockers) or "BLOCKED"
+    return (
+        f"Plan ACTIVE {readiness.plan.id} requer resolução local no step "
+        f"{pending.step_id}: {blockers}"
+    )
+
+
 def _plan_propose(
     database_path: Path,
     base_url: str,
@@ -1135,9 +1160,21 @@ def _plan_propose(
         context_query = goal.title
 
     trace_id = f"trc_{uuid4().hex}"
-    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
 
     try:
+        active_plan = get_active_plan(database_path, goal.id)
+        plan_failure = None
+        if active_plan is not None:
+            plan_failure = get_active_plan_failure_context(database_path, goal_id=goal.id)
+            if plan_failure is None:
+                readiness = evaluate_active_plan(database_path, goal_id=goal.id)
+                print(
+                    "Proposta de Plan: não gerada ("
+                    + _active_plan_replanning_gate_message(readiness)
+                    + ")"
+                )
+                return 0
+
         context = build_cognitive_context(database_path, text=context_query)
         goal_assessment = get_latest_goal_assessment_context(database_path, goal.id)
         if goal_assessment is not None and goal_assessment.verdict == "SATISFIED":
@@ -1164,6 +1201,7 @@ def _plan_propose(
                 goal_id=goal.id,
             ),
         )
+        provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
         result = propose_plan(
             provider,
             model=model,
@@ -1171,6 +1209,7 @@ def _plan_propose(
             open_questions=open_questions,
             context=context,
             goal_assessment=goal_assessment,
+            plan_failure=plan_failure,
         )
     except (ModelProviderError, TypeError, ValueError) as exc:
         append_event(
@@ -1199,6 +1238,24 @@ def _plan_propose(
             "source_completed_plan_id": (
                 goal_assessment.plan_id if goal_assessment is not None else None
             ),
+            "source_active_plan_id": (
+                plan_failure.plan_id if plan_failure is not None else None
+            ),
+            "source_active_plan_revision": (
+                plan_failure.plan_revision if plan_failure is not None else None
+            ),
+            "source_failure_step_id": (
+                plan_failure.step_id if plan_failure is not None else None
+            ),
+            "source_failure_action_id": (
+                plan_failure.action_id if plan_failure is not None else None
+            ),
+            "source_failure_verification_id": (
+                plan_failure.verification_id if plan_failure is not None else None
+            ),
+            "source_failure_blocker_kind": (
+                plan_failure.blocker_kind if plan_failure is not None else None
+            ),
             "prompt_eval_count": result.prompt_eval_count,
             "eval_count": result.eval_count,
             "total_duration_ns": result.total_duration_ns,
@@ -1221,6 +1278,16 @@ def _plan_propose(
             "Plan anterior avaliado: "
             f"{goal_assessment.plan_id} (revisão {goal_assessment.plan_revision})"
         )
+    if plan_failure is not None:
+        print(
+            "Replanejamento motivado por falha: "
+            f"{plan_failure.verification_id} ({plan_failure.blocker_kind})"
+        )
+        print(
+            "Plan ACTIVE substituível: "
+            f"{plan_failure.plan_id} (revisão {plan_failure.plan_revision})"
+        )
+        print(f"Step afetado: {plan_failure.step_id}")
     print("Proposta de Plan:")
     print(f"Resumo: {result.output.summary}")
     print("Passos:")
