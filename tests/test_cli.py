@@ -1664,3 +1664,66 @@ def test_goal_complete_cli_confirms_satisfied_assessment_and_closes_goal(
             (goal.id,),
         ).fetchone()
     assert row == ("COMPLETED",)
+
+
+def test_experience_remember_cli_promotes_closed_experience_to_memory(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.experiences import close_experience
+    from simon.memories import get_memory
+
+    database_path, _ = initialize_storage(tmp_path)
+    experience = create_experience(database_path, title="Aprender com execução")
+    closed = close_experience(
+        database_path,
+        experience.id,
+        outcome="SUCCESS",
+        summary="Execução concluída com evidência suficiente.",
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "experience-remember",
+            closed.id,
+            "--kind",
+            "SEMANTIC",
+            "--scope",
+            "PROJECT",
+            "Verificar",
+            "evidência",
+            "antes",
+            "de",
+            "concluir.",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Experience: {closed.id} (Aprender com execução)" in output
+    assert "Outcome: SUCCESS" in output
+    assert "Kind: SEMANTIC" in output
+    assert "Scope: PROJECT" in output
+    assert "Conteúdo: Verificar evidência antes de concluir." in output
+    assert "Memory criada por decisão explícita: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT id FROM memories ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        event = connection.execute(
+            """
+            SELECT source, experience_id
+            FROM events
+            WHERE kind = 'memory.promoted_from_experience'
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    memory = get_memory(database_path, str(row[0]))
+    assert memory is not None
+    assert memory.source_experience_ids == (closed.id,)
+    assert event == ("user", closed.id)

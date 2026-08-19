@@ -80,8 +80,8 @@ def _validate_references(
             raise ValueError(f"claim de origem não encontrada: {claim_id}")
 
 
-def create_memory(
-    database_path: Path,
+def create_memory_in_connection(
+    connection: sqlite3.Connection,
     *,
     kind: str,
     content: str,
@@ -116,44 +116,64 @@ def create_memory(
         last_used_at=None,
     )
 
+    _validate_references(
+        connection,
+        experience_ids=memory.source_experience_ids,
+        entity_ids=memory.entity_ids,
+        claim_ids=memory.source_claim_ids,
+    )
+    connection.execute(
+        """
+        INSERT INTO memories (
+            id,
+            kind,
+            content,
+            scope,
+            entity_ids_json,
+            source_experience_ids_json,
+            source_claim_ids_json,
+            status,
+            created_at,
+            last_used_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            memory.id,
+            memory.kind,
+            memory.content,
+            memory.scope,
+            json.dumps(memory.entity_ids, separators=(",", ":")),
+            json.dumps(memory.source_experience_ids, separators=(",", ":")),
+            json.dumps(memory.source_claim_ids, separators=(",", ":")),
+            memory.status,
+            memory.created_at.isoformat(),
+            None,
+        ),
+    )
+    return memory
+
+
+def create_memory(
+    database_path: Path,
+    *,
+    kind: str,
+    content: str,
+    scope: str,
+    source_experience_ids: tuple[str, ...],
+    entity_ids: tuple[str, ...] = (),
+    source_claim_ids: tuple[str, ...] = (),
+) -> Memory:
     with sqlite3.connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        _validate_references(
+        return create_memory_in_connection(
             connection,
-            experience_ids=memory.source_experience_ids,
-            entity_ids=memory.entity_ids,
-            claim_ids=memory.source_claim_ids,
+            kind=kind,
+            content=content,
+            scope=scope,
+            source_experience_ids=source_experience_ids,
+            entity_ids=entity_ids,
+            source_claim_ids=source_claim_ids,
         )
-        connection.execute(
-            """
-            INSERT INTO memories (
-                id,
-                kind,
-                content,
-                scope,
-                entity_ids_json,
-                source_experience_ids_json,
-                source_claim_ids_json,
-                status,
-                created_at,
-                last_used_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                memory.id,
-                memory.kind,
-                memory.content,
-                memory.scope,
-                json.dumps(memory.entity_ids, separators=(",", ":")),
-                json.dumps(memory.source_experience_ids, separators=(",", ":")),
-                json.dumps(memory.source_claim_ids, separators=(",", ":")),
-                memory.status,
-                memory.created_at.isoformat(),
-                None,
-            ),
-        )
-
-    return memory
 
 
 def get_memory(database_path: Path, memory_id: str) -> Memory | None:

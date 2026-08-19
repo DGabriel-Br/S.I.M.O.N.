@@ -435,9 +435,28 @@ O Event `experience.goal_cycle.closed` registra a linhagem das revisões de Plan
 
 Repetir `goal-complete` reutiliza a mesma Experience. Conclusões de Goal criadas antes deste corte podem receber a Experience retrospectivamente quando forem reencontradas, sem duplicar a Verification ou o Event `goal.completed`. Nenhuma migration foi necessária; o SQLite permanece no schema 10.
 
+## Primeira promoção operacional de `Memory`
+
+Uma `Experience` `CLOSED` pode agora originar uma Memory somente por decisão explícita do usuário:
+
+```powershell
+uv run simon experience-remember exp_ID `
+  --kind SEMANTIC `
+  --scope PROJECT `
+  "Validar o resultado observado antes de concluir que uma correção funcionou."
+```
+
+O comando exige `kind`, `scope` e conteúdo explícitos. `--entity-id` e `--claim-id` podem ser repetidos quando a Memory precisar preservar referências adicionais. Nenhum modelo escolhe sozinho o que merece ser lembrado e não existe promoção automática ao fechar um Goal.
+
+Memory e Event `memory.promoted_from_experience` são gravados na mesma transação. O Event preserva a Experience de origem, o tipo, o escopo, referências adicionais e o SHA-256 do conteúdo sem duplicar o texto completo no Event Log. Experiences com outcome de falha também podem originar Memory, preservando negative knowledge quando o usuário decidir que ele é reutilizável.
+
+A Memory criada entra imediatamente no retrieval normal já existente e pode compor o contexto de chamadas cognitivas futuras. Este primeiro corte não implementa Significance Filter automático, deduplicação semântica, consolidação, embeddings, importance score ou decay. Repetir conscientemente a promoção significa criar outra Memory; o sistema ainda não presume equivalência semântica entre decisões distintas.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 10.
+
 ## Próximo passo
 
-Usar uma `Experience` `CLOSED` como fonte para a primeira promoção explícita de `Memory`. O próximo corte deve exigir decisão consciente sobre o que vale preservar, manter a Experience e suas evidências como proveniência e evitar transformar todo resultado de Goal em memória automaticamente.
+Validar o contrato de retomada do v0.1 em um teste integrado real: após reiniciar o processo, o Core deve reconstruir estado semântico suficiente a partir de Goal, Plan, Actions, Verifications, Experience e Memory persistidos, sem depender do contexto anterior do modelo.
 
 ## Primeira interpretação cognitiva
 

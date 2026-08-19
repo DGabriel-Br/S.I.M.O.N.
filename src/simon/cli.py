@@ -22,6 +22,7 @@ from simon.cognition_analysis_verification import assess_cognition_analysis
 from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
+from simon.experience_memory import promote_experience_to_memory
 from simon.experiences import suspend_active_experiences
 from simon.file_patch import FilePatchRequest, execute_next_file_patch
 from simon.file_patch_verification import verify_file_patch_state
@@ -126,6 +127,44 @@ def build_parser() -> argparse.ArgumentParser:
     goal_complete.add_argument(
         "assessment_verification_id",
         help="ID da Verification goal.semantic ASSESSED que será confirmada",
+    )
+
+    experience_remember = commands.add_parser(
+        "experience-remember",
+        help="promove explicitamente significado de uma Experience CLOSED para Memory",
+    )
+    experience_remember.add_argument(
+        "experience_id",
+        help="ID da Experience CLOSED usada como proveniência",
+    )
+    experience_remember.add_argument(
+        "--kind",
+        required=True,
+        choices=("EPISODIC", "SEMANTIC", "PROCEDURAL", "META"),
+        help="tipo explícito da Memory",
+    )
+    experience_remember.add_argument(
+        "--scope",
+        required=True,
+        choices=("GLOBAL", "PROJECT", "WORKSPACE", "SESSION", "PRIVATE", "SYSTEM", "LAB"),
+        help="escopo explícito da Memory",
+    )
+    experience_remember.add_argument(
+        "--entity-id",
+        action="append",
+        default=[],
+        help="Entity relacionada; pode ser repetido",
+    )
+    experience_remember.add_argument(
+        "--claim-id",
+        action="append",
+        default=[],
+        help="Claim de origem adicional; pode ser repetido",
+    )
+    experience_remember.add_argument(
+        "content",
+        nargs="+",
+        help="significado que o usuário decidiu preservar",
     )
 
     plan_propose = commands.add_parser(
@@ -408,6 +447,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "goal-complete":
         return _goal_complete(database_path, args.assessment_verification_id)
+    if args.command == "experience-remember":
+        return _experience_remember(
+            database_path,
+            args.experience_id,
+            args.kind,
+            args.scope,
+            " ".join(args.content),
+            tuple(args.entity_id),
+            tuple(args.claim_id),
+        )
     if args.command == "plan-propose":
         return _plan_propose(
             database_path,
@@ -850,6 +899,48 @@ def _goal_complete(database_path: Path, assessment_verification_id: str) -> int:
         print("Goal concluído: sim")
     else:
         print("Goal concluído: não (esta confirmação já havia sido aplicada)")
+    return 0
+
+
+def _experience_remember(
+    database_path: Path,
+    experience_id: str,
+    kind: str,
+    scope: str,
+    content: str,
+    entity_ids: tuple[str, ...],
+    claim_ids: tuple[str, ...],
+) -> int:
+    try:
+        receipt = promote_experience_to_memory(
+            database_path,
+            experience_id=experience_id,
+            kind=kind,
+            content=content,
+            scope=scope,
+            entity_ids=entity_ids,
+            source_claim_ids=claim_ids,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Promoção de Memory: falha ({exc})")
+        return 1
+
+    print(f"Experience: {receipt.experience.id} ({receipt.experience.title})")
+    print(f"Outcome: {receipt.experience.outcome}")
+    print(f"Memory: {receipt.memory.id}")
+    print(f"Kind: {receipt.memory.kind}")
+    print(f"Scope: {receipt.memory.scope}")
+    print(f"Conteúdo: {receipt.memory.content}")
+    if receipt.memory.entity_ids:
+        print(f"Entities: {', '.join(receipt.memory.entity_ids)}")
+    else:
+        print("Entities: nenhuma")
+    if receipt.memory.source_claim_ids:
+        print(f"Claims: {', '.join(receipt.memory.source_claim_ids)}")
+    else:
+        print("Claims: nenhuma")
+    print(f"Promoção registrada: {receipt.promotion_event_id}")
+    print("Memory criada por decisão explícita: sim")
     return 0
 
 
