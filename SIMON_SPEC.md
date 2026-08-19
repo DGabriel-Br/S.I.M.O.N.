@@ -5444,3 +5444,28 @@ A auditoria considera deliberadamente fora do escopo bloqueador do v0.1: múltip
 
 Nenhuma migration é necessária; o SQLite permanece no schema 11.
 
+### 32.32. Release candidate instalável do v0.1
+
+Após a auditoria de estabilização, o núcleo entra em release candidate `0.1.0rc1`. Este corte não adiciona capability, lifecycle, tabela ou decisão cognitiva nova. O objetivo é provar que a distribuição instalada preserva os contratos que já foram validados no checkout de desenvolvimento.
+
+O projeto passa a manter `scripts/rc_smoke.py` como verificação reproduzível de release. O script constrói os dois artefatos padrão do projeto:
+
+```text
+wheel
+sdist
+```
+
+e inspeciona o wheel antes da instalação. O artefato precisa conter as migrations `0001` até `0011`, metadata compatível com a versão e com Python 3.14, além do entry point:
+
+```text
+simon = simon.cli:main
+```
+
+Em seguida, o wheel é instalado em um virtualenv temporário criado com o mesmo interpretador que executa o smoke. A validação não usa o checkout como import path. O ambiente instalado precisa responder corretamente por `simon --version`, `simon --help` e `python -m simon --version`.
+
+O smoke também valida persistência em duas trajetórias. Em banco vazio, o startup precisa criar `simon.db`, materializar as tabelas esperadas e terminar diretamente no schema 11. Em um segundo banco, as migrations extraídas do próprio wheel criam deliberadamente um schema 7 com um Event sentinela; a instalação do RC precisa migrá-lo até 11 preservando esse registro e materializando `world_state`.
+
+A suíte normal continua responsável por invariantes de domínio e comportamento. O smoke de RC é deliberadamente menor e testa a fronteira de distribuição, evitando que um pacote aparentemente válido seja promovido sem migrations, entry point ou capacidade de upgrade. Ollama e chamadas de modelo ficam fora desse teste porque não são requisitos para provar a integridade do artefato local.
+
+O SQLite permanece no schema 11. A promoção de `0.1.0rc1` para `0.1.0` só deve ocorrer depois que testes, lint, tipagem e smoke do artefato instalado estiverem verdes no runtime oficial Python 3.14.7.
+

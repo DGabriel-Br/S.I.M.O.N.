@@ -8,7 +8,9 @@ A especificação oficial está em [`SIMON_SPEC.md`](SIMON_SPEC.md).
 
 ## Estado atual
 
-Núcleo operacional integrado do v0.1, já validado em um primeiro ciclo ponta a ponta.
+**Release candidate: `0.1.0rc1`.**
+
+O núcleo operacional do v0.1 já passou por ciclo ponta a ponta, recovery integrado, auditoria de invariantes e retomada persistente. Nesta fase não entram novas capabilities: o foco é provar que o artefato instalável preserva o mesmo comportamento validado no checkout.
 
 O projeto já consegue:
 
@@ -116,6 +118,16 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 ```
+
+## Smoke test do release candidate
+
+O RC possui um smoke test separado da suíte unitária/integrada. Ele constrói `wheel` e `sdist`, inspeciona o conteúdo distribuído, instala o wheel em um ambiente virtual temporário e valida o entry point, `python -m simon`, banco limpo e upgrade de schema 7 para 11 com preservação de dados.
+
+```powershell
+uv run python scripts/rc_smoke.py
+```
+
+O smoke não depende de Ollama nem chama um modelo. Ele testa somente empacotamento, instalação e contratos persistentes necessários para distribuir o núcleo. Ao terminar com sucesso, imprime `RC smoke: OK` e mantém os artefatos construídos em `dist/`.
 
 ## Diagnóstico do runtime local
 
