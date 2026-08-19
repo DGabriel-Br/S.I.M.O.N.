@@ -1727,3 +1727,66 @@ def test_experience_remember_cli_promotes_closed_experience_to_memory(
     assert memory is not None
     assert memory.source_experience_ids == (closed.id,)
     assert event == ("user", closed.id)
+
+
+def test_process_retry_cli_recovers_failed_process_attempt(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Recuperar execução",
+        origin="USER",
+        desired_state={"description": "A execução foi recuperada."},
+        success_criteria=({"description": "Existe execução observável."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar processo.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "process.run",
+                "verification": "A execução produziu resultado técnico observável.",
+            },
+        ),
+    )
+
+    missing = str(tmp_path / "missing-process")
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "plan-run",
+            goal.id,
+            "--cwd",
+            str(tmp_path),
+            missing,
+        ]
+    ) == 1
+    failed = list_actions_for_plan(database_path, plan.id)[0]
+    assert failed.status == "FAILED"
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "process-retry",
+            failed.id,
+            "--cwd",
+            str(tmp_path),
+            sys.executable,
+            "-c",
+            "print('recovered-cli')",
+        ]
+    ) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action anterior: {failed.id}" in output
+    assert "Status: COMPLETED" in output
+    assert "recovered-cli" in output

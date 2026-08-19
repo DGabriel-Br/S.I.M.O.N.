@@ -337,6 +337,22 @@ Essa prova não interpreta o significado da saída. Um processo que termina com 
 
 A operação é idempotente para o mesmo Event de execução e só aceita a tentativa mais recente do step. Nenhuma nova tabela ou migration foi necessária; o SQLite permanece no schema 10.
 
+## Retry explícito de `process.run`
+
+Os cenários de hardening mostraram que `FAILED` e `INTERRUPTED` eram representados corretamente pelo readiness, mas não existia um caminho operacional para autorizar uma nova tentativa do mesmo step. O retry continua proibido por padrão e agora pode ser liberado explicitamente com:
+
+```powershell
+uv run simon process-retry act_ID_DA_TENTATIVA --cwd C:\projeto python script.py
+```
+
+A operação aceita somente uma Action `process.run` em `FAILED` ou `INTERRUPTED`, exige que ela continue sendo a tentativa mais recente do step e que o Plan original ainda seja o Plan `ACTIVE`. O blocker `PREVIOUS_ATTEMPT_REQUIRES_REVIEW` precisa ser o único blocker do step; dependências, preconditions, capability indisponível ou qualquer outro bloqueio não podem ser contornados pelo retry.
+
+A nova execução recebe um `ProcessRunRequest` completo e explícito. Isso permite corrigir executável, argumentos, diretório de trabalho ou timeout sem alterar retroativamente a tentativa anterior. A autorização é registrada como `action.retry.authorized` com `source=user`, e a nova Action preserva `retry_of_action_id` em seu `input_data`.
+
+Cada retry é uma nova Action no mesmo `(goal_id, plan_id, step_id)`. A tentativa anterior permanece imutável. Se a nova tentativa também falhar, somente ela pode originar outro retry; usar uma Action antiga como origem é recusado para evitar bifurcações silenciosas. Nenhum retry automático, backoff, contador global ou policy framework foi introduzido.
+
+Uma tentativa recuperada termina no mesmo fluxo normal de `process.run`: `COMPLETED` ainda exige `process-verify` antes que o step seja `VERIFIED`. Nenhuma migration foi necessária e o SQLite permanece no schema 11.
+
 ## Primeira execução operacional de `cognition.analyze`
 
 Quando `plan-next` identifica um step `cognition.analyze` como `READY`, a análise pode ser iniciada com um modelo local já disponível no Ollama:
@@ -514,7 +530,7 @@ Nenhuma nova tabela ou capability foi necessária neste passo; o SQLite permanec
 
 ## Próximo passo
 
-Executar cenários integrados de falha e recuperação sobre o mesmo ciclo, começando por execução interrompida ou malsucedida, Verification negativa e necessidade de nova tentativa/replanejamento. Corrigir somente comportamentos observados que impeçam recuperação segura e explicável.
+Continuar o hardening pelo caso que não deve ser resolvido por retry operacional: uma Verification negativa ou evidência semântica que invalida a estratégia atual. O próximo corte deve demonstrar quando uma tentativa precisa ser repetida e quando o Plan precisa ganhar uma nova revisão, preservando a causa da revisão sem permitir replanejamento silencioso.
 
 ## Primeira interpretação cognitiva
 

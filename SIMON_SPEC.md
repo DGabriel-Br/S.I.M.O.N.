@@ -5243,3 +5243,33 @@ A transação é atômica: falha ao criar a Verification, alterar o Goal ou pers
 
 Nenhuma migration é necessária e o SQLite permanece no schema 10.
 
+### 32.26. Retry operacional explícito de `process.run`
+
+Os primeiros cenários de falha integrados confirmam o comportamento conservador do readiness: uma Action `process.run` `FAILED` ou `INTERRUPTED` produz `PREVIOUS_ATTEMPT_REQUIRES_REVIEW` e nunca é repetida automaticamente. O teste também expôs a primeira lacuna de recuperação: não existia uma operação capaz de autorizar uma nova tentativa depois desse review.
+
+O v0.1 introduz:
+
+```text
+simon process-retry <action_id> --cwd <diretório> <executável> [argumentos...]
+```
+
+A operação exige simultaneamente:
+
+```text
+Action.kind = process.run
+Action.status = FAILED | INTERRUPTED
+Action = tentativa mais recente do step
+Plan da Action = Plan ACTIVE atual
+blockers do step = somente PREVIOUS_ATTEMPT_REQUIRES_REVIEW daquela Action
+```
+
+Isso impede que retry seja usado para contornar dependências não verificadas, preconditions, capability indisponível ou outra mudança no estado operacional do Plan. Se qualquer blocker adicional existir, a tentativa permanece bloqueada até que sua causa seja tratada.
+
+O retry recebe um novo `ProcessRunRequest` estruturado e explicitamente autorizado. Executável, argumentos, working directory e timeout podem ser corrigidos sem modificar a Action anterior. A decisão produz `action.retry.authorized` com `source=user`; a nova Action registra `retry_of_action_id` e segue o mesmo lifecycle normal de `process.run`.
+
+Uma Action anterior nunca é reaberta. Cada tentativa permanece imutável e a causalidade forma uma cadeia de novas Actions. Se um retry falhar novamente, somente a tentativa mais recente pode originar outra autorização. Uma tentativa concluída não pode ser convertida em retry operacional; seu resultado pertence ao fluxo de Verification.
+
+Falha ao iniciar e timeout continuam produzindo `FAILED`. Uma execução que efetivamente inicia e termina continua produzindo `COMPLETED`, independentemente do exit code, e precisa passar por `process-verify` antes de satisfazer o step.
+
+Esse corte não introduz retry automático, backoff, circuit breaker, limite global de tentativas, nova tabela ou migration. O SQLite permanece no schema 11. A próxima distinção a endurecer é entre falha que admite nova tentativa e evidência negativa que exige revisão da estratégia do Plan.
+

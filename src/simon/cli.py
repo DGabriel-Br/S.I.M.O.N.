@@ -37,7 +37,7 @@ from simon.plan_completion import complete_verified_plan
 from simon.plan_intake import materialize_plan_proposal
 from simon.planning import propose_plan
 from simon.process_binding import ProcessRunRequest
-from simon.process_execution import execute_next_process_run
+from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.process_verification import verify_process_run_execution
 from simon.resume import reconstruct_resume_state
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
@@ -254,6 +254,35 @@ def build_parser() -> argparse.ArgumentParser:
         "arguments",
         nargs=argparse.REMAINDER,
         help="argumentos entregues diretamente ao executável",
+    )
+
+    process_retry = commands.add_parser(
+        "process-retry",
+        help="autoriza nova tentativa process.run após falha ou interrupção operacional",
+    )
+    process_retry.add_argument(
+        "action_id",
+        help="ID da tentativa process.run FAILED ou INTERRUPTED que será revisada",
+    )
+    process_retry.add_argument(
+        "--cwd",
+        required=True,
+        help="diretório de trabalho explícito da nova tentativa",
+    )
+    process_retry.add_argument(
+        "--process-timeout",
+        type=float,
+        default=120.0,
+        help="timeout da nova tentativa em segundos",
+    )
+    process_retry.add_argument(
+        "executable",
+        help="executável iniciado diretamente, sem shell implícito",
+    )
+    process_retry.add_argument(
+        "arguments",
+        nargs=argparse.REMAINDER,
+        help="argumentos entregues diretamente ao executável na nova tentativa",
     )
 
     plan_patch = commands.add_parser(
@@ -491,6 +520,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan_run(
             database_path,
             args.goal_id,
+            args.executable,
+            args.arguments,
+            args.cwd,
+            args.process_timeout,
+        )
+    if args.command == "process-retry":
+        return _process_retry(
+            database_path,
+            args.action_id,
             args.executable,
             args.arguments,
             args.cwd,
@@ -1358,6 +1396,55 @@ def _plan_run(
     print(f"Capability: {receipt.action.kind}")
     print(f"Status: {receipt.action.status}")
     print(f"Autorização registrada: {receipt.authorization_event_id}")
+    print(f"Execução registrada: {receipt.execution_event_id}")
+    if receipt.exit_code is not None:
+        print(f"Exit code: {receipt.exit_code}")
+    print(f"Duração: {receipt.duration_seconds:.3f}s")
+    if receipt.stdout:
+        print("stdout:")
+        print(receipt.stdout, end="" if receipt.stdout.endswith("\n") else "\n")
+    else:
+        print("stdout: vazio")
+    if receipt.stderr:
+        print("stderr:")
+        print(receipt.stderr, end="" if receipt.stderr.endswith("\n") else "\n")
+    else:
+        print("stderr: vazio")
+    print("Verification criada: não")
+    return 0 if receipt.action.status == "COMPLETED" else 1
+
+
+def _process_retry(
+    database_path: Path,
+    action_id: str,
+    executable: str,
+    arguments: Sequence[str],
+    working_directory: str,
+    timeout_seconds: float,
+) -> int:
+    try:
+        request = ProcessRunRequest(
+            executable=executable,
+            arguments=tuple(arguments),
+            working_directory=working_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        receipt = retry_process_run(
+            database_path,
+            action_id=action_id,
+            request=request,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Retry process.run: falha ({exc})")
+        return 1
+
+    print(f"Action anterior: {receipt.retry_of_action_id}")
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Autorização de retry: {receipt.authorization_event_id}")
     print(f"Execução registrada: {receipt.execution_event_id}")
     if receipt.exit_code is not None:
         print(f"Exit code: {receipt.exit_code}")

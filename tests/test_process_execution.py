@@ -225,3 +225,178 @@ def test_process_run_does_not_silently_repeat_unverified_attempt(tmp_path: Path)
 
     with pytest.raises(ValueError, match="não possui step READY"):
         execute_next_process_run(database_path, goal_id=goal.id, request=request)
+
+
+def test_failed_process_can_be_retried_explicitly_and_then_verified(tmp_path: Path) -> None:
+    from simon.process_execution import retry_process_run
+    from simon.process_verification import verify_process_run_execution
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, _ = _goal_and_plan(database_path)
+    missing = ProcessRunRequest(
+        executable=str(tmp_path / "missing-executable"),
+        working_directory=str(tmp_path),
+        timeout_seconds=5,
+    )
+    failed = execute_next_process_run(database_path, goal_id=goal.id, request=missing)
+    assert failed.action.status == "FAILED"
+
+    blocked = evaluate_active_plan(database_path, goal_id=goal.id)
+    assert blocked.next_step is None
+    assert blocked.steps[0].blockers[0].kind == "PREVIOUS_ATTEMPT_REQUIRES_REVIEW"
+
+    retry = retry_process_run(
+        database_path,
+        action_id=failed.action.id,
+        request=_request(tmp_path, "-c", "print('recovered')"),
+        trace_id="trc_process_retry",
+    )
+
+    assert retry.action.status == "COMPLETED"
+    assert retry.retry_of_action_id == failed.action.id
+    assert retry.stdout.strip() == "recovered"
+    assert retry.action.input_data["retry_of_action_id"] == failed.action.id
+
+    authorization = get_event(database_path, retry.authorization_event_id)
+    assert authorization is not None
+    assert authorization.kind == "action.retry.authorized"
+    assert authorization.source == "user"
+    assert authorization.payload["retry_of_action_id"] == failed.action.id
+    assert authorization.payload["previous_status"] == "FAILED"
+
+    verified = verify_process_run_execution(database_path, action_id=retry.action.id)
+    assert verified.verification.status == "VERIFIED"
+    readiness = evaluate_active_plan(database_path, goal_id=goal.id)
+    assert readiness.steps[0].state == "VERIFIED"
+
+
+def test_interrupted_process_can_be_retried_after_restart_reconciliation(tmp_path: Path) -> None:
+    from simon.actions import create_action, interrupt_running_actions, transition_action
+    from simon.process_execution import retry_process_run
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_plan(database_path)
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan_id,
+        step_id="step_01",
+        kind="process.run",
+        input_data={"verification": "A execução produziu resultado técnico observável."},
+    )
+    transition_action(database_path, action.id, "RUNNING")
+    interrupted = interrupt_running_actions(database_path)
+    assert interrupted[0].status == "INTERRUPTED"
+
+    retry = retry_process_run(
+        database_path,
+        action_id=action.id,
+        request=_request(tmp_path, "-c", "print('after-restart')"),
+    )
+
+    assert retry.action.status == "COMPLETED"
+    assert retry.retry_of_action_id == action.id
+    assert retry.stdout.strip() == "after-restart"
+
+
+def test_process_retry_rejects_completed_attempt(tmp_path: Path) -> None:
+    from simon.process_execution import retry_process_run
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, _ = _goal_and_plan(database_path)
+    completed = execute_next_process_run(
+        database_path,
+        goal_id=goal.id,
+        request=_request(tmp_path, "-c", "print('ok')"),
+    )
+
+    with pytest.raises(ValueError, match="FAILED ou INTERRUPTED"):
+        retry_process_run(
+            database_path,
+            action_id=completed.action.id,
+            request=_request(tmp_path, "-c", "print('retry')"),
+        )
+
+
+def test_process_retry_rejects_stale_attempt_after_new_retry(tmp_path: Path) -> None:
+    from simon.process_execution import retry_process_run
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, _ = _goal_and_plan(database_path)
+    missing = ProcessRunRequest(
+        executable=str(tmp_path / "missing-executable"),
+        working_directory=str(tmp_path),
+        timeout_seconds=5,
+    )
+    first = execute_next_process_run(database_path, goal_id=goal.id, request=missing)
+    second = retry_process_run(
+        database_path,
+        action_id=first.action.id,
+        request=missing,
+    )
+    assert second.action.status == "FAILED"
+
+    with pytest.raises(ValueError, match="outros blockers|tentativa mais recente"):
+        retry_process_run(
+            database_path,
+            action_id=first.action.id,
+            request=_request(tmp_path, "-c", "print('late')"),
+        )
+
+    third = retry_process_run(
+        database_path,
+        action_id=second.action.id,
+        request=_request(tmp_path, "-c", "print('latest')"),
+    )
+    assert third.action.status == "COMPLETED"
+
+
+def test_process_retry_does_not_bypass_other_step_blockers(tmp_path: Path) -> None:
+    from simon.actions import create_action, transition_action
+    from simon.process_execution import retry_process_run
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Executar com condição",
+        origin="USER",
+        desired_state={"description": "Executado"},
+        success_criteria=({"description": "Execução observada"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar somente depois da condição externa.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": ["serviço externo disponível"],
+                "capability": "process.run",
+                "verification": "Execução observada.",
+            },
+        ),
+    )
+    action = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="process.run",
+        input_data={"verification": "Execução observada."},
+    )
+    transition_action(database_path, action.id, "RUNNING")
+    transition_action(
+        database_path,
+        action.id,
+        "FAILED",
+        failure={"kind": "process_start", "message": "falha"},
+    )
+
+    with pytest.raises(ValueError, match="não pode ignorar outros blockers"):
+        retry_process_run(
+            database_path,
+            action_id=action.id,
+            request=_request(tmp_path, "-c", "print('nope')"),
+        )
