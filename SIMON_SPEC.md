@@ -2639,6 +2639,10 @@ No primeiro corte executável, `simon resume [goal_id]` reconstrói esse estado 
 
 Actions encontradas como `RUNNING` no startup são reconciliadas antes da reconstrução para `INTERRUPTED`, preservando a regra de que um restart não implica sucesso nem falha do efeito externo. A retomada não recria prompts, hidden state ou histórico de chat do modelo; a continuação precisa ser explicável apenas pelo estado persistido.
 
+O primeiro cenário integrado ponta a ponta validou esse contrato atravessando Goal, Plan, `process.run`, `cognition.analyze`, confirmação epistemológica, restart em um novo processo, `file.patch`, reexecução, conclusão de Plan e Goal, Experience, promoção explícita de Memory e um segundo restart. A fronteira cognitiva usa um `ModelProvider` determinístico no teste para isolar a integração do Core da variabilidade do modelo, enquanto persistência, subprocesso, arquivo e processos de restart são reais.
+
+Esse teste revelou uma lacuna somente na apresentação da retomada: quando o Plan não possuía step `READY`, a CLI escondia o primeiro step ainda pendente embora o readiness já contivesse seus blockers. `resume` passa a expor esse step, sua capability e seus blockers. Isso não muda Planner nem readiness; apenas torna o estado persistido suficiente também para o usuário saber por que a continuação está bloqueada.
+
 ### 24.23. O que deliberadamente não existe nesses contratos
 
 O v0.1 não exige contratos próprios para:

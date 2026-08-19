@@ -8,7 +8,7 @@ A especificação oficial está em [`SIMON_SPEC.md`](SIMON_SPEC.md).
 
 ## Estado atual
 
-Fundação persistente inicial do v0.1.
+Núcleo operacional integrado do v0.1, já validado em um primeiro ciclo ponta a ponta.
 
 O projeto já consegue:
 
@@ -67,7 +67,8 @@ O projeto já consegue:
 - promover explicitamente significado de Experiences fechadas para Memories reutilizáveis;
 - manter uma `world_revision` monotônica quando Claims alteram a visão atual;
 - registrar em cada Plan a revisão do World em que ele foi criado;
-- reconstruir após reinício Goal, Plan, Actions, Verification status, revisão do World, última Experience e Memories relevantes com `simon resume`.
+- reconstruir após reinício Goal, Plan, Actions, Verification status, revisão do World, última Experience e Memories relevantes com `simon resume`;
+- executar em teste integrado um ciclo completo de Goal -> Plan -> Actions -> Verification -> restart -> mudança -> reexecução -> Goal COMPLETED -> Experience -> Memory -> novo restart.
 
 O primeiro adapter de modelo local já existe:
 
@@ -483,9 +484,37 @@ O estado reconstruído inclui o Goal persistido, o Plan atual ou mais recente, s
 
 O comando não restaura o prompt nem o estado interno do modelo anterior. A continuidade vem exclusivamente dos objetos canônicos persistidos. A migration atribui aos Plans já existentes a revisão materializada no momento do upgrade, sem fabricar uma história de revisões anterior ao schema 11.
 
+## Primeiro ciclo integrado ponta a ponta
+
+O primeiro cenário integrado do v0.1 agora cobre o ciclo completo usando a fronteira CLI, SQLite real, execução real de subprocesso e modificação real de arquivo. As respostas cognitivas são fornecidas por um `ModelProvider` determinístico de teste para que o cenário meça a integração do Core, e não a variabilidade de um modelo específico.
+
+O cenário exercita:
+
+```text
+Goal proposal -> Goal ACTIVE
+-> Plan ACTIVE
+-> process.run -> VERIFIED
+-> cognition.analyze -> ASSESSED -> VERIFIED
+-> restart em outro processo
+-> resume
+-> file.patch -> VERIFIED
+-> process.run -> VERIFIED
+-> cognition.analyze -> ASSESSED -> VERIFIED
+-> Plan COMPLETED
+-> Goal ASSESSED -> VERIFIED -> COMPLETED
+-> Experience CLOSED/SUCCESS
+-> Memory ACTIVE
+-> novo restart
+-> Experience e Memory recuperadas da persistência
+```
+
+O teste revelou uma lacuna de continuidade na apresentação da CLI: quando nenhum step estava `READY`, `resume` informava apenas que não havia próximo passo executável, embora o readiness já soubesse qual step permanecia pendente e por quê. A retomada agora apresenta o primeiro step não verificado, seu estado, capability e blockers. Assim um `CHANGE/unknown` reaparece explicitamente como `CAPABILITY_UNAVAILABLE: unknown` depois do restart, permitindo continuar pelo binding operacional apropriado sem depender do contexto anterior.
+
+Nenhuma nova tabela ou capability foi necessária neste passo; o SQLite permanece no schema 11.
+
 ## Próximo passo
 
-Executar o primeiro cenário integrado ponta a ponta usando somente a CLI e o estado persistido: iniciar um Goal real, avançar por execução, verificação, mudança, reexecução, conclusão, Experience e Memory, reiniciar o processo no meio do ciclo e confirmar que `resume` permite continuar sem qualquer contexto de modelo anterior. Corrigir somente as regressões ou lacunas que esse teste real revelar.
+Executar cenários integrados de falha e recuperação sobre o mesmo ciclo, começando por execução interrompida ou malsucedida, Verification negativa e necessidade de nova tentativa/replanejamento. Corrigir somente comportamentos observados que impeçam recuperação segura e explicável.
 
 ## Primeira interpretação cognitiva
 

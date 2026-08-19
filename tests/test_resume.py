@@ -78,6 +78,7 @@ def test_resume_reconstructs_persisted_semantic_state_after_startup(
     assert "World mudou desde o Plan: não" in output
     assert f"{waiting.id}: user.ask | WAITING | step step_1 | sem Verification" in output
     assert "Próximo passo executável: nenhum" in output
+    assert "Próximo passo pendente: step_1 | IN_PROGRESS" in output
     assert f"{memory.id}: SEMANTIC/PROJECT" in output
 
     state = reconstruct_resume_state(database_path, goal_id=goal.id)
@@ -144,3 +145,5 @@ def test_resume_exposes_interrupted_action_after_restart(
 
     assert f"{action.id}: process.run | INTERRUPTED" in output
     assert "Próximo passo executável: nenhum" in output
+    assert "Próximo passo pendente: step_1 | BLOCKED" in output
+    assert "PREVIOUS_ATTEMPT_REQUIRES_REVIEW" in output

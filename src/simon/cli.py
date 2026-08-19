@@ -596,6 +596,18 @@ def _resume(database_path: Path, goal_id: str | None) -> int:
         print("Próximo passo executável: não aplicável")
     elif state.readiness.next_step is None:
         print("Próximo passo executável: nenhum")
+        pending_step = next(
+            (step for step in state.readiness.steps if step.state != "VERIFIED"),
+            None,
+        )
+        if pending_step is not None:
+            print(f"Próximo passo pendente: {pending_step.step_id} | {pending_step.state}")
+            print(f"Descrição pendente: {pending_step.description}")
+            print(f"Capability pendente: {pending_step.capability or 'não especificada'}")
+            if pending_step.blockers:
+                print("Bloqueios do passo pendente:")
+                for blocker in pending_step.blockers:
+                    print(f"- {blocker.kind}: {blocker.detail}")
     else:
         next_step = state.readiness.next_step
         print(f"Próximo passo executável: {next_step.step_id}")
