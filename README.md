@@ -605,9 +605,31 @@ O teste também exige exatamente três Events `action.retry.authorized`, todos c
 
 Esse cenário não revelou nova lacuna de produção. O contrato construído nos passos anteriores permaneceu coerente quando retries, persistência, restart, readiness, provenance e Verification foram combinados no mesmo Plan. Nenhuma migration ou capability nova foi necessária; o SQLite permanece no schema 11.
 
+## Auditoria de estabilização da v0.1
+
+A auditoria cruzada do núcleo encontrou três lacunas de produção que eram bloqueadoras para uma primeira versão sólida. Todas foram corrigidas sem adicionar capability, daemon ou migration. O SQLite permanece no schema 11.
+
+A primeira lacuna era a reconciliação de Actions `RUNNING`. Até este corte, qualquer nova invocação da CLI chamava `interrupt_running_actions()` e podia marcar como `INTERRUPTED` uma Action que ainda estava sendo executada por outra instância viva do S.I.M.O.N. O runtime agora mantém um lock exclusivo do sistema operacional em `.simon/.runtime.lock` durante toda a execução da CLI. Uma segunda instância para o mesmo diretório de dados termina com código 2 e não toca no SQLite. Somente depois de adquirir o lock é permitido reconciliar `RUNNING -> INTERRUPTED`; se o processo anterior morrer, o próprio sistema operacional libera o lock.
+
+A segunda lacuna era epistemológica. Alguns caminhos de fechamento ainda aceitavam qualquer `VERIFIED` histórico de uma Action. O contrato foi unificado: para estado operacional atual, somente a tentativa mais recente do step e a Verification mais recente dessa tentativa têm autoridade. `plan-complete`, `goal-assess` e `goal-complete` agora reutilizam a mesma validação de evidência atual. O Event `plan.completed` preserva os IDs das Actions verificadas, e avaliações posteriores exigem que essas mesmas Actions continuem sendo as tentativas atuais e que sua conclusão epistemológica mais recente continue `VERIFIED`.
+
+Isso impede, por exemplo, o seguinte fechamento incorreto:
+
+```text
+file.patch -> VERIFIED
+-> Plan COMPLETED
+-> arquivo muda externamente
+-> file-verify -> FAILED
+-> Goal COMPLETED usando o VERIFIED antigo   [agora recusado]
+```
+
+A terceira lacuna estava no consumo cognitivo. `cognition.analyze` podia voltar para uma tentativa antiga verificada quando uma tentativa posterior do mesmo step havia falhado. Esse fallback foi removido. Histórico continua persistido para auditoria e Experience, mas não substitui o estado operacional mais recente ao construir evidência para uma análise nova.
+
+A auditoria também formaliza a fronteira desta versão: o v0.1 é single-runtime por diretório de dados; efeitos externos interrompidos continuam exigindo decisão explícita antes de retry; `world_revision` ainda informa mudança sem invalidar Plans automaticamente; e Memories continuam dependendo de promoção explícita. Esses pontos são limitações deliberadas, não bloqueadores descobertos nesta auditoria.
+
 ## Próximo passo
 
-Com o caminho feliz e o recovery integrado cobertos, o próximo corte deve ser uma auditoria de estabilização da v0.1: executar cenários cruzados de invariantes e concorrência transacional já plausíveis, revisar comandos sem caminho de recovery e classificar o que é bloqueador para a primeira versão sólida versus o que pertence a versões posteriores. A regra continua sendo corrigir apenas lacunas demonstradas por evidência.
+Com os invariantes bloqueadores corrigidos e os cenários integrados de sucesso, restart, replanejamento e recovery cobertos, o próximo corte deve ser de release candidate: validar instalação limpa, comandos de ajuda, criação de banco do zero, upgrade de schema anterior, execução de um smoke flow e empacotamento da versão sem adicionar novas capacidades ao Core.
 
 ## Primeira interpretação cognitiva
 

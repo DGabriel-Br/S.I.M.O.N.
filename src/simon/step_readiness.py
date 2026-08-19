@@ -64,7 +64,7 @@ def evaluate_active_plan(
     verified_steps = {
         step_id
         for step_id, step_actions in actions_by_step.items()
-        if _verified_action(database_path, step_actions) is not None
+        if _latest_action_is_verified(database_path, step_actions)
     }
 
     assessments: list[StepReadiness] = []
@@ -74,23 +74,27 @@ def evaluate_active_plan(
         capability = _optional_text(raw_step.get("capability"))
         step_actions = actions_by_step.get(step_id, [])
 
-        verified_action = _verified_action(database_path, step_actions)
-        if verified_action is not None:
-            assessments.append(
-                StepReadiness(
-                    step_id=step_id,
-                    description=description,
-                    capability=capability,
-                    state="VERIFIED",
-                    blockers=(),
-                    related_action_id=verified_action.id,
+        latest_action = step_actions[-1] if step_actions else None
+        if latest_action is not None and latest_action.status == "COMPLETED":
+            latest_verification = _latest_verification_result(database_path, latest_action)
+            if latest_verification is not None and latest_verification.status == "VERIFIED":
+                assessments.append(
+                    StepReadiness(
+                        step_id=step_id,
+                        description=description,
+                        capability=capability,
+                        state="VERIFIED",
+                        blockers=(),
+                        related_action_id=latest_action.id,
+                    )
                 )
-            )
-            continue
+                continue
 
-        active_action = _latest_action_with_statuses(
-            step_actions,
-            {"PENDING", "RUNNING", "WAITING"},
+        active_action = (
+            latest_action
+            if latest_action is not None
+            and latest_action.status in {"PENDING", "RUNNING", "WAITING"}
+            else None
         )
         if active_action is not None:
             assessments.append(
@@ -125,7 +129,11 @@ def evaluate_active_plan(
                     )
                 )
 
-        completed_unverified = _latest_action_with_statuses(step_actions, {"COMPLETED"})
+        completed_unverified = (
+            latest_action
+            if latest_action is not None and latest_action.status == "COMPLETED"
+            else None
+        )
         if completed_unverified is not None:
             latest_verification = _latest_verification_result(
                 database_path,
@@ -141,9 +149,17 @@ def evaluate_active_plan(
             else:
                 blockers.extend(_verification_blockers(latest_verification))
 
-        unsuccessful = _latest_action_with_statuses(
-            step_actions,
-            {"FAILED", "BLOCKED", "DENIED", "INTERRUPTED", "CANCELLED"},
+        unsuccessful = (
+            latest_action
+            if latest_action is not None
+            and latest_action.status in {
+                "FAILED",
+                "BLOCKED",
+                "DENIED",
+                "INTERRUPTED",
+                "CANCELLED",
+            }
+            else None
         )
         if unsuccessful is not None:
             blockers.append(
@@ -195,25 +211,14 @@ def evaluate_active_plan(
     )
 
 
-def _verified_action(database_path: Path, actions: list[Action]) -> Action | None:
-    for action in reversed(actions):
-        if action.status != "COMPLETED":
-            continue
-        results = list_verification_results(
-            database_path,
-            subject_type="ACTION",
-            subject_id=action.id,
-        )
-        if results and results[-1].status == "VERIFIED":
-            return action
-    return None
-
-
-def _latest_action_with_statuses(actions: list[Action], statuses: set[str]) -> Action | None:
-    for action in reversed(actions):
-        if action.status in statuses:
-            return action
-    return None
+def _latest_action_is_verified(database_path: Path, actions: list[Action]) -> bool:
+    if not actions:
+        return False
+    action = actions[-1]
+    if action.status != "COMPLETED":
+        return False
+    result = _latest_verification_result(database_path, action)
+    return result is not None and result.status == "VERIFIED"
 
 
 def _required_text(step: dict[str, object], key: str) -> str:

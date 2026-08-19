@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,51 @@ def test_latest_goal_assessment_context_returns_none_without_goal_assessment(
     goal = _goal(database_path)
 
     assert get_latest_goal_assessment_context(database_path, goal.id) is None
+
+
+def test_goal_assessment_rejects_step_whose_latest_verification_was_invalidated(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal, _, _ = _completed_goal(database_path)
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id
+            FROM actions
+            WHERE goal_id = ? AND step_id = 'step_01'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (goal.id,),
+        ).fetchone()
+    assert row is not None
+    action_id = str(row[0])
+    invalidation = Event.create(
+        kind="test.goal.evidence.invalidated",
+        source="test",
+        payload={"reason": "estado observado mudou"},
+        goal_id=goal.id,
+    )
+    append_event(database_path, invalidation)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action_id,
+        criteria=({"description": "estado ainda válido"},),
+        status="FAILED",
+        evidence_event_ids=(invalidation.id,),
+        observed={"current_state": "CHANGED"},
+        strength=4,
+    )
+    provider = FakeGoalAssessmentProvider(_negative_assessment())
+
+    with pytest.raises(RuntimeError, match="Verification atual de step_01 não está VERIFIED"):
+        assess_goal_outcome(
+            database_path,
+            provider,
+            model="fake-model",
+            goal_id=goal.id,
+        )
+
+    assert provider.calls == 0

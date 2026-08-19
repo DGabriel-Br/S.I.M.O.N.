@@ -12,6 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from simon.events import Event
 from simon.goals import Goal, get_goal
 from simon.model_provider import ModelProvider
+from simon.plan_evidence import (
+    completion_action_ids,
+    require_current_verified_steps_in_connection,
+)
 from simon.plans import Plan
 from simon.verification import (
     VerificationResult,
@@ -184,7 +188,11 @@ def assess_goal_outcome(
         if plan is None:
             raise ValueError(f"goal não possui plan COMPLETED: {goal.id}")
         completion_event = _plan_completion_event(connection, plan=plan)
-        step_evidence = _verified_step_evidence(connection, plan=plan)
+        step_evidence = _verified_step_evidence(
+            connection,
+            plan=plan,
+            completion_event=completion_event,
+        )
 
     existing = _find_existing_assessment(
         database_path,
@@ -361,56 +369,38 @@ def _verified_step_evidence(
     connection: sqlite3.Connection,
     *,
     plan: Plan,
+    completion_event: Event,
 ) -> tuple[_VerifiedStepEvidence, ...]:
+    expected_action_ids = completion_action_ids(
+        completion_event.payload,
+        steps=plan.steps,
+    )
+    current = require_current_verified_steps_in_connection(
+        connection,
+        plan_id=plan.id,
+        steps=plan.steps,
+        expected_action_ids=expected_action_ids,
+    )
+
     evidence: list[_VerifiedStepEvidence] = []
-    for step in plan.steps:
-        step_id = _step_text(step, "id")
-        row = connection.execute(
-            """
-            SELECT
-                a.id,
-                v.id,
-                v.evidence_event_ids_json,
-                v.strength
-            FROM actions AS a
-            JOIN verification_results AS v
-              ON v.subject_type = 'ACTION'
-             AND v.subject_id = a.id
-             AND v.status = 'VERIFIED'
-            WHERE a.plan_id = ?
-              AND a.step_id = ?
-              AND a.status = 'COMPLETED'
-            ORDER BY a.created_at DESC, a.id DESC, v.created_at DESC, v.id DESC
-            LIMIT 1
-            """,
-            (plan.id, step_id),
-        ).fetchone()
-        if row is None:
-            raise RuntimeError(f"step de plan COMPLETED perdeu evidência VERIFIED: {step_id}")
-
-        raw_event_ids = json.loads(str(row[2]))
-        if not isinstance(raw_event_ids, list) or any(
-            not isinstance(event_id, str) for event_id in raw_event_ids
-        ):
-            raise TypeError(f"Verification de {step_id} possui evidence_event_ids inválido")
-        strength = row[3]
-        if not isinstance(strength, int):
-            raise TypeError(f"Verification de {step_id} possui strength inválida")
-
-        events = tuple(_event_by_id(connection, event_id) for event_id in raw_event_ids)
+    for step, current_step in zip(plan.steps, current, strict=True):
+        verification = current_step.verification
+        events = tuple(
+            _event_by_id(connection, event_id)
+            for event_id in verification.evidence_event_ids
+        )
         evidence.append(
             _VerifiedStepEvidence(
-                step_id=step_id,
+                step_id=current_step.step_id,
                 description=_step_text(step, "description"),
                 local_criterion=_step_optional_text(step, "verification") or "não especificado",
-                action_id=str(row[0]),
-                verification_id=str(row[1]),
-                verification_strength=strength,
+                action_id=current_step.action.id,
+                verification_id=verification.id,
+                verification_strength=verification.strength,
                 evidence_events=events,
             )
         )
     return tuple(evidence)
-
 
 def _step_payload(item: _VerifiedStepEvidence) -> dict[str, object]:
     return {

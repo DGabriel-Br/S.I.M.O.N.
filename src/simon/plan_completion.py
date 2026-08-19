@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from simon.events import Event
 from simon.goals import get_goal
+from simon.plan_evidence import require_current_verified_steps_in_connection
 from simon.plans import Plan, get_active_plan, transition_plan_in_connection
 from simon.step_readiness import evaluate_active_plan
 
@@ -81,18 +82,14 @@ def complete_verified_plan(
         if str(goal_row[0]) != "ACTIVE":
             raise RuntimeError(f"goal mudou durante conclusão do plan: {goal_row[0]}")
 
-        verified_pairs = _verified_steps_in_connection(connection, active_plan)
-        if len(verified_pairs) != len(active_plan.steps):
-            verified_step_ids = {step_id for step_id, _ in verified_pairs}
-            missing = [
-                _step_id(step)
-                for step in active_plan.steps
-                if _step_id(step) not in verified_step_ids
-            ]
-            raise RuntimeError(
-                "evidência de verification mudou durante conclusão do plan: "
-                + ", ".join(missing)
-            )
+        current_evidence = require_current_verified_steps_in_connection(
+            connection,
+            plan_id=active_plan.id,
+            steps=active_plan.steps,
+        )
+        verified_pairs = tuple(
+            (item.step_id, item.action.id) for item in current_evidence
+        )
 
         completed = transition_plan_in_connection(connection, active_plan.id, "COMPLETED")
         event = Event.create(
@@ -116,34 +113,6 @@ def complete_verified_plan(
         verified_step_ids=tuple(step_id for step_id, _ in verified_pairs),
         created=True,
     )
-
-
-def _verified_steps_in_connection(
-    connection: sqlite3.Connection,
-    plan: Plan,
-) -> tuple[tuple[str, str], ...]:
-    verified: list[tuple[str, str]] = []
-    for step in plan.steps:
-        step_id = _step_id(step)
-        row = connection.execute(
-            """
-            SELECT a.id
-            FROM actions AS a
-            JOIN verification_results AS v
-              ON v.subject_type = 'ACTION'
-             AND v.subject_id = a.id
-             AND v.status = 'VERIFIED'
-            WHERE a.plan_id = ?
-              AND a.step_id = ?
-              AND a.status = 'COMPLETED'
-            ORDER BY a.created_at DESC, a.id DESC, v.created_at DESC, v.id DESC
-            LIMIT 1
-            """,
-            (plan.id, step_id),
-        ).fetchone()
-        if row is not None:
-            verified.append((step_id, str(row[0])))
-    return tuple(verified)
 
 
 def _find_existing_completion(

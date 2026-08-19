@@ -441,24 +441,21 @@ def _verified_prior_evidence(
         if current_step_id == step_id:
             break
 
-        verified_action = _latest_verified_action(
-            database_path,
-            actions_by_step.get(current_step_id, []),
-        )
-        if verified_action is None:
+        step_actions = actions_by_step.get(current_step_id, [])
+        if not step_actions:
+            continue
+        latest_action = step_actions[-1]
+        if latest_action.status != "COMPLETED":
             continue
 
         results = list_verification_results(
             database_path,
             subject_type="ACTION",
-            subject_id=verified_action.id,
+            subject_id=latest_action.id,
         )
-        verified_result = next(
-            (result for result in reversed(results) if result.status == "VERIFIED"),
-            None,
-        )
-        if verified_result is None:
+        if not results or results[-1].status != "VERIFIED":
             continue
+        verified_result = results[-1]
         for event_id in verified_result.evidence_event_ids:
             if event_id in seen_event_ids:
                 continue
@@ -469,20 +466,6 @@ def _verified_prior_evidence(
             seen_event_ids.add(event.id)
 
     return tuple(evidence)
-
-
-def _latest_verified_action(database_path: Path, actions: list[Action]) -> Action | None:
-    for action in reversed(actions):
-        if action.status != "COMPLETED":
-            continue
-        results = list_verification_results(
-            database_path,
-            subject_type="ACTION",
-            subject_id=action.id,
-        )
-        if results and results[-1].status == "VERIFIED":
-            return action
-    return None
 
 
 def _validate_analysis_grounding(

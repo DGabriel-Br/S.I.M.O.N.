@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -471,3 +472,56 @@ def test_existing_goal_completion_can_backfill_missing_experience(
     assert backfilled.experience_closure.created is True
     assert backfilled.experience_closure.experience.status == "CLOSED"
     assert backfilled.experience_closure.experience.outcome == "SUCCESS"
+
+
+def test_goal_completion_revalidates_step_evidence_after_satisfied_assessment(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal, plan_id, assessment_id = _satisfied_goal_assessment(database_path)
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id
+            FROM actions
+            WHERE plan_id = ? AND step_id = 'step_01'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (plan_id,),
+        ).fetchone()
+    assert row is not None
+    action_id = str(row[0])
+    invalidation = Event.create(
+        kind="test.goal.completion.evidence.invalidated",
+        source="test",
+        payload={"reason": "evidência local deixou de ser válida"},
+        goal_id=goal.id,
+    )
+    append_event(database_path, invalidation)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=action_id,
+        criteria=({"description": "evidência local continua válida"},),
+        status="FAILED",
+        evidence_event_ids=(invalidation.id,),
+        observed={"current_state": "CHANGED"},
+        strength=4,
+    )
+
+    with pytest.raises(RuntimeError, match="Verification atual de step_01 não está VERIFIED"):
+        complete_goal_from_assessment(
+            database_path,
+            assessment_verification_id=assessment_id,
+        )
+
+    persisted = get_goal(database_path, goal.id)
+    assert persisted is not None
+    assert persisted.status == "ACTIVE"
+    results = list_verification_results(
+        database_path,
+        subject_type="GOAL",
+        subject_id=goal.id,
+    )
+    assert [result.status for result in results] == ["ASSESSED"]

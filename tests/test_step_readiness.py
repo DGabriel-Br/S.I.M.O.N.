@@ -306,3 +306,71 @@ def test_user_ask_without_preconditions_is_ready_by_default(tmp_path: Path) -> N
     assert result.next_step is not None
     assert result.next_step.step_id == "step_01"
     assert result.next_step.state == "READY"
+
+
+def test_latest_attempt_controls_step_even_when_older_attempt_was_verified(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar tentativa.",
+                "capability": "process.run",
+            },
+        ),
+    )
+    first = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="process.run",
+    )
+    transition_action(database_path, first.id, "RUNNING")
+    transition_action(database_path, first.id, "COMPLETED", reported_result={"ok": True})
+    evidence = Event.create(
+        kind="test.first_attempt.verified",
+        source="test",
+        payload={"ok": True},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=first.id,
+        criteria=({"description": "primeira tentativa observada"},),
+        status="VERIFIED",
+        evidence_event_ids=(evidence.id,),
+        observed={"ok": True},
+        strength=2,
+    )
+
+    second = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="process.run",
+    )
+    transition_action(database_path, second.id, "RUNNING")
+    transition_action(
+        database_path,
+        second.id,
+        "FAILED",
+        failure={"kind": "runtime_failure"},
+    )
+
+    result = evaluate_active_plan(
+        database_path,
+        goal_id=goal.id,
+        available_capabilities=frozenset({"process.run"}),
+    )
+
+    assert result.steps[0].state == "BLOCKED"
+    assert result.steps[0].related_action_id is None
+    assert result.steps[0].blockers[0].kind == "PREVIOUS_ATTEMPT_REQUIRES_REVIEW"
+    assert second.id in result.steps[0].blockers[0].detail

@@ -582,3 +582,92 @@ def test_analysis_does_not_consume_historical_verified_evidence_after_newer_fail
     assert receipt.action.status == "FAILED"
     assert receipt.action.failure is not None
     assert receipt.action.failure["kind"] == "ungrounded_analysis"
+
+
+def test_analysis_does_not_fall_back_to_older_verified_attempt(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Analisar somente a tentativa atual",
+        origin="USER",
+        desired_state={"description": "Tentativas antigas não substituem a tentativa atual."},
+        success_criteria=({"description": "A análise ignora tentativa superada."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Produzir evidência.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "process.run",
+                "verification": "Existe observação técnica.",
+            },
+            {
+                "id": "step_02",
+                "description": "Analisar somente a tentativa atual.",
+                "kind": "EPISTEMIC",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "cognition.analyze",
+                "verification": "A análise não usa tentativa superada.",
+            },
+        ),
+    )
+    first = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="process.run",
+    )
+    transition_action(database_path, first.id, "RUNNING")
+    transition_action(database_path, first.id, "COMPLETED")
+    evidence = Event.create(
+        kind="process.execution.completed",
+        source="tool",
+        payload={"action_id": first.id, "exit_code": 0},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=first.id,
+        criteria=({"description": "primeira tentativa verificada"},),
+        status="VERIFIED",
+        evidence_event_ids=(evidence.id,),
+        observed={"state": "observed"},
+        strength=3,
+    )
+    second = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="process.run",
+    )
+    transition_action(database_path, second.id, "RUNNING")
+    transition_action(
+        database_path,
+        second.id,
+        "FAILED",
+        failure={"kind": "runtime_failure"},
+    )
+
+    receipt = execute_next_cognition_analysis(
+        database_path,
+        FakeAnalysisProvider(evidence.id),
+        model="fake-model",
+        goal_id=goal.id,
+    )
+
+    assert receipt.evidence_event_ids == ()
+    assert receipt.action.status == "FAILED"
+    assert receipt.action.failure is not None
+    assert receipt.action.failure["kind"] == "ungrounded_analysis"

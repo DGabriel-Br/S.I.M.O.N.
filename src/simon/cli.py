@@ -45,6 +45,7 @@ from simon.process_binding import ProcessRunRequest
 from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.process_verification import verify_process_run_execution
 from simon.resume import reconstruct_resume_state
+from simon.runtime_lock import RuntimeAlreadyActiveError, RuntimeLock
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
@@ -478,7 +479,17 @@ def _add_ollama_arguments(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    database_path, schema_version = initialize_storage(args.data_dir.resolve())
+    data_dir = args.data_dir.resolve()
+    try:
+        with RuntimeLock(data_dir):
+            return _run_locked(args, data_dir)
+    except RuntimeAlreadyActiveError as exc:
+        print(f"Runtime: ocupado ({exc})")
+        return 2
+
+
+def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
+    database_path, schema_version = initialize_storage(data_dir)
     suspend_active_experiences(database_path)
     interrupt_running_actions(database_path)
 

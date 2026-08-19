@@ -228,6 +228,22 @@ def get_verification_result(
         return get_verification_result_in_connection(connection, verification_id)
 
 
+def get_latest_verification_result_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    subject_type: str,
+    subject_id: str,
+) -> VerificationResult | None:
+    if subject_type not in SUBJECT_TYPES:
+        raise ValueError(f"subject_type inválido: {subject_type}")
+    row = connection.execute(
+        _verification_select()
+        + " WHERE subject_type = ? AND subject_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (subject_type, subject_id),
+    ).fetchone()
+    return _verification_from_row(row) if row is not None else None
+
+
 def list_verification_results_in_connection(
     connection: sqlite3.Connection,
     *,

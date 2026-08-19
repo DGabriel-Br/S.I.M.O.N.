@@ -226,6 +226,20 @@ def get_action(database_path: Path, action_id: str) -> Action | None:
         return get_action_in_connection(connection, action_id)
 
 
+def get_latest_action_for_step_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    plan_id: str,
+    step_id: str,
+) -> Action | None:
+    row = connection.execute(
+        _action_select()
+        + " WHERE plan_id = ? AND step_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (plan_id, step_id),
+    ).fetchone()
+    return _action_from_row(row) if row is not None else None
+
+
 def list_actions_for_plan(database_path: Path, plan_id: str) -> tuple[Action, ...]:
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute(

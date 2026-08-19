@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from simon.events import Event
@@ -13,6 +14,10 @@ from simon.goal_experience import (
     ensure_completed_goal_experience_in_connection,
 )
 from simon.goals import Goal
+from simon.plan_evidence import (
+    completion_action_ids,
+    require_current_verified_steps_in_connection,
+)
 from simon.verification import (
     VerificationResult,
     create_verification_result_in_connection,
@@ -225,7 +230,7 @@ def _validate_completed_plan(
 ) -> None:
     row = connection.execute(
         """
-        SELECT id, revision, status
+        SELECT id, revision, status, steps_json
         FROM plans
         WHERE id = ? AND goal_id = ?
         """,
@@ -270,6 +275,18 @@ def _validate_completed_plan(
         raise TypeError("payload de plan.completed inválido")
     if payload.get("plan_id") != plan_id or payload.get("plan_revision") != plan_revision:
         raise ValueError("plan.completed diverge do Plan avaliado")
+
+    raw_steps = json.loads(str(row[3]))
+    if not isinstance(raw_steps, list) or any(not isinstance(step, dict) for step in raw_steps):
+        raise TypeError("Plan do assessment possui steps_json inválido")
+    steps = tuple(cast(dict[str, object], step) for step in raw_steps)
+    expected_action_ids = completion_action_ids(payload, steps=steps)
+    require_current_verified_steps_in_connection(
+        connection,
+        plan_id=plan_id,
+        steps=steps,
+        expected_action_ids=expected_action_ids,
+    )
 
 
 def _goal_in_connection(connection: sqlite3.Connection, goal_id: str) -> Goal:

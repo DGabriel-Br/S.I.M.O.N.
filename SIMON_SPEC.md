@@ -5418,3 +5418,29 @@ Ao final do cenário, o Plan só pode ser concluído se as três tentativas nova
 A reinicialização final precisa reconstruir as seis Actions e o Plan `COMPLETED` diretamente do SQLite. Nenhum estado interno do `ModelProvider` anterior participa dessa reconstrução. O teste não encontrou nova lacuna de produção: os contratos de retry, retomada e Verification já implementados permaneceram consistentes quando combinados.
 
 Esse corte adiciona somente cobertura integrada e documentação. Nenhuma tabela, capability, estado de lifecycle ou migration nova é necessária; o SQLite permanece no schema 11.
+
+### 32.31. Auditoria de estabilização e invariantes de runtime
+
+A estabilização do v0.1 passa a tratar exclusão mútua do runtime e freshness epistemológica como invariantes do Core, e não como convenções da CLI.
+
+Cada diretório de dados admite uma única instância de CLI ativa. O processo adquire um lock exclusivo do sistema operacional em `.runtime.lock` antes de inicializar o banco, suspender Experiences ou reconciliar Actions. Se o lock já estiver ocupado, a nova instância termina sem alterar estado persistido. A reconciliação `RUNNING -> INTERRUPTED` só é válida depois da aquisição desse lock, porque sua premissa é que não existe outro runtime vivo responsável pela Action. O arquivo pode permanecer no filesystem após o encerramento; a autoridade é o lock mantido pelo kernel, não a existência do arquivo. Nenhuma tabela de heartbeat, PID lease ou daemon é introduzida.
+
+O estado de um step passa a obedecer a uma regra única:
+
+```text
+tentativa atual = Action mais recente do step
+conclusão epistemológica atual = VerificationResult mais recente dessa Action
+```
+
+Uma Action mais antiga `VERIFIED` nunca torna o step atual `VERIFIED` se existe tentativa posterior. Do mesmo modo, um `VERIFIED` antigo da mesma Action não permanece autoritativo quando existe Verification posterior `FAILED`, `INCONCLUSIVE` ou `ASSESSED`. Histórico continua imutável e consultável, mas não substitui a conclusão atual.
+
+`plan-complete` revalida esse contrato dentro da mesma transação que muda o Plan para `COMPLETED`. O Event `plan.completed` registra `verified_step_ids` e `verified_action_ids` na ordem dos steps do Plan. Depois do fechamento, `goal-assess` exige que as Actions registradas nesse Event ainda correspondam à tentativa atual de cada step e que a Verification mais recente de cada uma continue `VERIFIED`.
+
+`goal-complete` repete essa validação depois do assessment semântico e antes da promoção do Goal para `VERIFIED/COMPLETED`. Assim, uma mudança observada entre `goal-assess` e `goal-complete` invalida o gate de conclusão em vez de permitir que o Goal seja fechado com evidência stale.
+
+A mesma regra é aplicada ao contexto de `cognition.analyze`: somente a tentativa mais recente de cada step anterior pode fornecer evidência, e apenas quando sua Verification mais recente continua `VERIFIED`. Tentativas históricas permanecem disponíveis para auditoria, Experience e diagnóstico, mas não são usadas como substitutas silenciosas de uma tentativa atual que falhou.
+
+A auditoria considera deliberadamente fora do escopo bloqueador do v0.1: múltiplos runtimes concorrentes no mesmo banco, recuperação automática de efeitos externos incertos, invalidação automática de Plans baseada apenas em `world_revision` e promoção automática de Experience para Memory. Esses itens exigem mecanismos ou semântica adicionais e não são necessários para preservar os invariantes atuais do Core.
+
+Nenhuma migration é necessária; o SQLite permanece no schema 11.
+
