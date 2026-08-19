@@ -5380,3 +5380,41 @@ O retry se aplica apenas a falha operacional da tentativa. Uma Action `file.patc
 
 Nenhuma nova tabela, capability ou migration é necessária; o SQLite permanece no schema 11.
 
+
+
+### 32.30. Recovery integrado com falhas e reinicialização
+
+Os retries locais de `process.run`, `cognition.analyze` e `file.patch` passam a ser validados em conjunto por um cenário integrado, não apenas por testes isolados de cada capability. O objetivo é provar que persistência, readiness, provenance e Verification continuam coerentes quando várias falhas operacionais acontecem dentro do mesmo Plan e o runtime é reiniciado entre elas.
+
+O cenário usa um Plan serial com três steps:
+
+```text
+step_01: process.run
+step_02: cognition.analyze, depende de step_01
+step_03: CHANGE / SIMON / unknown, depende de step_02 e é ligado operacionalmente a file.patch
+```
+
+Cada step falha uma vez por uma causa operacional controlada. Depois da falha, um novo processo executa `resume` antes do retry. A retomada precisa reconstruir a Action `FAILED` como tentativa mais recente e manter o blocker `PREVIOUS_ATTEMPT_REQUIRES_REVIEW`. Para `file.patch`, o blocker `CAPABILITY_UNAVAILABLE: unknown` também precisa permanecer presente porque o binding especializado não altera a capability persistida do Plan.
+
+A recuperação segue exclusivamente os comandos locais já existentes:
+
+```text
+process.run FAILED
+  -> process-retry
+  -> process-verify
+
+cognition.analyze FAILED
+  -> analysis-retry
+  -> analysis-assess
+  -> verification-confirm
+
+file.patch FAILED
+  -> file-retry
+  -> file-verify
+```
+
+Ao final do cenário, o Plan só pode ser concluído se as três tentativas novas forem a tentativa mais recente de seus steps e estiverem `VERIFIED`. As três Actions originais permanecem `FAILED` e imutáveis. As Actions recuperadas precisam preservar `retry_of_action_id`, e cada decisão de retry precisa possuir um Event `action.retry.authorized` com `source=user` e a capability correspondente.
+
+A reinicialização final precisa reconstruir as seis Actions e o Plan `COMPLETED` diretamente do SQLite. Nenhum estado interno do `ModelProvider` anterior participa dessa reconstrução. O teste não encontrou nova lacuna de produção: os contratos de retry, retomada e Verification já implementados permaneceram consistentes quando combinados.
+
+Esse corte adiciona somente cobertura integrada e documentação. Nenhuma tabela, capability, estado de lifecycle ou migration nova é necessária; o SQLite permanece no schema 11.

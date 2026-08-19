@@ -14,8 +14,11 @@ from simon.cognition import GoalProposal, UserInputInterpretation
 from simon.cognition_analysis import AnalysisFinding, CognitionAnalysis
 from simon.cognition_analysis_verification import CognitionAnalysisCriterionAssessment
 from simon.goal_verification import GoalCriterionAssessment, GoalEvidenceAssessment
-from simon.model_provider import StructuredModelResult
+from simon.goals import Goal, insert_goal
+from simon.model_provider import ModelProviderError, StructuredModelResult
 from simon.planning import PlanIntentDraft, PlanIntentStep
+from simon.plans import create_plan
+from simon.storage import initialize_storage
 
 
 class LifeCycleProvider:
@@ -141,6 +144,30 @@ class LifeCycleProvider:
 
         assert isinstance(output, response_model)
         return StructuredModelResult(model=model, output=output)
+
+
+class RecoveryCycleProvider(LifeCycleProvider):
+    analysis_failures_remaining = 0
+
+    def generate_structured[OutputT: BaseModel](
+        self,
+        *,
+        model: str,
+        prompt: str,
+        response_model: type[OutputT],
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> StructuredModelResult[OutputT]:
+        if response_model is CognitionAnalysis and self.analysis_failures_remaining > 0:
+            type(self).analysis_failures_remaining -= 1
+            raise ModelProviderError("falha cognitiva intencional do cenário de recovery")
+        return super().generate_structured(
+            model=model,
+            prompt=prompt,
+            response_model=response_model,
+            system=system,
+            temperature=temperature,
+        )
 
 
 def _prompt_payload(prompt: str) -> dict[str, object]:
@@ -486,3 +513,282 @@ def test_cli_life_cycle_survives_restart_and_reuses_promoted_memory(
     assert tuple(json.loads(str(memory_row[0]))) == (experience_id,)
     assert memory_row[1] == "ACTIVE"
     assert startup_count is not None and startup_count[0] >= 2
+
+
+def test_cli_recovery_cycle_survives_failures_retries_and_restarts(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    RecoveryCycleProvider.analysis_failures_remaining = 1
+    monkeypatch.setattr("simon.cli.OllamaProvider", RecoveryCycleProvider)  # type: ignore[attr-defined]
+
+    data_dir = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    script_path = workspace / "target.py"
+    script_path.write_text('print("BROKEN")\n', encoding="utf-8")
+
+    database_path, _ = initialize_storage(data_dir)
+    goal = Goal.create(
+        title="Recuperar ciclo com falhas operacionais",
+        origin="USER",
+        desired_state={
+            "description": "As três operações foram recuperadas sem perder a linhagem."
+        },
+        success_criteria=(
+            {"description": "Todos os steps terminaram verificados após retry explícito."},
+        ),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Executar o script para produzir evidência inicial.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "process.run",
+                "verification": "Existe uma execução observável do script.",
+                "intent_role": "EXECUTE",
+                "intent_actor": "SIMON",
+            },
+            {
+                "id": "step_02",
+                "description": "Analisar a saída inicial do script.",
+                "kind": "EPISTEMIC",
+                "depends_on": ["step_01"],
+                "preconditions": [],
+                "capability": "cognition.analyze",
+                "verification": "A saída BROKEN foi identificada na análise.",
+                "intent_role": "ANALYZE",
+                "intent_actor": "SIMON",
+            },
+            {
+                "id": "step_03",
+                "description": "Realizar a mudança: substituir BROKEN por FIXED.",
+                "kind": "WORLD",
+                "depends_on": ["step_02"],
+                "preconditions": [],
+                "capability": "unknown",
+                "capability_detail": "Substituição localizada de BROKEN por FIXED",
+                "verification": "O arquivo foi modificado e salvo.",
+                "intent_role": "CHANGE",
+                "intent_actor": "SIMON",
+            },
+        ),
+    )
+
+    missing_executable = workspace / "executavel-que-nao-existe"
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "plan-run",
+            goal.id,
+            "--cwd",
+            str(workspace),
+            str(missing_executable),
+        ]
+    ) == 1
+    failed_process = _latest_action_id(
+        database_path, plan_id=plan.id, step_id="step_01"
+    )
+
+    after_process_failure = _run_resume_in_new_process(data_dir, goal_id=goal.id)
+    assert after_process_failure.returncode == 0, after_process_failure.stderr
+    assert "Próximo passo pendente: step_01 | BLOCKED" in after_process_failure.stdout
+    assert "PREVIOUS_ATTEMPT_REQUIRES_REVIEW" in after_process_failure.stdout
+    assert failed_process in after_process_failure.stdout
+
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "process-retry",
+            failed_process,
+            "--cwd",
+            str(workspace),
+            sys.executable,
+            str(script_path),
+        ]
+    ) == 0
+    recovered_process = _latest_action_id(
+        database_path, plan_id=plan.id, step_id="step_01"
+    )
+    assert recovered_process != failed_process
+    assert main(["--data-dir", str(data_dir), "process-verify", recovered_process]) == 0
+
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "plan-analyze",
+            "--model",
+            "integration-model",
+            goal.id,
+        ]
+    ) == 1
+    failed_analysis = _latest_action_id(
+        database_path, plan_id=plan.id, step_id="step_02"
+    )
+
+    after_analysis_failure = _run_resume_in_new_process(data_dir, goal_id=goal.id)
+    assert after_analysis_failure.returncode == 0, after_analysis_failure.stderr
+    assert "Próximo passo pendente: step_02 | BLOCKED" in after_analysis_failure.stdout
+    assert "PREVIOUS_ATTEMPT_REQUIRES_REVIEW" in after_analysis_failure.stdout
+    assert recovered_process in after_analysis_failure.stdout
+    assert failed_analysis in after_analysis_failure.stdout
+
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "analysis-retry",
+            "--model",
+            "integration-model",
+            failed_analysis,
+        ]
+    ) == 0
+    recovered_analysis = _latest_action_id(
+        database_path, plan_id=plan.id, step_id="step_02"
+    )
+    assert recovered_analysis != failed_analysis
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "analysis-assess",
+            "--model",
+            "integration-model",
+            recovered_analysis,
+        ]
+    ) == 0
+    analysis_assessment = _latest_assessment_id(
+        database_path, action_id=recovered_analysis
+    )
+    assert main(
+        ["--data-dir", str(data_dir), "verification-confirm", analysis_assessment]
+    ) == 0
+
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "plan-patch",
+            goal.id,
+            "--workspace",
+            str(workspace),
+            "--file",
+            script_path.name,
+            "--old",
+            "TRECHO_INEXISTENTE",
+            "--new",
+            "FIXED",
+        ]
+    ) == 1
+    failed_patch = _latest_action_id(
+        database_path, plan_id=plan.id, step_id="step_03"
+    )
+    assert script_path.read_text(encoding="utf-8") == 'print("BROKEN")\n'
+
+    after_patch_failure = _run_resume_in_new_process(data_dir, goal_id=goal.id)
+    assert after_patch_failure.returncode == 0, after_patch_failure.stderr
+    assert "Próximo passo pendente: step_03 | BLOCKED" in after_patch_failure.stdout
+    assert "PREVIOUS_ATTEMPT_REQUIRES_REVIEW" in after_patch_failure.stdout
+    assert "CAPABILITY_UNAVAILABLE: unknown" in after_patch_failure.stdout
+    assert failed_patch in after_patch_failure.stdout
+
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "file-retry",
+            failed_patch,
+            "--workspace",
+            str(workspace),
+            "--file",
+            script_path.name,
+            "--old",
+            "BROKEN",
+            "--new",
+            "FIXED",
+        ]
+    ) == 0
+    recovered_patch = _latest_action_id(
+        database_path, plan_id=plan.id, step_id="step_03"
+    )
+    assert recovered_patch != failed_patch
+    assert main(["--data-dir", str(data_dir), "file-verify", recovered_patch]) == 0
+    assert script_path.read_text(encoding="utf-8") == 'print("FIXED")\n'
+
+    assert main(["--data-dir", str(data_dir), "plan-complete", goal.id]) == 0
+
+    final_resume = _run_resume_in_new_process(data_dir, goal_id=goal.id)
+    assert final_resume.returncode == 0, final_resume.stderr
+    assert f"Plan atual: {plan.id} | revisão 1 | COMPLETED" in final_resume.stdout
+    assert "Próximo passo executável: não aplicável" in final_resume.stdout
+    assert "Actions reconstruídas: 6" in final_resume.stdout
+
+    with sqlite3.connect(database_path) as connection:
+        action_rows = connection.execute(
+            """
+            SELECT id, step_id, status, input_json
+            FROM actions
+            WHERE plan_id = ?
+            ORDER BY step_id, created_at, id
+            """,
+            (plan.id,),
+        ).fetchall()
+        retry_event_rows = connection.execute(
+            """
+            SELECT source, payload_json
+            FROM events
+            WHERE goal_id = ? AND kind = 'action.retry.authorized'
+            ORDER BY occurred_at, id
+            """,
+            (goal.id,),
+        ).fetchall()
+        verified_subjects = connection.execute(
+            """
+            SELECT subject_id
+            FROM verification_results
+            WHERE subject_type = 'ACTION' AND status = 'VERIFIED'
+            ORDER BY created_at, id
+            """
+        ).fetchall()
+
+    assert [(row[1], row[2]) for row in action_rows] == [
+        ("step_01", "FAILED"),
+        ("step_01", "COMPLETED"),
+        ("step_02", "FAILED"),
+        ("step_02", "COMPLETED"),
+        ("step_03", "FAILED"),
+        ("step_03", "COMPLETED"),
+    ]
+    expected_retry_pairs = {
+        recovered_process: failed_process,
+        recovered_analysis: failed_analysis,
+        recovered_patch: failed_patch,
+    }
+    for action_id, _step_id, status, raw_input in action_rows:
+        if status != "COMPLETED":
+            continue
+        payload = json.loads(str(raw_input))
+        assert payload["retry_of_action_id"] == expected_retry_pairs[str(action_id)]
+
+    assert len(retry_event_rows) == 3
+    retry_capabilities = []
+    for source, raw_payload in retry_event_rows:
+        assert source == "user"
+        payload = json.loads(str(raw_payload))
+        retry_capabilities.append(payload["capability"])
+    assert set(retry_capabilities) == {"process.run", "cognition.analyze", "file.patch"}
+
+    verified_ids = {str(row[0]) for row in verified_subjects}
+    assert {recovered_process, recovered_analysis, recovered_patch} <= verified_ids
+    assert failed_process not in verified_ids
+    assert failed_analysis not in verified_ids
+    assert failed_patch not in verified_ids

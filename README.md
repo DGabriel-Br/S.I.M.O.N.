@@ -579,9 +579,35 @@ Uma tentativa de retry concluída segue o mesmo fluxo de `file-verify`. A Verifi
 
 Nenhuma migration foi necessária; o SQLite permanece no schema 11.
 
+## Recovery integrado com falhas e restart
+
+O hardening dos três recoveries locais agora possui um cenário integrado próprio. O teste cria um Plan serial com `process.run`, `cognition.analyze` e `CHANGE/unknown -> file.patch`, força uma falha operacional em cada step e reinicia o S.I.M.O.N. em outro processo entre a falha e a recuperação.
+
+O ciclo exercitado é:
+
+```text
+process.run FAILED
+-> restart -> resume
+-> process-retry -> COMPLETED -> VERIFIED
+-> cognition.analyze FAILED
+-> restart -> resume
+-> analysis-retry -> COMPLETED -> ASSESSED -> VERIFIED
+-> file.patch FAILED
+-> restart -> resume
+-> file-retry -> COMPLETED -> VERIFIED
+-> Plan COMPLETED
+-> restart -> estado reconstruído
+```
+
+Cada `resume` precisa reconstruir a tentativa mais recente e apresentar `PREVIOUS_ATTEMPT_REQUIRES_REVIEW`; no step `CHANGE/unknown`, `CAPABILITY_UNAVAILABLE: unknown` também precisa permanecer visível. A recuperação só pode criar uma nova Action, nunca reabrir a anterior. Ao final, o banco precisa conservar seis Actions, três falhas imutáveis e três tentativas concluídas, com `retry_of_action_id` apontando para a tentativa correta.
+
+O teste também exige exatamente três Events `action.retry.authorized`, todos com `source=user` e capabilities distintas (`process.run`, `cognition.analyze` e `file.patch`). Somente as tentativas recuperadas podem possuir Verification `VERIFIED`; as Actions que falharam permanecem sem promoção epistemológica.
+
+Esse cenário não revelou nova lacuna de produção. O contrato construído nos passos anteriores permaneceu coerente quando retries, persistência, restart, readiness, provenance e Verification foram combinados no mesmo Plan. Nenhuma migration ou capability nova foi necessária; o SQLite permanece no schema 11.
+
 ## Próximo passo
 
-Consolidar o hardening dos recoveries locais em cenários integrados de falha e retomada. O próximo corte deve testar cadeias reais de `FAILED`/`INTERRUPTED` em `process.run`, `cognition.analyze` e `file.patch`, incluindo restart entre tentativa e retry, para encontrar inconsistências de proveniência ou readiness antes de considerar o núcleo v0.1 estabilizado.
+Com o caminho feliz e o recovery integrado cobertos, o próximo corte deve ser uma auditoria de estabilização da v0.1: executar cenários cruzados de invariantes e concorrência transacional já plausíveis, revisar comandos sem caminho de recovery e classificar o que é bloqueador para a primeira versão sólida versus o que pertence a versões posteriores. A regra continua sendo corrigir apenas lacunas demonstradas por evidência.
 
 ## Primeira interpretação cognitiva
 
