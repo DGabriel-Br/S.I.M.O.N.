@@ -197,7 +197,10 @@ def _validated_authorized_workspace(
     ).fetchone()
     if row is None:
         raise ValueError(f"Event de autorização não encontrado: {authorization_event_id}")
-    if str(row[0]) != "file.patch.authorized" or str(row[1]) != "user":
+    authorization_kind = str(row[0])
+    if authorization_kind not in {"file.patch.authorized", "action.retry.authorized"}:
+        raise ValueError(f"Event não representa autorização file.patch: {authorization_event_id}")
+    if str(row[1]) != "user":
         raise ValueError(f"Event não representa autorização file.patch: {authorization_event_id}")
     if row[3] is None or str(row[3]) != action.goal_id:
         raise ValueError("Event de autorização não pertence ao Goal da Action")
@@ -213,6 +216,13 @@ def _validated_authorized_workspace(
         raise ValueError("Event de autorização não confirma capability file.patch")
     if payload.get("relative_path") != request.relative_path:
         raise ValueError("Action e Event de autorização divergem sobre relative_path")
+    _validate_retry_authorization(
+        connection,
+        action=action,
+        authorization_kind=authorization_kind,
+        authorization_event_id=authorization_event_id,
+        payload=payload,
+    )
 
     workspace_value = payload.get("workspace")
     if not isinstance(workspace_value, str) or not workspace_value.strip():
@@ -221,6 +231,55 @@ def _validated_authorized_workspace(
     if not workspace.is_absolute():
         raise ValueError("Event de autorização não preservou workspace absoluto")
     return workspace
+
+
+def _validate_retry_authorization(
+    connection: sqlite3.Connection,
+    *,
+    action: Action,
+    authorization_kind: str,
+    authorization_event_id: str,
+    payload: dict[str, object],
+) -> None:
+    retry_of_action_id = action.input_data.get("retry_of_action_id")
+    if retry_of_action_id is None:
+        if authorization_kind != "file.patch.authorized":
+            raise ValueError("Action inicial file.patch não pode usar autorização de retry")
+        return
+
+    if not isinstance(retry_of_action_id, str) or not retry_of_action_id.strip():
+        raise TypeError("Action file.patch possui retry_of_action_id inválido")
+    if authorization_kind != "action.retry.authorized":
+        raise ValueError("Action de retry file.patch não possui autorização de retry")
+    if payload.get("capability") != "file.patch":
+        raise ValueError("Event de retry não autoriza capability file.patch")
+    if payload.get("retry_of_action_id") != retry_of_action_id:
+        raise ValueError("Action e Event de retry divergem sobre tentativa anterior")
+    if action.input_data.get("retry_authorization_event_id") != authorization_event_id:
+        raise ValueError("Action e Event divergem sobre autorização de retry")
+
+    previous = connection.execute(
+        """
+        SELECT goal_id, plan_id, step_id, kind, status
+        FROM actions
+        WHERE id = ?
+        """,
+        (retry_of_action_id,),
+    ).fetchone()
+    if previous is None:
+        raise ValueError(f"Action anterior do retry não encontrada: {retry_of_action_id}")
+    if tuple(str(value) for value in previous[:4]) != (
+        action.goal_id,
+        action.plan_id,
+        action.step_id,
+        "file.patch",
+    ):
+        raise ValueError("Action anterior do retry não pertence ao mesmo file.patch")
+    previous_status = str(previous[4])
+    if previous_status not in {"FAILED", "INTERRUPTED"}:
+        raise ValueError("Action anterior do retry não preserva status operacional elegível")
+    if payload.get("previous_status") != previous_status:
+        raise ValueError("Event de retry diverge sobre status da tentativa anterior")
 
 
 def _validated_modification_event(
@@ -257,6 +316,12 @@ def _validated_modification_event(
         raise ValueError("Event de modificação não pertence ao step da Action")
     if payload.get("relative_path") != request.relative_path:
         raise ValueError("Action e Event de modificação divergem sobre relative_path")
+    retry_of_action_id = action.input_data.get("retry_of_action_id")
+    if retry_of_action_id is None:
+        if payload.get("retry_of_action_id") is not None:
+            raise ValueError("Event de modificação declara retry ausente na Action")
+    elif payload.get("retry_of_action_id") != retry_of_action_id:
+        raise ValueError("Action e Event de modificação divergem sobre retry_of_action_id")
 
     target_path = _required_text(payload, "target_path")
     before_sha256 = _required_sha256(payload, "before_sha256")

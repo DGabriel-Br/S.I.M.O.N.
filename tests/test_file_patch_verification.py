@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from simon.actions import create_action
-from simon.file_patch import FilePatchRequest, execute_next_file_patch
+from simon.file_patch import FilePatchRequest, execute_next_file_patch, retry_file_patch
 from simon.file_patch_verification import verify_file_patch_state
 from simon.goals import Goal, insert_goal
 from simon.plans import create_plan
@@ -185,3 +185,76 @@ def test_file_patch_verification_rejects_non_file_patch_and_stale_attempt(tmp_pa
 
     with pytest.raises(ValueError, match="tentativa mais recente"):
         verify_file_patch_state(database_path, action_id=execution.action.id)
+
+
+def test_file_patch_verification_validates_retry_authorization_lineage(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-retry-verification"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 3\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data-retry-verification")
+    goal = Goal.create(
+        title="Corrigir arquivo após retry",
+        origin="USER",
+        desired_state={"description": "arquivo corrigido"},
+        success_criteria=({"description": "alteração verificada"},),
+    )
+    insert_goal(database_path, goal)
+    create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Corrigir variável no script",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "unknown",
+                "capability_detail": "Correção localizada",
+                "verification": "Arquivo corrigido e salvo.",
+                "intent_role": "CHANGE",
+                "intent_actor": "SIMON",
+            },
+        ),
+    )
+    failed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=FilePatchRequest(
+            workspace=str(workspace),
+            relative_path="script.py",
+            expected_text="valor = 1",
+            replacement_text="valor = 2",
+        ),
+    )
+    retry = retry_file_patch(
+        database_path,
+        action_id=failed.action.id,
+        request=FilePatchRequest(
+            workspace=str(workspace),
+            relative_path="script.py",
+            expected_text="valor = 3",
+            replacement_text="valor = 2",
+        ),
+    )
+
+    verified = verify_file_patch_state(database_path, action_id=retry.action.id)
+    assert verified.verification.status == "VERIFIED"
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM events WHERE id = ?",
+            (retry.authorization_event_id,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(str(row[0]))
+        payload["retry_of_action_id"] = "act_tampered"
+        connection.execute(
+            "UPDATE events SET payload_json = ? WHERE id = ?",
+            (json.dumps(payload, separators=(",", ":")), retry.authorization_event_id),
+        )
+
+    with pytest.raises(ValueError, match="divergem sobre tentativa anterior"):
+        verify_file_patch_state(database_path, action_id=retry.action.id)

@@ -559,9 +559,29 @@ O teste revelou uma lacuna de continuidade na apresentação da CLI: quando nenh
 
 Nenhuma nova tabela ou capability foi necessária neste passo; o SQLite permanece no schema 11.
 
+## Retry operacional explícito de `file.patch`
+
+Uma tentativa `file.patch` que termina `FAILED` ou é reconciliada como `INTERRUPTED` pode agora receber uma nova autorização explícita:
+
+```powershell
+uv run simon file-retry act_ID_DA_TENTATIVA `
+  --workspace C:\projeto `
+  --file script.py `
+  --old "trecho atual" `
+  --new "trecho corrigido"
+```
+
+A nova requisição pode corrigir workspace, arquivo ou os textos da substituição porque esses parâmetros pertencem à tentativa operacional, não ao Plan persistido. A Action anterior permanece imutável e a nova Action registra `retry_of_action_id` e `retry_authorization_event_id`. O Event `action.retry.authorized` preserva a capability `file.patch`, o status da tentativa anterior e o novo escopo de autorização sem duplicar o conteúdo textual completo do patch no Event Log.
+
+Como o step continua persistido como `CHANGE/unknown`, o retry só é autorizado quando seus blockers são exatamente `PREVIOUS_ATTEMPT_REQUIRES_REVIEW` da Action indicada e `CAPABILITY_UNAVAILABLE: unknown`. Dependências, preconditions ou qualquer outro blocker impedem a nova tentativa. Apenas a tentativa mais recente pode ser usada como origem de outro retry.
+
+Uma tentativa de retry concluída segue o mesmo fluxo de `file-verify`. A Verification reconhece `action.retry.authorized` somente quando a proveniência coincide com Action, Plan, step, capability, workspace, arquivo, tentativa anterior e status anterior. Uma Action `COMPLETED` cuja Verification posterior seja negativa não pode usar `file-retry`; esse caso continua pertencendo ao replanejamento epistemológico.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 11.
+
 ## Próximo passo
 
-Continuar o hardening das falhas operacionais que ainda deixam o Plan sem recovery local. O próximo caso concreto é `file.patch` terminando `FAILED` por target indisponível, trecho ausente ou trecho ambíguo. A próxima etapa deve decidir quando uma nova requisição de patch pode ser autorizada como retry local sem confundir alteração de parâmetros com replanejamento da estratégia.
+Consolidar o hardening dos recoveries locais em cenários integrados de falha e retomada. O próximo corte deve testar cadeias reais de `FAILED`/`INTERRUPTED` em `process.run`, `cognition.analyze` e `file.patch`, incluindo restart entre tentativa e retry, para encontrar inconsistências de proveniência ou readiness antes de considerar o núcleo v0.1 estabilizado.
 
 ## Primeira interpretação cognitiva
 

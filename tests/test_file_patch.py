@@ -3,13 +3,20 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from simon.actions import list_actions_for_plan
-from simon.events import get_event
-from simon.file_patch import FilePatchRequest, bind_file_patch_step, execute_next_file_patch
+from simon.actions import create_action, list_actions_for_plan, transition_action
+from simon.events import Event, append_event, get_event
+from simon.file_patch import (
+    FilePatchRequest,
+    bind_file_patch_step,
+    execute_next_file_patch,
+    retry_file_patch,
+)
+from simon.file_patch_verification import verify_file_patch_state
 from simon.goals import Goal, insert_goal
 from simon.plans import create_plan
 from simon.step_readiness import evaluate_active_plan
 from simon.storage import initialize_storage
+from simon.verification import create_verification_result
 
 
 def _goal_and_change_plan(
@@ -268,6 +275,240 @@ def test_file_patch_refuses_generic_unknown_step(tmp_path: Path) -> None:
             database_path,
             goal_id=goal.id,
             request=_request(workspace),
+        )
+
+
+def test_failed_file_patch_can_be_retried_with_corrected_request_and_verified(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 3\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_change_plan(database_path)
+    failed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_request(workspace),
+    )
+    assert failed.action.status == "FAILED"
+
+    blocked = evaluate_active_plan(database_path, goal_id=goal.id)
+    assert tuple(blocker.kind for blocker in blocked.steps[0].blockers) == (
+        "PREVIOUS_ATTEMPT_REQUIRES_REVIEW",
+        "CAPABILITY_UNAVAILABLE",
+    )
+
+    retried = retry_file_patch(
+        database_path,
+        action_id=failed.action.id,
+        request=_request(workspace, expected="valor = 3", replacement="valor = 2"),
+        trace_id="trc_file_retry",
+    )
+
+    assert retried.action.status == "COMPLETED"
+    assert retried.retry_of_action_id == failed.action.id
+    assert retried.action.input_data["retry_of_action_id"] == failed.action.id
+    assert target.read_text(encoding="utf-8") == "valor = 2\n"
+
+    authorization = get_event(database_path, retried.authorization_event_id)
+    assert authorization is not None
+    assert authorization.kind == "action.retry.authorized"
+    assert authorization.source == "user"
+    assert authorization.payload["capability"] == "file.patch"
+    assert authorization.payload["retry_of_action_id"] == failed.action.id
+    assert authorization.payload["previous_status"] == "FAILED"
+
+    modification = get_event(database_path, retried.modification_event_id)
+    assert modification is not None
+    assert modification.payload["retry_of_action_id"] == failed.action.id
+
+    actions = list_actions_for_plan(database_path, plan_id)
+    assert [action.status for action in actions] == ["FAILED", "COMPLETED"]
+
+    verified = verify_file_patch_state(database_path, action_id=retried.action.id)
+    assert verified.verification.status == "VERIFIED"
+    readiness = evaluate_active_plan(database_path, goal_id=goal.id)
+    assert readiness.steps[0].state == "VERIFIED"
+
+
+def test_interrupted_file_patch_can_be_retried(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 1\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_change_plan(database_path)
+    interrupted = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan_id,
+        step_id="step_01",
+        kind="file.patch",
+        input_data={"bound_from_capability": "unknown"},
+    )
+    transition_action(database_path, interrupted.id, "RUNNING")
+    transition_action(
+        database_path,
+        interrupted.id,
+        "INTERRUPTED",
+        failure={"kind": "runtime_restart", "message": "runtime reiniciado"},
+    )
+
+    retried = retry_file_patch(
+        database_path,
+        action_id=interrupted.id,
+        request=_request(workspace),
+    )
+
+    assert retried.action.status == "COMPLETED"
+    assert retried.retry_of_action_id == interrupted.id
+    assert target.read_text(encoding="utf-8") == "valor = 2\n"
+
+
+def test_file_patch_retry_rejects_completed_attempt(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "script.py").write_text("valor = 1\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, _ = _goal_and_change_plan(database_path)
+    completed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_request(workspace),
+    )
+
+    with pytest.raises(ValueError, match="FAILED ou INTERRUPTED"):
+        retry_file_patch(
+            database_path,
+            action_id=completed.action.id,
+            request=_request(workspace, expected="valor = 2", replacement="valor = 3"),
+        )
+
+
+def test_file_patch_retry_rejects_attempt_that_is_no_longer_latest(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "script.py").write_text("valor = 3\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, _ = _goal_and_change_plan(database_path)
+    first = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_request(workspace),
+    )
+    second = retry_file_patch(
+        database_path,
+        action_id=first.action.id,
+        request=_request(workspace),
+    )
+    assert second.action.status == "FAILED"
+
+    with pytest.raises(ValueError, match="outros blockers|tentativa mais recente"):
+        retry_file_patch(
+            database_path,
+            action_id=first.action.id,
+            request=_request(workspace),
+        )
+
+
+def test_file_patch_retry_refuses_to_bypass_dependency_that_lost_verification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "script.py").write_text("valor = 3\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal = Goal.create(
+        title="Corrigir após evidência",
+        origin="USER",
+        desired_state={"description": "arquivo corrigido"},
+        success_criteria=({"description": "alteração verificada"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Observar estado anterior.",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "process.run",
+                "verification": "Estado observado.",
+            },
+            {
+                "id": "step_02",
+                "description": "Realizar a mudança: corrigir arquivo",
+                "kind": "WORLD",
+                "depends_on": ["step_01"],
+                "preconditions": [],
+                "capability": "unknown",
+                "capability_detail": "Correção localizada",
+                "verification": "Arquivo modificado.",
+                "intent_role": "CHANGE",
+                "intent_actor": "SIMON",
+            },
+        ),
+    )
+    prior = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="process.run",
+    )
+    transition_action(database_path, prior.id, "RUNNING")
+    transition_action(database_path, prior.id, "COMPLETED", reported_result={"ok": True})
+    evidence = Event.create(
+        kind="test.prior_state.observed",
+        source="tool",
+        payload={"action_id": prior.id},
+        goal_id=goal.id,
+    )
+    append_event(database_path, evidence)
+    verified = create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=prior.id,
+        criteria=({"description": "Estado observado."},),
+        status="VERIFIED",
+        evidence_event_ids=(evidence.id,),
+        observed={"state": "present"},
+        strength=3,
+    )
+
+    failed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_request(workspace),
+    )
+    assert failed.action.status == "FAILED"
+
+    create_verification_result(
+        database_path,
+        subject_type="ACTION",
+        subject_id=prior.id,
+        criteria=verified.criteria,
+        status="FAILED",
+        evidence_event_ids=(evidence.id,),
+        observed={"state": "invalidated"},
+        strength=4,
+    )
+
+    with pytest.raises(ValueError, match="não pode ignorar outros blockers"):
+        retry_file_patch(
+            database_path,
+            action_id=failed.action.id,
+            request=_request(workspace, expected="valor = 3", replacement="valor = 2"),
         )
 
 

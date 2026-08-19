@@ -5344,3 +5344,39 @@ O resultado da nova tentativa segue exatamente o lifecycle existente. `ModelProv
 Esse retry não se aplica a uma análise executada com sucesso cuja conclusão epistemológica posterior seja negativa ou inconclusiva. `CRITERION_NOT_SATISFIED`, `ASSESSMENT_INCONCLUSIVE`, `VERIFICATION_FAILED` e `VERIFICATION_INCONCLUSIVE` continuam pertencendo ao fluxo explícito de replanejamento. Assim, falha operacional da cognição e falha da estratégia permanecem fatos distintos.
 
 Nenhuma nova tabela, capability ou migration é necessária; o SQLite permanece no schema 11.
+
+### 32.29. Retry operacional explícito de `file.patch`
+
+O hardening de `file.patch` expõe uma particularidade que não existe em `process.run` e `cognition.analyze`: o Plan continua declarando o step de mudança como `capability=unknown`, e `file.patch` é um binding operacional especializado. Depois de uma tentativa `FAILED` ou `INTERRUPTED`, o readiness preserva simultaneamente a necessidade de review da tentativa e a indisponibilidade da capability persistida.
+
+O v0.1 introduz:
+
+```text
+simon file-retry <action_id> --workspace <raiz> --file <relativo> --old <trecho> --new <trecho>
+```
+
+A operação exige simultaneamente:
+
+```text
+Action.kind = file.patch
+Action.status = FAILED | INTERRUPTED
+Action = tentativa mais recente do step
+Plan da Action = Plan ACTIVE atual
+step persistido = WORLD / CHANGE / SIMON / unknown
+blockers do step =
+  PREVIOUS_ATTEMPT_REQUIRES_REVIEW daquela Action
+  + CAPABILITY_UNAVAILABLE: unknown
+```
+
+A presença de `DEPENDENCY_NOT_VERIFIED`, `PRECONDITION_UNRESOLVED` ou qualquer outro blocker impede o retry. Assim, a operação reautoriza somente o binding `CHANGE/unknown -> file.patch`; ela não transforma `file.patch` em capability genérica do Planner e não contorna condições causais do Plan.
+
+A nova tentativa recebe um novo `FilePatchRequest`. Workspace, caminho relativo, trecho esperado e substituição podem ser corrigidos explicitamente sem modificar a Action anterior. A autorização gera `action.retry.authorized` com `source=user`, `capability=file.patch`, `retry_of_action_id`, `previous_status`, workspace e caminho relativo. O conteúdo integral de `expected_text` e `replacement_text` continua pertencendo à Action, evitando duplicação desnecessária no Event Log.
+
+A Action de retry preserva `retry_of_action_id` e `retry_authorization_event_id`. `file.patch.started`, `file.patch.completed` e `file.patch.failed` carregam a referência causal para a tentativa anterior quando aplicável. Somente a tentativa mais recente pode originar outro retry, permitindo cadeias explícitas sem reabrir ou reescrever Actions antigas.
+
+`file-verify` passa a reconhecer tanto a autorização inicial `file.patch.authorized` quanto `action.retry.authorized`. No caso de retry, a Verification revalida capability, Action anterior, Goal, Plan, step, status anterior, workspace, arquivo e a mesma linhagem declarada pelo Event `file.patch.completed`. Uma autorização de retry adulterada ou pertencente a outra tentativa é rejeitada antes da criação de nova Verification.
+
+O retry se aplica apenas a falha operacional da tentativa. Uma Action `file.patch` `COMPLETED` não pode ser submetida a `file-retry`, mesmo se uma Verification posterior resultar `FAILED`; nesse caso existe evidência de que uma mudança ocorreu mas o estado verificado não atende mais ao esperado, portanto o recovery continua no fluxo explícito de replanejamento.
+
+Nenhuma nova tabela, capability ou migration é necessária; o SQLite permanece no schema 11.
+

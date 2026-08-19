@@ -27,7 +27,7 @@ from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.experience_memory import promote_experience_to_memory
 from simon.experiences import suspend_active_experiences
-from simon.file_patch import FilePatchRequest, execute_next_file_patch
+from simon.file_patch import FilePatchRequest, execute_next_file_patch, retry_file_patch
 from simon.file_patch_verification import verify_file_patch_state
 from simon.goal_completion import complete_goal_from_assessment
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
@@ -322,6 +322,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="trecho UTF-8 substituto; use uma string vazia para remoção",
     )
 
+    file_retry = commands.add_parser(
+        "file-retry",
+        help="autoriza nova tentativa file.patch após falha ou interrupção operacional",
+    )
+    file_retry.add_argument(
+        "action_id",
+        help="ID da tentativa file.patch FAILED ou INTERRUPTED que será revisada",
+    )
+    file_retry.add_argument(
+        "--workspace",
+        required=True,
+        help="diretório raiz autorizado para a nova tentativa",
+    )
+    file_retry.add_argument(
+        "--file",
+        required=True,
+        dest="relative_path",
+        help="caminho relativo do arquivo dentro do workspace",
+    )
+    file_retry.add_argument(
+        "--old",
+        required=True,
+        dest="expected_text",
+        help="trecho UTF-8 que precisa existir exatamente uma vez na nova tentativa",
+    )
+    file_retry.add_argument(
+        "--new",
+        required=True,
+        dest="replacement_text",
+        help="trecho UTF-8 substituto; use uma string vazia para remoção",
+    )
+
     plan_analyze = commands.add_parser(
         "plan-analyze",
         help="executa o próximo step cognition.analyze READY do Plan ativo",
@@ -558,6 +590,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan_patch(
             database_path,
             args.goal_id,
+            args.workspace,
+            args.relative_path,
+            args.expected_text,
+            args.replacement_text,
+        )
+    if args.command == "file-retry":
+        return _file_retry(
+            database_path,
+            args.action_id,
             args.workspace,
             args.relative_path,
             args.expected_text,
@@ -1588,6 +1629,48 @@ def _plan_patch(
     print(f"Status: {receipt.action.status}")
     print(f"Arquivo: {receipt.target_path}")
     print(f"Autorização registrada: {receipt.authorization_event_id}")
+    print(f"Modificação registrada: {receipt.modification_event_id}")
+    if receipt.before_sha256 is not None:
+        print(f"SHA-256 anterior: {receipt.before_sha256}")
+    if receipt.after_sha256 is not None:
+        print(f"SHA-256 atual: {receipt.after_sha256}")
+    print("Verification criada: não")
+    return 0 if receipt.action.status == "COMPLETED" else 1
+
+
+def _file_retry(
+    database_path: Path,
+    action_id: str,
+    workspace: str,
+    relative_path: str,
+    expected_text: str,
+    replacement_text: str,
+) -> int:
+    try:
+        request = FilePatchRequest(
+            workspace=workspace,
+            relative_path=relative_path,
+            expected_text=expected_text,
+            replacement_text=replacement_text,
+        )
+        receipt = retry_file_patch(
+            database_path,
+            action_id=action_id,
+            request=request,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"Retry file.patch: falha ({exc})")
+        return 1
+
+    print(f"Action anterior: {receipt.retry_of_action_id}")
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Capability resolvida: {receipt.action.kind}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Arquivo: {receipt.target_path}")
+    print(f"Autorização de retry: {receipt.authorization_event_id}")
     print(f"Modificação registrada: {receipt.modification_event_id}")
     if receipt.before_sha256 is not None:
         print(f"SHA-256 anterior: {receipt.before_sha256}")

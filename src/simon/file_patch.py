@@ -13,7 +13,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from simon.actions import Action, create_action_in_connection, transition_action_in_connection
+from simon.actions import (
+    Action,
+    create_action_in_connection,
+    get_action,
+    transition_action_in_connection,
+)
 from simon.events import Event
 from simon.plans import Plan
 from simon.step_readiness import PlanReadiness, StepReadiness, evaluate_active_plan
@@ -90,6 +95,7 @@ class FilePatchReceipt:
     target_path: str
     before_sha256: str | None
     after_sha256: str | None
+    retry_of_action_id: str | None = None
 
 
 def bind_file_patch_step(
@@ -146,54 +152,145 @@ def execute_next_file_patch(
         request=request,
     )
     workspace, target = _resolve_target(request)
-    patch_trace_id = trace_id or f"trc_{uuid4().hex}"
+    return _execute_file_patch_attempt(
+        database_path,
+        binding=binding,
+        workspace=workspace,
+        target=target,
+        trace_id=trace_id,
+        retry_of_action=None,
+    )
 
+
+def retry_file_patch(
+    database_path: Path,
+    *,
+    action_id: str,
+    request: FilePatchRequest,
+    trace_id: str | None = None,
+) -> FilePatchReceipt:
+    """Autoriza uma nova tentativa de file.patch após falha ou interrupção operacional."""
+    original = get_action(database_path, action_id)
+    if original is None:
+        raise ValueError(f"action não encontrada: {action_id}")
+    if original.kind != "file.patch":
+        raise ValueError(f"action não representa file.patch: {action_id}")
+    if original.status not in {"FAILED", "INTERRUPTED"}:
+        raise ValueError(
+            "retry file.patch exige Action FAILED ou INTERRUPTED: "
+            f"{action_id} está {original.status}"
+        )
+
+    readiness = evaluate_active_plan(database_path, goal_id=original.goal_id)
+    if readiness.plan.id != original.plan_id:
+        raise ValueError(
+            "retry file.patch exige que a tentativa pertença ao Plan ACTIVE atual: "
+            f"{original.plan_id}"
+        )
+
+    step = next(
+        (candidate for candidate in readiness.steps if candidate.step_id == original.step_id),
+        None,
+    )
+    if step is None:
+        raise RuntimeError(f"step da tentativa não existe no Plan ativo: {original.step_id}")
+    _validate_retry_readiness(step, original)
+
+    binding = bind_file_patch_step(
+        readiness.plan,
+        step_id=original.step_id,
+        request=request,
+    )
+    workspace, target = _resolve_target(request)
+    return _execute_file_patch_attempt(
+        database_path,
+        binding=binding,
+        workspace=workspace,
+        target=target,
+        trace_id=trace_id,
+        retry_of_action=original,
+    )
+
+
+def _execute_file_patch_attempt(
+    database_path: Path,
+    *,
+    binding: FilePatchBinding,
+    workspace: Path,
+    target: Path,
+    trace_id: str | None,
+    retry_of_action: Action | None,
+) -> FilePatchReceipt:
+    request = binding.request
+    patch_trace_id = trace_id or f"trc_{uuid4().hex}"
+    authorization_kind = (
+        "file.patch.authorized" if retry_of_action is None else "action.retry.authorized"
+    )
+    authorization_payload: dict[str, object] = {
+        "plan_id": binding.plan_id,
+        "plan_revision": binding.plan_revision,
+        "step_id": binding.step_id,
+        "bound_capability": "file.patch",
+        "workspace": str(workspace),
+        "relative_path": request.relative_path,
+    }
+    if retry_of_action is not None:
+        authorization_payload.update(
+            {
+                "capability": "file.patch",
+                "retry_of_action_id": retry_of_action.id,
+                "previous_status": retry_of_action.status,
+            }
+        )
     authorization_event = Event.create(
-        kind="file.patch.authorized",
+        kind=authorization_kind,
         source="user",
-        payload={
-            "plan_id": binding.plan_id,
-            "plan_revision": binding.plan_revision,
-            "step_id": binding.step_id,
-            "bound_capability": "file.patch",
-            "workspace": str(workspace),
-            "relative_path": request.relative_path,
-        },
+        payload=authorization_payload,
         trace_id=patch_trace_id,
         goal_id=binding.goal_id,
     )
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        _ensure_step_has_no_attempt(connection, binding)
+        if retry_of_action is None:
+            _ensure_step_has_no_attempt(connection, binding)
+        else:
+            _ensure_retry_is_latest_attempt(connection, binding, retry_of_action)
+        input_data: dict[str, object] = {
+            "request": request.model_dump(mode="json"),
+            "verification": binding.verification,
+            "capability_detail": binding.capability_detail,
+            "authorization_event_id": authorization_event.id,
+            "bound_from_capability": "unknown",
+        }
+        if retry_of_action is not None:
+            input_data["retry_of_action_id"] = retry_of_action.id
+            input_data["retry_authorization_event_id"] = authorization_event.id
         action = create_action_in_connection(
             connection,
             goal_id=binding.goal_id,
             plan_id=binding.plan_id,
             step_id=binding.step_id,
             kind="file.patch",
-            input_data={
-                "request": request.model_dump(mode="json"),
-                "verification": binding.verification,
-                "capability_detail": binding.capability_detail,
-                "authorization_event_id": authorization_event.id,
-                "bound_from_capability": "unknown",
-            },
+            input_data=input_data,
         )
         running = transition_action_in_connection(connection, action.id, "RUNNING")
         _insert_event(connection, authorization_event)
+        started_payload: dict[str, object] = {
+            "action_id": running.id,
+            "plan_id": running.plan_id,
+            "step_id": running.step_id,
+            "target_path": str(target),
+            "relative_path": request.relative_path,
+        }
+        if retry_of_action is not None:
+            started_payload["retry_of_action_id"] = retry_of_action.id
         _insert_event(
             connection,
             Event.create(
                 kind="file.patch.started",
                 source="tool",
-                payload={
-                    "action_id": running.id,
-                    "plan_id": running.plan_id,
-                    "step_id": running.step_id,
-                    "target_path": str(target),
-                    "relative_path": request.relative_path,
-                },
+                payload=started_payload,
                 trace_id=patch_trace_id,
                 goal_id=running.goal_id,
             ),
@@ -217,6 +314,9 @@ def execute_next_file_patch(
                     "expected_text precisa ocorrer exatamente uma vez; "
                     f"ocorrências encontradas: {occurrences}"
                 ),
+                retry_of_action_id=(
+                    retry_of_action.id if retry_of_action is not None else None
+                ),
             )
 
         before.decode("utf-8")
@@ -234,6 +334,7 @@ def execute_next_file_patch(
             trace_id=patch_trace_id,
             failure_kind="unsupported_encoding",
             message=f"file.patch v0.1 exige arquivo UTF-8: {exc}",
+            retry_of_action_id=(retry_of_action.id if retry_of_action is not None else None),
         )
     except OSError as exc:
         return _record_failure(
@@ -245,22 +346,26 @@ def execute_next_file_patch(
             trace_id=patch_trace_id,
             failure_kind="filesystem_write",
             message=str(exc),
+            retry_of_action_id=(retry_of_action.id if retry_of_action is not None else None),
         )
 
+    modification_payload: dict[str, object] = {
+        "action_id": running.id,
+        "plan_id": running.plan_id,
+        "step_id": running.step_id,
+        "target_path": str(target),
+        "relative_path": request.relative_path,
+        "before_sha256": before_sha256,
+        "after_sha256": after_sha256,
+        "expected_text_sha256": _sha256(expected),
+        "replacement_text_sha256": _sha256(replacement),
+    }
+    if retry_of_action is not None:
+        modification_payload["retry_of_action_id"] = retry_of_action.id
     modification_event = Event.create(
         kind="file.patch.completed",
         source="tool",
-        payload={
-            "action_id": running.id,
-            "plan_id": running.plan_id,
-            "step_id": running.step_id,
-            "target_path": str(target),
-            "relative_path": request.relative_path,
-            "before_sha256": before_sha256,
-            "after_sha256": after_sha256,
-            "expected_text_sha256": _sha256(expected),
-            "replacement_text_sha256": _sha256(replacement),
-        },
+        payload=modification_payload,
         trace_id=patch_trace_id,
         goal_id=running.goal_id,
     )
@@ -289,6 +394,7 @@ def execute_next_file_patch(
         target_path=str(target),
         before_sha256=before_sha256,
         after_sha256=after_sha256,
+        retry_of_action_id=(retry_of_action.id if retry_of_action is not None else None),
     )
 
 
@@ -358,19 +464,23 @@ def _record_failure(
     trace_id: str,
     failure_kind: str,
     message: str,
+    retry_of_action_id: str | None = None,
 ) -> FilePatchReceipt:
+    failure_payload: dict[str, object] = {
+        "action_id": action_id,
+        "plan_id": binding.plan_id,
+        "step_id": binding.step_id,
+        "target_path": str(target),
+        "relative_path": binding.request.relative_path,
+        "failure_kind": failure_kind,
+        "message": message,
+    }
+    if retry_of_action_id is not None:
+        failure_payload["retry_of_action_id"] = retry_of_action_id
     failure_event = Event.create(
         kind="file.patch.failed",
         source="tool",
-        payload={
-            "action_id": action_id,
-            "plan_id": binding.plan_id,
-            "step_id": binding.step_id,
-            "target_path": str(target),
-            "relative_path": binding.request.relative_path,
-            "failure_kind": failure_kind,
-            "message": message,
-        },
+        payload=failure_payload,
         trace_id=trace_id,
         goal_id=binding.goal_id,
     )
@@ -397,7 +507,27 @@ def _record_failure(
         target_path=str(target),
         before_sha256=None,
         after_sha256=None,
+        retry_of_action_id=retry_of_action_id,
     )
+
+
+def _validate_retry_readiness(step: StepReadiness, original: Action) -> None:
+    if step.state != "BLOCKED":
+        raise ValueError(
+            "retry file.patch exige step bloqueado aguardando review da tentativa anterior"
+        )
+
+    expected_detail = f"{original.id}: {original.status}"
+    blockers = tuple((blocker.kind, blocker.detail) for blocker in step.blockers)
+    expected_blockers = (
+        ("PREVIOUS_ATTEMPT_REQUIRES_REVIEW", expected_detail),
+        ("CAPABILITY_UNAVAILABLE", "unknown"),
+    )
+    if blockers != expected_blockers:
+        rendered = ", ".join(f"{kind}: {detail}" for kind, detail in blockers) or "nenhum"
+        raise ValueError(
+            "retry file.patch não pode ignorar outros blockers do step: " + rendered
+        )
 
 
 def _ensure_step_has_no_attempt(
@@ -418,6 +548,35 @@ def _ensure_step_has_no_attempt(
         raise ValueError(
             "step CHANGE já possui tentativa registrada: "
             f"{row[0]} ({row[1]})"
+        )
+
+
+def _ensure_retry_is_latest_attempt(
+    connection: sqlite3.Connection,
+    binding: FilePatchBinding,
+    original: Action,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT id, status
+        FROM actions
+        WHERE plan_id = ? AND step_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (binding.plan_id, binding.step_id),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"step não possui tentativa persistida: {binding.step_id}")
+    if str(row[0]) != original.id:
+        raise ValueError(
+            "retry file.patch exige a tentativa mais recente do step; "
+            f"a Action {original.id} já foi sucedida por {row[0]}"
+        )
+    if str(row[1]) != original.status:
+        raise RuntimeError(
+            "status da tentativa mudou durante autorização do retry: "
+            f"{original.status} -> {row[1]}"
         )
 
 

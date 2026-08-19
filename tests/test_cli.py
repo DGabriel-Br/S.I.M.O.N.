@@ -1350,6 +1350,93 @@ def test_cli_plan_patch_resolves_change_unknown_without_auto_verification(
     assert actions[0].status == "COMPLETED"
 
 
+def test_cli_file_retry_reauthorizes_failed_patch_with_new_request(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    workspace = tmp_path / "workspace-file-retry"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 3\n", encoding="utf-8")
+
+    database_path, _ = initialize_storage(tmp_path / "data-file-retry")
+    goal = Goal.create(
+        title="Corrigir patch após falha",
+        origin="USER",
+        desired_state={"description": "script corrigido"},
+        success_criteria=({"description": "arquivo modificado"},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Realizar a mudança: corrigir variável",
+                "kind": "WORLD",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "unknown",
+                "capability_detail": "Correção localizada da variável",
+                "verification": "Arquivo modificado e salvo.",
+                "intent_role": "CHANGE",
+                "intent_actor": "SIMON",
+            },
+        ),
+    )
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data-file-retry"),
+            "plan-patch",
+            goal.id,
+            "--workspace",
+            str(workspace),
+            "--file",
+            "script.py",
+            "--old",
+            "valor = 1",
+            "--new",
+            "valor = 2",
+        ]
+    ) == 1
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    first = list_actions_for_plan(database_path, plan.id)[0]
+    assert first.status == "FAILED"
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path / "data-file-retry"),
+            "file-retry",
+            first.id,
+            "--workspace",
+            str(workspace),
+            "--file",
+            "script.py",
+            "--old",
+            "valor = 3",
+            "--new",
+            "valor = 2",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action anterior: {first.id}" in output
+    assert "Capability resolvida: file.patch" in output
+    assert "Status: COMPLETED" in output
+    assert "Autorização de retry:" in output
+    assert "Verification criada: não" in output
+    assert target.read_text(encoding="utf-8") == "valor = 2\n"
+
+    actions = list_actions_for_plan(database_path, plan.id)
+    assert [action.status for action in actions] == ["FAILED", "COMPLETED"]
+    assert actions[-1].input_data["retry_of_action_id"] == first.id
+
+
 def test_cli_plan_run_executes_next_process_step_without_auto_verification(
     tmp_path: Path,
     capsys: object,
