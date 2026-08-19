@@ -8,7 +8,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
     database_path, schema_version = initialize_storage(tmp_path)
 
     assert database_path.exists()
-    assert schema_version == 10
+    assert schema_version == 11
 
     with sqlite3.connect(database_path) as connection:
         tables = {
@@ -18,7 +18,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
                 "WHERE type = 'table' "
                 "AND name IN ("
                 "'events', 'entities', 'claims', 'goals', "
-                "'plans', 'actions', 'verification_results', 'experiences', 'memories'"
+                "'plans', 'actions', 'verification_results', 'experiences', 'memories', 'world_state'"
                 ")"
             ).fetchall()
         }
@@ -33,6 +33,7 @@ def test_initialize_storage_applies_migrations(tmp_path: Path) -> None:
         "verification_results",
         "experiences",
         "memories",
+        "world_state",
     }
 
 
@@ -221,8 +222,11 @@ def test_initialize_storage_upgrades_schema_seven_without_losing_data(tmp_path: 
             ("gol_existing",),
         ).fetchone()
         plan = connection.execute(
-            "SELECT id, revision FROM plans WHERE id = ?",
+            "SELECT id, revision, based_on_world_revision FROM plans WHERE id = ?",
             ("pln_existing",),
+        ).fetchone()
+        world_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
         ).fetchone()
         action = connection.execute(
             "SELECT id, status FROM actions WHERE id = ?",
@@ -236,12 +240,13 @@ def test_initialize_storage_upgrades_schema_seven_without_losing_data(tmp_path: 
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'experiences'"
         ).fetchone()
 
-    assert schema_version == 10
+    assert schema_version == 11
     assert event == ("evt_existing", "system.started")
     assert entity == ("ent_existing", "Existing Project")
     assert claim == ("clm_existing", "status")
     assert goal == ("gol_existing", "Existing Goal")
-    assert plan == ("pln_existing", 1)
+    assert plan == ("pln_existing", 1, 1)
+    assert world_revision == (1,)
     assert action == ("act_existing", "COMPLETED")
     assert verification == ("ver_existing", "VERIFIED")
     assert experience_table == ("experiences",)
@@ -257,8 +262,8 @@ def test_initialize_storage_is_idempotent(tmp_path: Path) -> None:
     second_database_path, second_schema_version = initialize_storage(tmp_path)
 
     assert second_database_path == first_database_path
-    assert first_schema_version == 10
-    assert second_schema_version == 10
+    assert first_schema_version == 11
+    assert second_schema_version == 11
 
 
 def test_initialize_storage_upgrades_schema_eight_without_losing_experience(
@@ -314,7 +319,7 @@ def test_initialize_storage_upgrades_schema_eight_without_losing_experience(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
         ).fetchone()
 
-    assert schema_version == 10
+    assert schema_version == 11
     assert experience == ("exp_existing", "SUCCESS", "Existing summary")
     assert memory_table == ("memories",)
 
@@ -388,6 +393,9 @@ def test_initialize_storage_upgrades_schema_nine_and_preserves_actions(tmp_path:
         preserved = connection.execute(
             "SELECT id, status FROM actions WHERE id = 'act_schema9'"
         ).fetchone()
+        migrated_plan = connection.execute(
+            "SELECT based_on_world_revision FROM plans WHERE id = 'pln_schema9'"
+        ).fetchone()
         connection.execute(
             """
             INSERT INTO actions (
@@ -412,6 +420,7 @@ def test_initialize_storage_upgrades_schema_nine_and_preserves_actions(tmp_path:
             "SELECT status FROM actions WHERE id = 'act_waiting'"
         ).fetchone()
 
-    assert schema_version == 10
+    assert schema_version == 11
     assert preserved == ("act_schema9", "COMPLETED")
+    assert migrated_plan == (0,)
     assert waiting == ("WAITING",)

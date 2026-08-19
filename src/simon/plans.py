@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from simon.world import get_world_revision_in_connection
+
 ACTIVE = "ACTIVE"
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "SUPERSEDED", "CANCELLED"}
 ALLOWED_TRANSITIONS = {
@@ -20,6 +22,7 @@ class Plan:
     id: str
     goal_id: str
     revision: int
+    based_on_world_revision: int
     steps: tuple[dict[str, object], ...]
     status: str
     created_at: datetime
@@ -65,14 +68,19 @@ def _plan_from_row(row: tuple[object, ...]) -> Plan:
     if not isinstance(revision, int):
         raise TypeError("revision inválida no banco")
 
+    based_on_world_revision = row[3]
+    if isinstance(based_on_world_revision, bool) or not isinstance(based_on_world_revision, int):
+        raise TypeError("based_on_world_revision inválida no banco")
+
     return Plan(
         id=str(row[0]),
         goal_id=str(row[1]),
         revision=revision,
-        steps=tuple(json.loads(str(row[3]))),
-        status=str(row[4]),
-        created_at=datetime.fromisoformat(str(row[5])),
-        updated_at=datetime.fromisoformat(str(row[6])),
+        based_on_world_revision=based_on_world_revision,
+        steps=tuple(json.loads(str(row[4]))),
+        status=str(row[5]),
+        created_at=datetime.fromisoformat(str(row[6])),
+        updated_at=datetime.fromisoformat(str(row[7])),
     )
 
 
@@ -120,6 +128,7 @@ def create_plan_in_connection(
         id=f"pln_{uuid4().hex}",
         goal_id=goal_id,
         revision=revision,
+        based_on_world_revision=get_world_revision_in_connection(connection),
         steps=steps,
         status=ACTIVE,
         created_at=now,
@@ -133,16 +142,18 @@ def create_plan_in_connection(
             id,
             goal_id,
             revision,
+            based_on_world_revision,
             steps_json,
             status,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             plan.id,
             plan.goal_id,
             plan.revision,
+            plan.based_on_world_revision,
             steps_json,
             plan.status,
             plan.created_at.isoformat(),
@@ -170,7 +181,7 @@ def get_plan(database_path: Path, plan_id: str) -> Plan | None:
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             """
-            SELECT id, goal_id, revision, steps_json, status, created_at, updated_at
+            SELECT id, goal_id, revision, based_on_world_revision, steps_json, status, created_at, updated_at
             FROM plans
             WHERE id = ?
             """,
@@ -184,7 +195,7 @@ def get_active_plan(database_path: Path, goal_id: str) -> Plan | None:
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             """
-            SELECT id, goal_id, revision, steps_json, status, created_at, updated_at
+            SELECT id, goal_id, revision, based_on_world_revision, steps_json, status, created_at, updated_at
             FROM plans
             WHERE goal_id = ? AND status = 'ACTIVE'
             """,
@@ -198,7 +209,7 @@ def list_plans_for_goal(database_path: Path, goal_id: str) -> tuple[Plan, ...]:
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute(
             """
-            SELECT id, goal_id, revision, steps_json, status, created_at, updated_at
+            SELECT id, goal_id, revision, based_on_world_revision, steps_json, status, created_at, updated_at
             FROM plans
             WHERE goal_id = ?
             ORDER BY revision
@@ -216,7 +227,7 @@ def transition_plan_in_connection(
 ) -> Plan:
     row = connection.execute(
         """
-        SELECT id, goal_id, revision, steps_json, status, created_at, updated_at
+        SELECT id, goal_id, revision, based_on_world_revision, steps_json, status, created_at, updated_at
         FROM plans
         WHERE id = ?
         """,
@@ -246,6 +257,7 @@ def transition_plan_in_connection(
         id=current.id,
         goal_id=current.goal_id,
         revision=current.revision,
+        based_on_world_revision=current.based_on_world_revision,
         steps=current.steps,
         status=new_status,
         created_at=current.created_at,

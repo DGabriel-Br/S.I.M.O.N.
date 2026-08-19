@@ -170,6 +170,40 @@ def get_experience(database_path: Path, experience_id: str) -> Experience | None
     return _experience_from_row(row) if row is not None else None
 
 
+def get_latest_experience(
+    database_path: Path,
+    *,
+    goal_id: str | None = None,
+) -> Experience | None:
+    where = "" if goal_id is None else " WHERE goal_id = ?"
+    parameters: tuple[object, ...] = () if goal_id is None else (goal_id,)
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT
+                id,
+                title,
+                goal_id,
+                parent_experience_id,
+                status,
+                outcome,
+                event_ids_json,
+                action_ids_json,
+                verification_ids_json,
+                summary,
+                started_at,
+                ended_at,
+                updated_at
+            FROM experiences
+            """
+            + where
+            + " ORDER BY updated_at DESC, id DESC LIMIT 1",
+            parameters,
+        ).fetchone()
+
+    return _experience_from_row(row) if row is not None else None
+
+
 def list_open_experiences(database_path: Path) -> tuple[Experience, ...]:
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute(

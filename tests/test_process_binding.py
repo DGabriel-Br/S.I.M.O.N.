@@ -13,6 +13,7 @@ def _plan(*, status: str = "ACTIVE", capability: str = "process.run", kind: str 
         id="pln_process_binding",
         goal_id="gol_process_binding",
         revision=3,
+        based_on_world_revision=7,
         steps=(
             {
                 "id": "step_01",

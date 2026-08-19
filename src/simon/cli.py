@@ -30,6 +30,7 @@ from simon.goal_completion import complete_goal_from_assessment
 from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
 from simon.goal_verification import assess_goal_outcome, get_latest_goal_assessment_context
 from simon.goals import OPEN_STATUSES, get_goal
+from simon.memories import Memory
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
 from simon.plan_completion import complete_verified_plan
@@ -38,6 +39,7 @@ from simon.planning import propose_plan
 from simon.process_binding import ProcessRunRequest
 from simon.process_execution import execute_next_process_run
 from simon.process_verification import verify_process_run_execution
+from simon.resume import reconstruct_resume_state
 from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
@@ -65,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"S.I.M.O.N. {__version__}")
 
     commands = parser.add_subparsers(dest="command")
+
+    resume = commands.add_parser(
+        "resume",
+        help="reconstrói o estado semântico persistido após reinício",
+    )
+    resume.add_argument(
+        "goal_id",
+        nargs="?",
+        help="Goal a detalhar; se houver apenas um Goal aberto, ele é selecionado automaticamente",
+    )
 
     model_check = commands.add_parser(
         "model-check",
@@ -415,6 +427,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         valid_from=startup_event.occurred_at,
     )
 
+    if args.command == "resume":
+        return _resume(database_path, args.goal_id)
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -531,6 +545,100 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Dados: {database_path.parent}")
     print(f"SQLite: pronto (schema {schema_version})")
     return 0
+
+
+def _resume(database_path: Path, goal_id: str | None) -> int:
+    try:
+        overview = reconstruct_resume_state(database_path, goal_id=goal_id)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Retomada: falha ({exc})")
+        return 1
+
+    print(f"World revision atual: {overview.current_world_revision}")
+    if overview.open_goals:
+        print(f"Goals abertos: {len(overview.open_goals)}")
+        for goal in overview.open_goals:
+            print(f"- {goal.id}: {goal.status} | {goal.title}")
+    else:
+        print("Goals abertos: nenhum")
+
+    state = overview.selected
+    if state is None:
+        if len(overview.open_goals) > 1 and goal_id is None:
+            print("Goal selecionado: nenhum (informe um goal_id para detalhar)")
+        else:
+            print("Goal selecionado: nenhum")
+        if overview.latest_experience is not None:
+            experience = overview.latest_experience
+            print(f"Última Experience: {experience.id} | {experience.status}")
+            if experience.outcome is not None:
+                print(f"Outcome: {experience.outcome}")
+        else:
+            print("Última Experience: nenhuma")
+        _print_resume_memories(overview.memories)
+        return 0
+
+    print(f"Goal selecionado: {state.goal.id} | {state.goal.status}")
+    print(f"Título: {state.goal.title}")
+    if state.plan is None:
+        print("Plan atual: nenhum")
+    else:
+        print(
+            f"Plan atual: {state.plan.id} | revisão {state.plan.revision} | {state.plan.status}"
+        )
+        print(f"World revision do Plan: {state.plan.based_on_world_revision}")
+        print(
+            "World mudou desde o Plan: "
+            + ("sim" if state.world_changed_since_plan else "não")
+        )
+
+    if state.readiness is None:
+        print("Próximo passo executável: não aplicável")
+    elif state.readiness.next_step is None:
+        print("Próximo passo executável: nenhum")
+    else:
+        next_step = state.readiness.next_step
+        print(f"Próximo passo executável: {next_step.step_id}")
+        print(f"Descrição: {next_step.description}")
+        print(f"Capability: {next_step.capability or 'não especificada'}")
+
+    if state.actions:
+        print(f"Actions reconstruídas: {len(state.actions)}")
+        for resumed in state.actions:
+            action = resumed.action
+            verification = resumed.latest_verification_status or "sem Verification"
+            print(
+                f"- {action.id}: {action.kind} | {action.status} | "
+                f"step {action.step_id} | {verification}"
+            )
+    else:
+        print("Actions reconstruídas: nenhuma")
+
+    if state.latest_experience is not None:
+        experience = state.latest_experience
+        print(f"Última Experience do Goal: {experience.id} | {experience.status}")
+        if experience.outcome is not None:
+            print(f"Outcome: {experience.outcome}")
+    elif overview.latest_experience is not None:
+        print(
+            "Última Experience do Goal: nenhuma "
+            f"(última global: {overview.latest_experience.id})"
+        )
+    else:
+        print("Última Experience do Goal: nenhuma")
+
+    _print_resume_memories(state.memories)
+    return 0
+
+
+def _print_resume_memories(memories: tuple[Memory, ...]) -> None:
+    if not memories:
+        print("Memories relevantes: nenhuma")
+        return
+
+    print(f"Memories relevantes: {len(memories)}")
+    for memory in memories:
+        print(f"- {memory.id}: {memory.kind}/{memory.scope} | {memory.content}")
 
 
 def _model_check(base_url: str, timeout_seconds: float) -> int:

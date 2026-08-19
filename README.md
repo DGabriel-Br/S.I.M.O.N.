@@ -60,7 +60,14 @@ O projeto já consegue:
 - avaliar semanticamente uma análise contra o critério do step como `ASSESSED`;
 - confirmar explicitamente assessments positivos de `user.ask` e `cognition.analyze` antes de promovê-los a `VERIFIED`;
 - resolver explicitamente um step `CHANGE/unknown` com `file.patch` sem reinterpretar a descrição humana do Plan;
-- aplicar uma substituição textual localizada em arquivo UTF-8 dentro de um workspace autorizado, preservando hashes antes/depois e sem criar Verification automática.
+- aplicar uma substituição textual localizada em arquivo UTF-8 dentro de um workspace autorizado, preservando hashes antes/depois e sem criar Verification automática;
+- verificar objetivamente se o arquivo ainda corresponde ao estado produzido por `file.patch`;
+- concluir Goals somente após promoção explícita de um assessment `SATISFIED` para `VERIFIED`;
+- consolidar uma Experience causal `CLOSED/SUCCESS` ao fechar um Goal;
+- promover explicitamente significado de Experiences fechadas para Memories reutilizáveis;
+- manter uma `world_revision` monotônica quando Claims alteram a visão atual;
+- registrar em cada Plan a revisão do World em que ele foi criado;
+- reconstruir após reinício Goal, Plan, Actions, Verification status, revisão do World, última Experience e Memories relevantes com `simon resume`.
 
 O primeiro adapter de modelo local já existe:
 
@@ -454,9 +461,31 @@ A Memory criada entra imediatamente no retrieval normal já existente e pode com
 
 Nenhuma migration foi necessária; o SQLite permanece no schema 10.
 
+## Retomada sem contexto anterior do modelo
+
+O SQLite passa ao schema 11 com uma revisão monotônica mínima do World. A revisão começa em `0` em uma base nova e avança somente quando uma mudança de Claim altera a visão atual persistida. `set_current_claim` trata uma substituição completa como uma única mudança semântica, evitando contar supersession e inserção como duas revisões separadas.
+
+Cada novo Plan registra `based_on_world_revision`, permitindo observar depois de um restart se o World permaneceu na mesma revisão ou mudou desde a materialização da estratégia. A diferença é informativa neste corte; ela não invalida automaticamente todo Plan porque o v0.1 ainda não possui assumptions estruturadas suficientes para saber quais mudanças realmente afetam cada step.
+
+A retomada pode ser inspecionada com:
+
+```powershell
+uv run simon resume
+```
+
+Se houver exatamente um Goal aberto, ele é selecionado automaticamente. Com vários Goals abertos, o Core não inventa um foco que ainda não existe no Executive e apenas lista as opções. Um Goal específico pode ser reconstruído com:
+
+```powershell
+uv run simon resume gol_ID_DO_GOAL
+```
+
+O estado reconstruído inclui o Goal persistido, o Plan atual ou mais recente, sua revisão e `based_on_world_revision`, Actions de todas as revisões do Goal com o status da Verification mais recente, readiness do Plan ativo, última Experience e Memories recuperáveis pela proveniência ou pelo título do Goal. Uma Action que estava `RUNNING` no processo anterior é primeiro reconciliada como `INTERRUPTED`; a retomada então a apresenta como tentativa que exige revisão em vez de presumir sucesso ou falha externa.
+
+O comando não restaura o prompt nem o estado interno do modelo anterior. A continuidade vem exclusivamente dos objetos canônicos persistidos. A migration atribui aos Plans já existentes a revisão materializada no momento do upgrade, sem fabricar uma história de revisões anterior ao schema 11.
+
 ## Próximo passo
 
-Validar o contrato de retomada do v0.1 em um teste integrado real: após reiniciar o processo, o Core deve reconstruir estado semântico suficiente a partir de Goal, Plan, Actions, Verifications, Experience e Memory persistidos, sem depender do contexto anterior do modelo.
+Executar o primeiro cenário integrado ponta a ponta usando somente a CLI e o estado persistido: iniciar um Goal real, avançar por execução, verificação, mudança, reexecução, conclusão, Experience e Memory, reiniciar o processo no meio do ciclo e confirmar que `resume` permite continuar sem qualquer contexto de modelo anterior. Corrigir somente as regressões ou lacunas que esse teste real revelar.
 
 ## Primeira interpretação cognitiva
 

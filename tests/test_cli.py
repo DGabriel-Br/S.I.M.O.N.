@@ -51,7 +51,7 @@ def test_main_initializes_storage_and_records_current_world_state(
 
     assert claim is not None
     assert claim[0] == "storage.schema_version"
-    assert json.loads(str(claim[1])) == 10
+    assert json.loads(str(claim[1])) == 11
     assert claim[2] == "DIRECT_OBSERVATION"
     assert tuple(json.loads(str(claim[3]))) == (str(event[0]),)
     assert claim[4] == "ACTIVE"

@@ -182,7 +182,7 @@ def _find_existing_completion_in_connection(
 
     plan_row = connection.execute(
         """
-        SELECT id, goal_id, revision, steps_json, status, created_at, updated_at
+        SELECT id, goal_id, revision, based_on_world_revision, steps_json, status, created_at, updated_at
         FROM plans
         WHERE id = ?
         """,
@@ -213,14 +213,18 @@ def _plan_from_row(row: tuple[object, ...]) -> Plan:
     revision = row[2]
     if not isinstance(revision, int):
         raise TypeError("revision inválida no banco")
+    based_on_world_revision = row[3]
+    if isinstance(based_on_world_revision, bool) or not isinstance(based_on_world_revision, int):
+        raise TypeError("based_on_world_revision inválida no banco")
     return Plan(
         id=str(row[0]),
         goal_id=str(row[1]),
         revision=revision,
-        steps=tuple(json.loads(str(row[3]))),
-        status=str(row[4]),
-        created_at=datetime.fromisoformat(str(row[5])),
-        updated_at=datetime.fromisoformat(str(row[6])),
+        based_on_world_revision=based_on_world_revision,
+        steps=tuple(json.loads(str(row[4]))),
+        status=str(row[5]),
+        created_at=datetime.fromisoformat(str(row[6])),
+        updated_at=datetime.fromisoformat(str(row[7])),
     )
 
 

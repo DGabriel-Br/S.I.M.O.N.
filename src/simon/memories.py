@@ -231,6 +231,7 @@ def retrieve_memories(
     kinds: tuple[str, ...] = (),
     scopes: tuple[str, ...] = (),
     entity_id: str | None = None,
+    source_experience_id: str | None = None,
     limit: int = 10,
 ) -> tuple[Memory, ...]:
     if limit <= 0:
@@ -271,6 +272,11 @@ def retrieve_memories(
             if scopes and memory.scope not in scopes:
                 continue
             if entity_id is not None and entity_id not in memory.entity_ids:
+                continue
+            if (
+                source_experience_id is not None
+                and source_experience_id not in memory.source_experience_ids
+            ):
                 continue
             if normalized_query and normalized_query not in memory.content.casefold():
                 continue

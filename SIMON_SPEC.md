@@ -1888,6 +1888,10 @@ world_revision += 1
 
 Plans e Experiences podem registrar a revisão em que foram criados sem exigir snapshots completos do World a cada mudança.
 
+No corte executável de retomada, a revisão passa a existir no schema 11 como um contador persistente único. Ela avança quando uma mudança de Claim altera a visão atual. Uma substituição via `set_current_claim` conta como uma única mudança semântica, ainda que preserve a Claim anterior como `SUPERSEDED` e crie outra `ACTIVE`. Plans novos persistem `based_on_world_revision`. Plans anteriores ao schema 11 recebem como baseline a revisão materializada no upgrade; o sistema não tenta reconstruir retroativamente uma sequência histórica que nunca foi registrada.
+
+A diferença entre a revisão atual e `based_on_world_revision` é inicialmente informativa. Ela não bloqueia automaticamente o Plan inteiro porque ainda não existem assumptions estruturadas suficientes para determinar que toda mudança do World invalida todo step. Revalidação mais seletiva entra quando dependências reais entre Claims e assumptions exigirem isso.
+
 Snapshots mais sofisticados só entram quando reprodução e Lab demonstrarem necessidade real.
 
 ### 23.17. Append-only versus mutável
@@ -2630,6 +2634,10 @@ quais Memories são relevantes para continuar?
 O sistema não precisa restaurar byte a byte o contexto anterior do modelo.
 
 Ele precisa restaurar **estado semântico suficiente para continuar o trabalho**.
+
+No primeiro corte executável, `simon resume [goal_id]` reconstrói esse estado diretamente dos nove objetos canônicos e da `world_revision`. O Core recupera Goals abertos sem inventar foco quando houver mais de um, seleciona automaticamente apenas quando existe um único Goal aberto ou quando o usuário fornece o ID, recupera o Plan ativo ou mais recente, Actions de toda a linhagem de revisões com a Verification mais recente, readiness determinístico, última Experience e Memories relevantes por proveniência ou correspondência textual simples.
+
+Actions encontradas como `RUNNING` no startup são reconciliadas antes da reconstrução para `INTERRUPTED`, preservando a regra de que um restart não implica sucesso nem falha do efeito externo. A retomada não recria prompts, hidden state ou histórico de chat do modelo; a continuação precisa ser explicável apenas pelo estado persistido.
 
 ### 24.23. O que deliberadamente não existe nesses contratos
 
