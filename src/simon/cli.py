@@ -17,7 +17,10 @@ from simon.cognition import (
     interpret_user_input,
     propose_goal,
 )
-from simon.cognition_analysis import execute_next_cognition_analysis
+from simon.cognition_analysis import (
+    execute_next_cognition_analysis,
+    retry_cognition_analysis,
+)
 from simon.cognition_analysis_verification import assess_cognition_analysis
 from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
@@ -334,6 +337,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ollama_arguments(plan_analyze)
 
+    analysis_retry = commands.add_parser(
+        "analysis-retry",
+        help="autoriza nova tentativa cognition.analyze após falha ou interrupção operacional",
+    )
+    analysis_retry.add_argument(
+        "--model",
+        required=True,
+        help="nome do modelo já instalado no Ollama",
+    )
+    analysis_retry.add_argument(
+        "action_id",
+        help="ID da tentativa cognition.analyze FAILED ou INTERRUPTED que será revisada",
+    )
+    _add_ollama_arguments(analysis_retry)
+
     analysis_assess = commands.add_parser(
         "analysis-assess",
         help="avalia semanticamente uma Action cognition.analyze concluída",
@@ -552,6 +570,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.timeout,
             args.model,
             args.goal_id,
+        )
+    if args.command == "analysis-retry":
+        return _analysis_retry(
+            database_path,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.action_id,
         )
     if args.command == "analysis-assess":
         return _analysis_assess(
@@ -1590,6 +1616,69 @@ def _plan_analyze(
         print(f"Action cognition.analyze: falha ({exc})")
         return 1
 
+    print(f"Action: {receipt.action.id}")
+    print(f"Goal: {receipt.action.goal_id}")
+    print(f"Plan: {receipt.action.plan_id}")
+    print(f"Step: {receipt.action.step_id}")
+    print(f"Capability: {receipt.action.kind}")
+    print(f"Status: {receipt.action.status}")
+    print(f"Modelo: {receipt.model}")
+    print(f"Evidências consumidas: {len(receipt.evidence_event_ids)}")
+    for event_id in receipt.evidence_event_ids:
+        print(f"- {event_id}")
+    print(f"Resultado registrado: {receipt.result_event_id}")
+
+    if receipt.analysis is None:
+        failure = receipt.action.failure or {}
+        print(f"Falha cognitiva: {failure.get('message', 'não especificada')}")
+        print("Verification criada: não")
+        return 1
+
+    print("Análise:")
+    print(receipt.analysis.summary)
+    if receipt.analysis.findings:
+        print("Findings:")
+        for finding in receipt.analysis.findings:
+            print(f"- {finding.statement}")
+            print(f"  Evidência: {', '.join(finding.evidence_event_ids)}")
+    else:
+        print("Findings: nenhum")
+    if receipt.analysis.uncertainties:
+        print("Incertezas:")
+        for uncertainty in receipt.analysis.uncertainties:
+            print(f"- {uncertainty}")
+    else:
+        print("Incertezas: nenhuma")
+    if receipt.prompt_eval_count is not None:
+        print(f"Tokens de entrada: {receipt.prompt_eval_count}")
+    if receipt.eval_count is not None:
+        print(f"Tokens gerados: {receipt.eval_count}")
+    if receipt.total_duration_ns is not None:
+        print(f"Duração: {receipt.total_duration_ns / 1_000_000_000:.2f}s")
+    print("Verification criada: não")
+    return 0
+
+
+def _analysis_retry(
+    database_path: Path,
+    base_url: str,
+    timeout_seconds: float,
+    model: str,
+    action_id: str,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        receipt = retry_cognition_analysis(
+            database_path,
+            provider,
+            model=model,
+            action_id=action_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Retry cognition.analyze: falha ({exc})")
+        return 1
+
+    print(f"Action anterior: {receipt.retry_of_action_id}")
     print(f"Action: {receipt.action.id}")
     print(f"Goal: {receipt.action.goal_id}")
     print(f"Plan: {receipt.action.plan_id}")

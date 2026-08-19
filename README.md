@@ -58,6 +58,7 @@ O projeto já consegue:
 - verificar deterministicamente a evidência técnica produzida por uma Action `process.run` concluída;
 - registrar autorização explícita, lifecycle da Action, stdout, stderr, exit code e duração da execução;
 - executar `cognition.analyze` sobre evidências previamente verificadas sem alterar World, Goal ou Plan;
+- autorizar retry explícito de `cognition.analyze` após falha ou interrupção operacional sem replanejar automaticamente;
 - persistir análises estruturadas com findings explicitamente ligados aos Events que os sustentam;
 - avaliar semanticamente uma análise contra o critério do step como `ASSESSED`;
 - confirmar explicitamente assessments positivos de `user.ask` e `cognition.analyze` antes de promovê-los a `VERIFIED`;
@@ -176,7 +177,7 @@ A materialização é idempotente por Event de proposta. Uma nova proposta para 
 
 `plan-propose` também é o gate explícito de replanejamento do v0.1. Se um Plan `ACTIVE` ainda possui step `READY`, Action em andamento, Verification pendente, assessment positivo aguardando confirmação, capability ausente ou apenas uma falha operacional com recovery local, nenhuma nova proposta substitutiva é gerada.
 
-O replanejamento é liberado quando o readiness expõe uma conclusão epistemológica como `VERIFICATION_FAILED`, `VERIFICATION_INCONCLUSIVE`, `CRITERION_NOT_SATISFIED` ou `ASSESSMENT_INCONCLUSIVE` e não existe um gate local mais específico que deva ser usado primeiro. `user.ask` negativo continua no fluxo `action-retry`; `process.run` `FAILED/INTERRUPTED` continua no fluxo `process-retry`. Assim, retry e replan permanecem decisões diferentes.
+O replanejamento é liberado quando o readiness expõe uma conclusão epistemológica como `VERIFICATION_FAILED`, `VERIFICATION_INCONCLUSIVE`, `CRITERION_NOT_SATISFIED` ou `ASSESSMENT_INCONCLUSIVE` e não existe um gate local mais específico que deva ser usado primeiro. `user.ask` negativo continua no fluxo `action-retry`; `process.run` `FAILED/INTERRUPTED` continua no fluxo `process-retry`; e `cognition.analyze` `FAILED/INTERRUPTED` continua no fluxo `analysis-retry`. Assim, retry e replan permanecem decisões diferentes.
 
 Quando a revisão é permitida, o Planner recebe `prior_plan_failure` contendo o Plan/revisão atuais, o step afetado, a Action, a Verification e somente os Events de evidência ligados a essa conclusão. Esse material é contexto sem autoridade de instrução. A proposta resultante registra `source_active_plan_id`, `source_active_plan_revision`, `source_failure_step_id`, `source_failure_action_id`, `source_failure_verification_id` e `source_failure_blocker_kind`.
 
@@ -381,6 +382,24 @@ Em sucesso, a análise é preservada no Event `cognition.analysis.completed`, a 
 
 Nenhuma nova tabela ou migration foi necessária; o SQLite permanece no schema 10.
 
+## Retry explícito de `cognition.analyze`
+
+Falha do ModelProvider, timeout propagado pelo provider, análise sem grounding ou interrupção por restart são falhas da tentativa cognitiva. Elas não demonstram por si só que a estratégia do Plan está errada. Uma nova tentativa pode ser autorizada explicitamente com:
+
+```powershell
+uv run simon analysis-retry --model qwen3.5:4b-q4_K_M act_ID_DA_TENTATIVA
+```
+
+A operação aceita somente uma Action `cognition.analyze` em `FAILED` ou `INTERRUPTED`, exige que ela continue sendo a tentativa mais recente do step e que pertença ao Plan `ACTIVE` atual. `PREVIOUS_ATTEMPT_REQUIRES_REVIEW` precisa ser o único blocker. Se uma dependência deixou de estar verificada, uma precondition surgiu ou qualquer outro blocker estiver presente, o retry é recusado.
+
+A nova tentativa é uma nova Action. A anterior permanece imutável. O Event `action.retry.authorized`, com `source=user`, registra a decisão e a nova Action preserva `retry_of_action_id` e `retry_authorization_event_id`. Retries em cadeia só podem partir da tentativa mais recente, evitando bifurcações silenciosas.
+
+Antes de chamar o modelo novamente, o S.I.M.O.N. reconstrói as evidências atualmente válidas dos steps anteriores. Assim o retry não reaproveita cegamente um snapshot antigo caso a situação epistemológica do Plan tenha mudado.
+
+Uma tentativa recuperada que termina `COMPLETED` volta ao fluxo normal: continua `VERIFICATION_PENDING` até `analysis-assess` e, se o assessment for positivo, `verification-confirm`. Já uma Action `COMPLETED` cuja Verification resulte `NOT_SATISFIED`, `UNCLEAR`, `FAILED` ou `INCONCLUSIVE` não usa este retry operacional; esse caso continua pertencendo ao fluxo de revisão epistemológica e replanejamento do Passo 46.
+
+Nenhuma migration foi necessária; o SQLite permanece no schema 11.
+
 ## Assessment epistemológico de `cognition.analyze`
 
 Uma Action `cognition.analyze` concluída pode ser comparada semanticamente com o critério explícito do step:
@@ -542,7 +561,7 @@ Nenhuma nova tabela ou capability foi necessária neste passo; o SQLite permanec
 
 ## Próximo passo
 
-Continuar o hardening das falhas operacionais que ainda não possuem recovery local. O próximo caso concreto é `cognition.analyze` terminando `FAILED` por indisponibilidade do ModelProvider ou análise sem grounding: isso não deve obrigar uma nova estratégia de Plan quando uma nova tentativa cognitiva explicitamente autorizada é suficiente.
+Continuar o hardening das falhas operacionais que ainda deixam o Plan sem recovery local. O próximo caso concreto é `file.patch` terminando `FAILED` por target indisponível, trecho ausente ou trecho ambíguo. A próxima etapa deve decidir quando uma nova requisição de patch pode ser autorizada como retry local sem confundir alteração de parâmetros com replanejamento da estratégia.
 
 ## Primeira interpretação cognitiva
 

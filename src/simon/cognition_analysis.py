@@ -12,13 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from simon.actions import (
     Action,
     create_action_in_connection,
+    get_action,
     list_actions_for_plan,
     transition_action_in_connection,
 )
 from simon.events import Event, get_event
 from simon.model_provider import ModelProvider, ModelProviderError
 from simon.plans import Plan
-from simon.step_readiness import evaluate_active_plan
+from simon.step_readiness import StepReadiness, evaluate_active_plan
 from simon.verification import list_verification_results
 
 AnalysisText = Annotated[
@@ -72,6 +73,7 @@ class CognitionAnalysisReceipt:
     prompt_eval_count: int | None = None
     eval_count: int | None = None
     total_duration_ns: int | None = None
+    retry_of_action_id: str | None = None
 
 
 def execute_next_cognition_analysis(
@@ -93,45 +95,150 @@ def execute_next_cognition_analysis(
             f"{step.step_id} ({step.capability or 'não especificada'})"
         )
 
-    raw_step = _plan_step(readiness.plan, step.step_id)
+    return _execute_cognition_analysis_attempt(
+        database_path,
+        provider,
+        model=model,
+        plan=readiness.plan,
+        step=step,
+        trace_id=trace_id,
+        retry_of_action=None,
+    )
+
+
+def retry_cognition_analysis(
+    database_path: Path,
+    provider: ModelProvider,
+    *,
+    model: str,
+    action_id: str,
+    trace_id: str | None = None,
+) -> CognitionAnalysisReceipt:
+    """Autoriza nova tentativa cognitiva após falha ou interrupção operacional."""
+    original = get_action(database_path, action_id)
+    if original is None:
+        raise ValueError(f"action não encontrada: {action_id}")
+    if original.kind != "cognition.analyze":
+        raise ValueError(f"action não representa cognition.analyze: {action_id}")
+    if original.status not in {"FAILED", "INTERRUPTED"}:
+        raise ValueError(
+            "retry cognition.analyze exige Action FAILED ou INTERRUPTED: "
+            f"{action_id} está {original.status}"
+        )
+
+    readiness = evaluate_active_plan(database_path, goal_id=original.goal_id)
+    if readiness.plan.id != original.plan_id:
+        raise ValueError(
+            "retry cognition.analyze exige que a tentativa pertença ao Plan ACTIVE atual: "
+            f"{original.plan_id}"
+        )
+
+    step = next(
+        (candidate for candidate in readiness.steps if candidate.step_id == original.step_id),
+        None,
+    )
+    if step is None:
+        raise RuntimeError(f"step da tentativa não existe no Plan ativo: {original.step_id}")
+    _validate_retry_readiness(step, original)
+
+    return _execute_cognition_analysis_attempt(
+        database_path,
+        provider,
+        model=model,
+        plan=readiness.plan,
+        step=step,
+        trace_id=trace_id,
+        retry_of_action=original,
+    )
+
+
+def _execute_cognition_analysis_attempt(
+    database_path: Path,
+    provider: ModelProvider,
+    *,
+    model: str,
+    plan: Plan,
+    step: StepReadiness,
+    trace_id: str | None,
+    retry_of_action: Action | None,
+) -> CognitionAnalysisReceipt:
+    raw_step = _plan_step(plan, step.step_id)
     verification_intent = _required_text(raw_step, "verification")
     evidence_events = _verified_prior_evidence(
         database_path,
-        plan=readiness.plan,
+        plan=plan,
         step_id=step.step_id,
     )
     evidence_event_ids = tuple(event.id for event in evidence_events)
     analysis_trace_id = trace_id or f"trc_{uuid4().hex}"
 
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        _ensure_step_has_no_attempt(connection, readiness.plan.id, step.step_id)
-        action = create_action_in_connection(
-            connection,
-            goal_id=readiness.plan.goal_id,
-            plan_id=readiness.plan.id,
-            step_id=step.step_id,
-            kind="cognition.analyze",
-            input_data={
+    authorization_event = None
+    if retry_of_action is not None:
+        authorization_event = Event.create(
+            kind="action.retry.authorized",
+            source="user",
+            payload={
+                "plan_id": plan.id,
+                "plan_revision": plan.revision,
+                "step_id": step.step_id,
+                "retry_of_action_id": retry_of_action.id,
+                "previous_status": retry_of_action.status,
+                "capability": "cognition.analyze",
                 "model": model,
-                "task": step.description,
-                "verification": verification_intent,
                 "evidence_event_ids": list(evidence_event_ids),
             },
+            trace_id=analysis_trace_id,
+            goal_id=plan.goal_id,
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if retry_of_action is None:
+            _ensure_step_has_no_attempt(connection, plan.id, step.step_id)
+        else:
+            _ensure_retry_is_latest_attempt(
+                connection,
+                plan_id=plan.id,
+                step_id=step.step_id,
+                original=retry_of_action,
+            )
+
+        input_data: dict[str, object] = {
+            "model": model,
+            "task": step.description,
+            "verification": verification_intent,
+            "evidence_event_ids": list(evidence_event_ids),
+        }
+        if retry_of_action is not None and authorization_event is not None:
+            input_data["retry_of_action_id"] = retry_of_action.id
+            input_data["retry_authorization_event_id"] = authorization_event.id
+
+        action = create_action_in_connection(
+            connection,
+            goal_id=plan.goal_id,
+            plan_id=plan.id,
+            step_id=step.step_id,
+            kind="cognition.analyze",
+            input_data=input_data,
         )
         running = transition_action_in_connection(connection, action.id, "RUNNING")
+        if authorization_event is not None:
+            _insert_event(connection, authorization_event)
+        started_payload: dict[str, object] = {
+            "action_id": running.id,
+            "plan_id": running.plan_id,
+            "step_id": running.step_id,
+            "model": model,
+            "evidence_event_ids": list(evidence_event_ids),
+        }
+        if retry_of_action is not None:
+            started_payload["retry_of_action_id"] = retry_of_action.id
         _insert_event(
             connection,
             Event.create(
                 kind="cognition.analysis.started",
                 source="cognition",
-                payload={
-                    "action_id": running.id,
-                    "plan_id": running.plan_id,
-                    "step_id": running.step_id,
-                    "model": model,
-                    "evidence_event_ids": list(evidence_event_ids),
-                },
+                payload=started_payload,
                 trace_id=analysis_trace_id,
                 goal_id=running.goal_id,
             ),
@@ -175,6 +282,7 @@ def execute_next_cognition_analysis(
             trace_id=analysis_trace_id,
             failure_kind="model_provider",
             message=str(exc),
+            retry_of_action_id=(retry_of_action.id if retry_of_action is not None else None),
         )
     except ValueError as exc:
         return _record_failure(
@@ -185,22 +293,26 @@ def execute_next_cognition_analysis(
             trace_id=analysis_trace_id,
             failure_kind="ungrounded_analysis",
             message=str(exc),
+            retry_of_action_id=(retry_of_action.id if retry_of_action is not None else None),
         )
 
+    result_payload: dict[str, object] = {
+        "action_id": running.id,
+        "plan_id": running.plan_id,
+        "step_id": running.step_id,
+        "model": model_result.model,
+        "analysis": model_result.output.model_dump(mode="json"),
+        "evidence_event_ids": list(evidence_event_ids),
+        "prompt_eval_count": model_result.prompt_eval_count,
+        "eval_count": model_result.eval_count,
+        "total_duration_ns": model_result.total_duration_ns,
+    }
+    if retry_of_action is not None:
+        result_payload["retry_of_action_id"] = retry_of_action.id
     result_event = Event.create(
         kind="cognition.analysis.completed",
         source="cognition",
-        payload={
-            "action_id": running.id,
-            "plan_id": running.plan_id,
-            "step_id": running.step_id,
-            "model": model_result.model,
-            "analysis": model_result.output.model_dump(mode="json"),
-            "evidence_event_ids": list(evidence_event_ids),
-            "prompt_eval_count": model_result.prompt_eval_count,
-            "eval_count": model_result.eval_count,
-            "total_duration_ns": model_result.total_duration_ns,
-        },
+        payload=result_payload,
         trace_id=analysis_trace_id,
         goal_id=running.goal_id,
     )
@@ -227,6 +339,7 @@ def execute_next_cognition_analysis(
         prompt_eval_count=model_result.prompt_eval_count,
         eval_count=model_result.eval_count,
         total_duration_ns=model_result.total_duration_ns,
+        retry_of_action_id=(retry_of_action.id if retry_of_action is not None else None),
     )
 
 
@@ -239,17 +352,21 @@ def _record_failure(
     trace_id: str,
     failure_kind: str,
     message: str,
+    retry_of_action_id: str | None = None,
 ) -> CognitionAnalysisReceipt:
+    failure_payload: dict[str, object] = {
+        "action_id": action_id,
+        "model": model,
+        "failure_kind": failure_kind,
+        "message": message,
+        "evidence_event_ids": list(evidence_event_ids),
+    }
+    if retry_of_action_id is not None:
+        failure_payload["retry_of_action_id"] = retry_of_action_id
     failure_event = Event.create(
         kind="cognition.analysis.failed",
         source="cognition",
-        payload={
-            "action_id": action_id,
-            "model": model,
-            "failure_kind": failure_kind,
-            "message": message,
-            "evidence_event_ids": list(evidence_event_ids),
-        },
+        payload=failure_payload,
         trace_id=trace_id,
     )
     with sqlite3.connect(database_path) as connection:
@@ -287,7 +404,23 @@ def _record_failure(
         model=model,
         evidence_event_ids=evidence_event_ids,
         result_event_id=failure_event.id,
+        retry_of_action_id=retry_of_action_id,
     )
+
+
+def _validate_retry_readiness(step: StepReadiness, original: Action) -> None:
+    if step.state != "BLOCKED":
+        raise ValueError(
+            "retry cognition.analyze exige step bloqueado aguardando review da tentativa anterior"
+        )
+
+    expected_detail = f"{original.id}: {original.status}"
+    blockers = tuple((blocker.kind, blocker.detail) for blocker in step.blockers)
+    if blockers != (("PREVIOUS_ATTEMPT_REQUIRES_REVIEW", expected_detail),):
+        rendered = ", ".join(f"{kind}: {detail}" for kind, detail in blockers) or "nenhum"
+        raise ValueError(
+            "retry cognition.analyze não pode ignorar outros blockers do step: " + rendered
+        )
 
 
 def _verified_prior_evidence(
@@ -347,7 +480,7 @@ def _latest_verified_action(database_path: Path, actions: list[Action]) -> Actio
             subject_type="ACTION",
             subject_id=action.id,
         )
-        if any(result.status == "VERIFIED" for result in results):
+        if results and results[-1].status == "VERIFIED":
             return action
     return None
 
@@ -410,6 +543,37 @@ def _ensure_step_has_no_attempt(
         raise ValueError(
             "step cognition.analyze já possui tentativa registrada: "
             f"{row[0]} ({row[1]})"
+        )
+
+
+def _ensure_retry_is_latest_attempt(
+    connection: sqlite3.Connection,
+    *,
+    plan_id: str,
+    step_id: str,
+    original: Action,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT id, status
+        FROM actions
+        WHERE plan_id = ? AND step_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (plan_id, step_id),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"step não possui tentativa persistida: {step_id}")
+    if str(row[0]) != original.id:
+        raise ValueError(
+            "retry cognition.analyze exige a tentativa mais recente do step; "
+            f"a Action {original.id} já foi sucedida por {row[0]}"
+        )
+    if str(row[1]) != original.status:
+        raise RuntimeError(
+            "status da tentativa mudou durante autorização do retry: "
+            f"{original.status} -> {row[1]}"
         )
 
 

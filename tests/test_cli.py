@@ -1969,3 +1969,82 @@ def test_plan_propose_uses_failed_active_plan_as_explicit_replanning_context(
     assert payload["source_failure_action_id"] == action.id
     assert payload["source_failure_verification_id"] == verification.id
     assert payload["source_failure_blocker_kind"] == "CRITERION_NOT_SATISFIED"
+
+
+def test_analysis_retry_cli_executes_explicit_new_attempt(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    from simon.cognition_analysis import CognitionAnalysis
+    from simon.model_provider import StructuredModelResult
+
+    database_path, _ = initialize_storage(tmp_path)
+    goal = Goal.create(
+        title="Retentar análise",
+        origin="USER",
+        desired_state={"description": "A análise foi concluída."},
+        success_criteria=({"description": "Existe análise persistida."},),
+    )
+    insert_goal(database_path, goal)
+    plan = create_plan(
+        database_path,
+        goal_id=goal.id,
+        steps=(
+            {
+                "id": "step_01",
+                "description": "Analisar: dado disponível.",
+                "kind": "EPISTEMIC",
+                "depends_on": [],
+                "preconditions": [],
+                "capability": "cognition.analyze",
+                "verification": "A análise foi produzida.",
+            },
+        ),
+    )
+    failed = create_action(
+        database_path,
+        goal_id=goal.id,
+        plan_id=plan.id,
+        step_id="step_01",
+        kind="cognition.analyze",
+        input_data={"model": "fake-model"},
+    )
+    transition_action(database_path, failed.id, "RUNNING")
+    failed = transition_action(
+        database_path,
+        failed.id,
+        "FAILED",
+        failure={"kind": "model_provider", "message": "runtime indisponível"},
+    )
+
+    class FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def generate_structured(self, **kwargs: object) -> StructuredModelResult[CognitionAnalysis]:
+            return StructuredModelResult(
+                model="fake-model",
+                output=CognitionAnalysis(
+                    summary="A análise foi concluída após nova tentativa.",
+                    findings=[],
+                    uncertainties=["Não havia evidência anterior para um finding factual."],
+                ),
+            )
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "analysis-retry",
+            "--model",
+            "fake-model",
+            failed.id,
+        ]
+    ) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert f"Action anterior: {failed.id}" in output
+    assert "Status: COMPLETED" in output
+    assert "A análise foi concluída após nova tentativa." in output

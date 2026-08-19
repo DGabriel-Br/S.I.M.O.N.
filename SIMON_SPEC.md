@@ -5282,6 +5282,7 @@ O hardening posterior ao retry de `process.run` expôs a distinção complementa
 ```text
 user.ask + NOT_SATISFIED/UNCLEAR -> action-retry
 process.run + FAILED/INTERRUPTED -> process-retry
+cognition.analyze + FAILED/INTERRUPTED -> analysis-retry
 ```
 
 Esses caminhos continuam locais porque a evidência disponível ainda não demonstra que a estratégia global precisa mudar.
@@ -5314,3 +5315,32 @@ Essa proveniência não é apenas documental. `plan-materialize` revalida o esta
 
 A criação da nova revisão continua usando o mecanismo existente de Plans: somente depois da revalidação o Plan anterior passa a `SUPERSEDED` e a revisão seguinte nasce `ACTIVE`. Nenhuma nova tabela, estado de Plan ou migration é necessária; o SQLite permanece no schema 11.
 
+### 32.28. Retry operacional explícito de `cognition.analyze`
+
+O hardening do ciclo separa falha da tentativa cognitiva de falha epistemológica da estratégia. Uma Action `cognition.analyze` pode terminar `FAILED` porque o ModelProvider ficou indisponível, porque a saída produzida não permaneceu grounded nos Events fornecidos ou porque a execução foi interrompida por restart. Nenhum desses fatos, isoladamente, demonstra que o Plan precisa ser substituído.
+
+O v0.1 introduz:
+
+```text
+simon analysis-retry --model <modelo> <action_id>
+```
+
+A operação exige simultaneamente:
+
+```text
+Action.kind = cognition.analyze
+Action.status = FAILED | INTERRUPTED
+Action = tentativa mais recente do step
+Plan da Action = Plan ACTIVE atual
+blockers do step = somente PREVIOUS_ATTEMPT_REQUIRES_REVIEW daquela Action
+```
+
+O retry não reabre nem modifica a Action anterior. Uma nova Action é criada no mesmo `(goal_id, plan_id, step_id)`, preservando `retry_of_action_id`. A decisão explícita produz `action.retry.authorized` com `source=user`; a nova Action também registra `retry_authorization_event_id`. Se outra tentativa já sucedeu a Action indicada, a autorização é recusada.
+
+Antes da chamada ao modelo, as evidências são reconstruídas a partir do estado epistemológico atual do Plan. Somente Events sustentados por Verifications `VERIFIED` de steps anteriores são novamente fornecidos à capability. Se uma dependência deixou de estar verificada ou surgiu qualquer blocker adicional, o retry é recusado em vez de consumir evidência antiga.
+
+O resultado da nova tentativa segue exatamente o lifecycle existente. `ModelProviderError` e análise sem grounding produzem uma nova Action `FAILED`; sucesso produz `COMPLETED` e `cognition.analysis.completed`, ainda sem Verification automática. Uma tentativa `COMPLETED` precisa seguir por `analysis-assess` e eventual `verification-confirm`.
+
+Esse retry não se aplica a uma análise executada com sucesso cuja conclusão epistemológica posterior seja negativa ou inconclusiva. `CRITERION_NOT_SATISFIED`, `ASSESSMENT_INCONCLUSIVE`, `VERIFICATION_FAILED` e `VERIFICATION_INCONCLUSIVE` continuam pertencendo ao fluxo explícito de replanejamento. Assim, falha operacional da cognição e falha da estratégia permanecem fatos distintos.
+
+Nenhuma nova tabela, capability ou migration é necessária; o SQLite permanece no schema 11.
