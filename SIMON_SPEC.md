@@ -5469,3 +5469,16 @@ A suíte normal continua responsável por invariantes de domínio e comportament
 
 O SQLite permanece no schema 11. A promoção de `0.1.0rc1` para `0.1.0` só deve ocorrer depois que testes, lint, tipagem e smoke do artefato instalado estiverem verdes no runtime oficial Python 3.14.7.
 
+### 32.33. Release final do núcleo v0.1
+
+Depois da aprovação do release candidate `0.1.0rc1` em Python 3.14.7, o núcleo é promovido para `0.1.0`. A promoção não adiciona capability, lifecycle, tabela, migration ou decisão cognitiva nova. Ela congela como contrato estável o comportamento já validado no RC.
+
+A versão final preserva o SQLite no schema 11 e mantém como invariantes do núcleo: persistência de Goal/Plan/Action/Event/Verification/Experience/Memory; separação entre execução e conclusão epistemológica; autoridade exclusiva da tentativa mais recente de cada step e da Verification mais recente dessa tentativa; retry explícito para falha operacional; replanejamento explícito para falha epistemológica; restart e `resume` sem dependência de contexto anterior do modelo; exclusão mútua por diretório de dados; e revalidação da evidência antes de concluir Plan ou Goal.
+
+A distribuição final continua sendo validada pelo smoke reproduzível em `scripts/rc_smoke.py`. O nome do arquivo é preservado por compatibilidade com o gate já aprovado no release candidate, mas o script passa a representar o smoke da distribuição v0.1. Ele precisa construir wheel e sdist, inspecionar migrations e metadata, instalar o wheel fora do checkout, validar `simon` e `python -m simon`, criar um banco limpo no schema 11 e executar upgrade 7 -> 11 preservando um Event sentinela. O sucesso é reportado como `Release smoke: OK`.
+
+`CHANGELOG.md` passa a ser a fotografia histórica do release, enquanto `RELEASE_NOTES_0.1.0.md` apresenta a primeira versão como marco público. Esses arquivos registram as garantias do núcleo, a qualidade validada antes da promoção, compatibilidade e os limites deliberadamente deixados para fases posteriores. Esses limites não devem ser resolvidos dentro do `0.1.x` apenas por conveniência arquitetural; mudanças que alterem os contratos centrais do Core exigem uma decisão de versão compatível com o impacto.
+
+O v0.1 permanece deliberadamente sem Executive/Attention persistente, seleção automática de Memory, invalidação automática de Plan por assumptions, roteamento entre modelos, busca vetorial, visão, voz ou interface gráfica. Essas capacidades pertencem à fase seguinte e devem consumir os contratos estabilizados em vez de substituí-los.
+
+A versão final do pacote é `simon-local==0.1.0`, com Python `>=3.14,<3.15` e SQLite schema 11.

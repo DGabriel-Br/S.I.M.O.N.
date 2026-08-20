@@ -8,9 +8,9 @@ A especificação oficial está em [`SIMON_SPEC.md`](SIMON_SPEC.md).
 
 ## Estado atual
 
-**Release candidate: `0.1.0rc1`.**
+**Versão estável do núcleo: `0.1.0`.**
 
-O núcleo operacional do v0.1 já passou por ciclo ponta a ponta, recovery integrado, auditoria de invariantes e retomada persistente. Nesta fase não entram novas capabilities: o foco é provar que o artefato instalável preserva o mesmo comportamento validado no checkout.
+O núcleo operacional do v0.1 passou por ciclo ponta a ponta, recovery integrado, auditoria de invariantes, retomada persistente e validação do artefato instalado. Esta versão congela os contratos centrais do Core antes da próxima fase do projeto. O histórico da release e seus limites conhecidos estão em [`CHANGELOG.md`](CHANGELOG.md). As notas da primeira versão estão em [`RELEASE_NOTES_0.1.0.md`](RELEASE_NOTES_0.1.0.md).
 
 O projeto já consegue:
 
@@ -119,15 +119,15 @@ uv run ruff check .
 uv run mypy src
 ```
 
-## Smoke test do release candidate
+## Smoke test da distribuição
 
-O RC possui um smoke test separado da suíte unitária/integrada. Ele constrói `wheel` e `sdist`, inspeciona o conteúdo distribuído, instala o wheel em um ambiente virtual temporário e valida o entry point, `python -m simon`, banco limpo e upgrade de schema 7 para 11 com preservação de dados.
+A release possui um smoke test separado da suíte unitária/integrada. Ele constrói `wheel` e `sdist`, inspeciona o conteúdo distribuído, instala o wheel em um ambiente virtual temporário e valida o entry point, `python -m simon`, banco limpo e upgrade de schema 7 para 11 com preservação de dados.
 
 ```powershell
 uv run python scripts/rc_smoke.py
 ```
 
-O smoke não depende de Ollama nem chama um modelo. Ele testa somente empacotamento, instalação e contratos persistentes necessários para distribuir o núcleo. Ao terminar com sucesso, imprime `RC smoke: OK` e mantém os artefatos construídos em `dist/`.
+O smoke não depende de Ollama nem chama um modelo. Ele testa somente empacotamento, instalação e contratos persistentes necessários para distribuir o núcleo. Ao terminar com sucesso, imprime `Release smoke: OK` e mantém os artefatos construídos em `dist/`.
 
 ## Diagnóstico do runtime local
 
@@ -639,9 +639,9 @@ A terceira lacuna estava no consumo cognitivo. `cognition.analyze` podia voltar 
 
 A auditoria também formaliza a fronteira desta versão: o v0.1 é single-runtime por diretório de dados; efeitos externos interrompidos continuam exigindo decisão explícita antes de retry; `world_revision` ainda informa mudança sem invalidar Plans automaticamente; e Memories continuam dependendo de promoção explícita. Esses pontos são limitações deliberadas, não bloqueadores descobertos nesta auditoria.
 
-## Próximo passo
+## Próxima fase
 
-Com os invariantes bloqueadores corrigidos e os cenários integrados de sucesso, restart, replanejamento e recovery cobertos, o próximo corte deve ser de release candidate: validar instalação limpa, comandos de ajuda, criação de banco do zero, upgrade de schema anterior, execução de um smoke flow e empacotamento da versão sem adicionar novas capacidades ao Core.
+A versão `0.1.0` encerra a fase de fundação do núcleo. A partir daqui, novas capacidades devem ser construídas sobre estes contratos sem reabrir invariantes já estabilizados por conveniência. Itens deliberadamente fora do v0.1 incluem Executive/Attention, seleção automática de Memory, invalidação automática de Plan por assumptions, roteamento entre modelos, visão, voz, interface gráfica e novas famílias de Tools.
 
 ## Primeira interpretação cognitiva
 

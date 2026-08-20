@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
 import shutil
 import sqlite3
 import subprocess
@@ -10,6 +9,7 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +100,8 @@ def _assert_sdist(sdist_path: Path) -> None:
             "/pyproject.toml",
             "/README.md",
             "/SIMON_SPEC.md",
+            "/CHANGELOG.md",
+            "/RELEASE_NOTES_0.1.0.md",
             "/scripts/rc_smoke.py",
         )
         for suffix in required_suffixes:
@@ -186,8 +188,8 @@ def _assert_upgrade_from_seven(
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                "evt_rc_sentinel",
-                "rc.sentinel",
+                "evt_release_sentinel",
+                "release.sentinel",
                 "2026-08-19T00:00:00+00:00",
                 "system",
                 "{}",
@@ -203,7 +205,7 @@ def _assert_upgrade_from_seven(
         schema = int(connection.execute("PRAGMA user_version").fetchone()[0])
         sentinel = connection.execute(
             "SELECT id, kind FROM events WHERE id = ?",
-            ("evt_rc_sentinel",),
+            ("evt_release_sentinel",),
         ).fetchone()
         world_revision = connection.execute(
             "SELECT revision FROM world_state WHERE singleton = 1"
@@ -211,7 +213,7 @@ def _assert_upgrade_from_seven(
 
     if schema != EXPECTED_SCHEMA:
         raise RuntimeError(f"upgrade 7 -> {EXPECTED_SCHEMA} terminou no schema {schema}")
-    if sentinel != ("evt_rc_sentinel", "rc.sentinel"):
+    if sentinel != ("evt_release_sentinel", "release.sentinel"):
         raise RuntimeError("upgrade perdeu o registro sentinela do schema 7")
     if world_revision is None:
         raise RuntimeError("upgrade não materializou world_state")
@@ -219,7 +221,7 @@ def _assert_upgrade_from_seven(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Smoke test reproduzível do release candidate v0.1"
+        description="Smoke test reproduzível da distribuição v0.1"
     )
     parser.add_argument(
         "--keep-dist",
@@ -251,7 +253,7 @@ def main() -> int:
     _assert_wheel(wheel_path, expected_version)
     _assert_sdist(sdist_path)
 
-    with tempfile.TemporaryDirectory(prefix="simon-rc-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="simon-release-") as temporary:
         temporary_root = Path(temporary)
         venv_dir = temporary_root / "venv"
         _run([uv, "venv", "--python", sys.executable, str(venv_dir)], cwd=PROJECT_ROOT)
@@ -298,7 +300,7 @@ def main() -> int:
             temporary_root / "upgrade-data",
         )
 
-    print("RC smoke: OK")
+    print("Release smoke: OK")
     print(f"Versão: {expected_version}")
     print(f"Wheel: {wheel_path.name}")
     print(f"Sdist: {sdist_path.name}")
