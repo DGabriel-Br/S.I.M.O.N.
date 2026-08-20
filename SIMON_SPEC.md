@@ -5541,4 +5541,10 @@ O corte não promete ainda resolver "corrija este script" do zero. A v0.1 não p
 
 ### 33.8. Primeiro incremento de código
 
-O próximo incremento implementará somente a decisão determinística do Executive sobre `reconstruct_resume_state()` e `PlanReadiness`. Essa camada responderá qual operação é legítima a seguir ou qual gate impede continuidade. Ela ainda não executará a operação. Um runner será adicionado somente depois que o contrato de decisão estiver coberto por testes.
+A linha de desenvolvimento pós-v0.1 passa a ser `0.2.0.dev0`. O primeiro código do Executive é `ExecutiveDecision`, produzido por `decide_next()` sobre `reconstruct_resume_state()` e `PlanReadiness`. A decisão é read-only e contém um `outcome`, razão estável, uma única operação quando aplicável, indicação de necessidade de modelo e referências para Goal, Plan, step, Action, Verification, capability e blockers.
+
+`PROCEED` só existe quando há exatamente uma próxima operação interna legítima. `NEEDS_USER_INPUT`, `NEEDS_USER_CONFIRMATION` e `NEEDS_OPERATION_AUTHORIZATION` podem apontar a operação que está atrás do gate sem executá-la. `NEEDS_GOAL_SELECTION`, `BLOCKED` e `DONE` nunca carregam operação executável.
+
+A precedência implementada cobre Action em andamento, `user.ask` em espera, Verification pendente, confirmação de assessment, retry local, falha epistemológica que exige replan, step `READY`, binding especializado de `CHANGE/unknown` para `file.patch`, conclusão de Plan, assessment de Goal e gate de conclusão do Goal. O decisor não escolhe modelo e apenas marca `requires_model` quando a operação futura depender de um `ModelProvider`.
+
+O comando `executive-next [goal_id]` expõe essa decisão na CLI sem persistir Action, Event ou Verification. Múltiplos Goals abertos produzem `NEEDS_GOAL_SELECTION`. O próximo incremento adicionará um runner que consome somente decisões `PROCEED` e executa no máximo uma transição segura antes de reconstruir o estado.

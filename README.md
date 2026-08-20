@@ -8,7 +8,7 @@ A especificação oficial está em [`SIMON_SPEC.md`](SIMON_SPEC.md).
 
 ## Estado atual
 
-**Versão estável do núcleo: `0.1.0`.**
+**Versão estável do núcleo: `0.1.0`. Linha atual de desenvolvimento: `0.2.0.dev0`.**
 
 O núcleo operacional do v0.1 passou por ciclo ponta a ponta, recovery integrado, auditoria de invariantes, retomada persistente e validação do artefato instalado. Esta versão congela os contratos centrais do Core antes da próxima fase do projeto. O histórico da release e seus limites conhecidos estão em [`CHANGELOG.md`](CHANGELOG.md). As notas da primeira versão estão em [`RELEASE_NOTES_0.1.0.md`](RELEASE_NOTES_0.1.0.md).
 
@@ -662,6 +662,14 @@ A entrada, a seleção de contexto e o resultado estruturado são preservados co
 
 A versão `0.1.0` permanece como base estável. A Fase 2 começa pela camada que conduz esse Core, sem enfraquecer seus gates.
 
-O primeiro Executive será foreground e single-focus. Ele reconstruirá estado persistido, consumirá `PlanReadiness` e decidirá uma única próxima operação legítima por ciclo. Operações internas e epistemicamente seguras poderão ser conduzidas automaticamente; autorizações de execução, patch, retry, confirmações humanas e promoção de Memory continuam gates reais.
+O primeiro Executive é foreground e single-focus. Ele reconstrói estado persistido, consome `PlanReadiness` e decide uma única próxima operação legítima por ciclo. Operações internas e epistemicamente seguras podem ser classificadas como `PROCEED`; autorizações de execução, patch, retry e confirmações humanas continuam gates reais.
 
-O contrato completo da primeira etapa está em `PHASE_2_EXECUTIVE.md`. O primeiro código dessa fase será apenas um decisor determinístico. Ele não executará Actions ainda e não adicionará scheduler, Attention scoring, paralelismo ou novas capabilities.
+O comando de inspeção atual é:
+
+```powershell
+uv run simon executive-next [goal_id]
+```
+
+Ele não executa a operação escolhida. A saída preserva `outcome`, razão, operação, Goal, Plan, step, Action, Verification, capability, necessidade de modelo e blockers. Com múltiplos Goals abertos, retorna `NEEDS_GOAL_SELECTION` em vez de escolher foco arbitrariamente.
+
+O contrato completo está em `PHASE_2_EXECUTIVE.md`. O próximo incremento será um runner foreground que consome uma decisão `PROCEED` e executa no máximo uma transição segura antes de reconstruir o estado. Scheduler, Attention scoring, paralelismo e novas capabilities continuam fora deste corte.

@@ -2,6 +2,15 @@
 
 Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 
+## [Unreleased]
+
+### Adicionado
+
+- início da linha de desenvolvimento `0.2.0.dev0` para a Fase 2, preservando `0.1.0` como release estável;
+- primeiro `ExecutiveDecision` determinístico e read-only sobre `resume` e `PlanReadiness`;
+- comando `executive-next` para inspecionar a próxima operação legítima ou o gate atual sem executá-lo;
+- decisões estruturadas para seleção de Goal, input humano, confirmação, autorização operacional, retry, replanejamento, Verification e conclusão de Plan/Goal.
+
 ## [0.1.0] - 2026-08-19
 
 Primeira versão estável do núcleo persistente do S.I.M.O.N.

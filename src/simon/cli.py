@@ -25,6 +25,7 @@ from simon.cognition_analysis_verification import assess_cognition_analysis
 from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
+from simon.executive import ExecutiveDecision, decide_next
 from simon.experience_memory import promote_experience_to_memory
 from simon.experiences import suspend_active_experiences
 from simon.file_patch import FilePatchRequest, execute_next_file_patch, retry_file_patch
@@ -82,6 +83,16 @@ def build_parser() -> argparse.ArgumentParser:
         "goal_id",
         nargs="?",
         help="Goal a detalhar; se houver apenas um Goal aberto, ele é selecionado automaticamente",
+    )
+
+    executive_next = commands.add_parser(
+        "executive-next",
+        help="decide deterministicamente a próxima operação legítima sem executá-la",
+    )
+    executive_next.add_argument(
+        "goal_id",
+        nargs="?",
+        help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
     )
 
     model_check = commands.add_parser(
@@ -521,6 +532,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
 
     if args.command == "resume":
         return _resume(database_path, args.goal_id)
+    if args.command == "executive-next":
+        return _executive_next(database_path, args.goal_id)
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -663,6 +676,41 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
     print(f"Dados: {database_path.parent}")
     print(f"SQLite: pronto (schema {schema_version})")
     return 0
+
+
+
+def _executive_next(database_path: Path, goal_id: str | None) -> int:
+    try:
+        decision = decide_next(database_path, goal_id=goal_id)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Executive: falha ({exc})")
+        return 1
+
+    _print_executive_decision(decision)
+    return 0
+
+
+def _print_executive_decision(decision: ExecutiveDecision) -> None:
+    print(f"Executive: {decision.outcome}")
+    print(f"Razão: {decision.reason_code} | {decision.reason}")
+    print(f"Operação: {decision.operation or 'nenhuma'}")
+    print(f"Requer modelo: {'sim' if decision.requires_model else 'não'}")
+    print(f"Goal: {decision.goal_id or 'nenhum'}")
+    print(f"Plan: {decision.plan_id or 'nenhum'}")
+    print(f"Step: {decision.step_id or 'nenhum'}")
+    print(f"Action: {decision.action_id or 'nenhuma'}")
+    print(f"Verification: {decision.verification_id or 'nenhuma'}")
+    print(f"Capability: {decision.capability or 'nenhuma'}")
+
+    if decision.goal_candidates:
+        print("Goals candidatos:")
+        for candidate in decision.goal_candidates:
+            print(f"- {candidate.goal_id}: {candidate.status} | {candidate.title}")
+
+    if decision.blockers:
+        print("Blockers preservados:")
+        for blocker in decision.blockers:
+            print(f"- {blocker.kind}: {blocker.detail}")
 
 
 def _resume(database_path: Path, goal_id: str | None) -> int:

@@ -232,12 +232,26 @@ O primeiro Executive estará pronto quando:
 8. concluir um Goal já autorizado usando apenas os contratos v0.1.0;
 9. possuir um teste integrado que prove o cenário acima.
 
+## Primeiro decisor implementado
+
+A linha `0.2.0.dev0` introduz `ExecutiveDecision` em `simon.executive`. `decide_next()` reconstrói o estado persistido e produz uma decisão read-only. A decisão contém `outcome`, `reason_code`, uma operação quando aplicável, indicação de dependência de modelo e referências concretas para Goal, Plan, step, Action, Verification, capability e blockers.
+
+O decisor já distingue:
+
+- múltiplos Goals abertos, sem seleção arbitrária;
+- `user.ask` aguardando resposta real;
+- Verification objetiva ou assessment pendente;
+- confirmação humana de assessment;
+- retry operacional autorizado;
+- replanejamento por falha epistemológica;
+- steps `READY` seguros ou sujeitos a autorização;
+- binding `CHANGE/unknown` elegível para `file.patch`;
+- conclusão determinística de Plan;
+- assessment e gate de conclusão de Goal;
+- Goal já concluído.
+
+`decide_next()` não cria Event, Action ou Verification e não altera lifecycle. O comando `executive-next` apenas torna essa decisão observável na CLI.
+
 ## Próximo passo de implementação
 
-O primeiro código da Fase 2 deve ser um `ExecutiveDecision` determinístico construído sobre `reconstruct_resume_state()` e `PlanReadiness`.
-
-Ele ainda não executará nada. Primeiro aprenderá a responder corretamente:
-
-> Qual é a próxima operação legítima, ou qual gate impede continuar?
-
-Somente depois de essa decisão estar coberta por testes o Executive ganhará um runner que executa uma decisão `PROCEED` por vez.
+O próximo incremento deve adicionar um runner foreground que receba uma decisão `PROCEED`, execute no máximo uma operação segura já existente e então pare. O runner não deve executar gates de usuário ou efeitos externos autorizáveis. Depois dessa transição, outro ciclo reconstrói o Core e decide novamente.
