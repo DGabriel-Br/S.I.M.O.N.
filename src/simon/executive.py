@@ -6,7 +6,8 @@ from typing import Literal
 
 from simon.actions import Action
 from simon.goal_verification import get_latest_goal_assessment_context
-from simon.plan_failure import get_active_plan_failure_context
+from simon.plan_failure import PlanFailureContext, get_active_plan_failure_context
+from simon.plan_proposal import PendingPlanProposal, find_latest_pending_plan_proposal
 from simon.plans import Plan
 from simon.resume import GoalResumeState, ResumedAction, reconstruct_resume_state
 from simon.step_readiness import PlanReadiness, StepBlocker, StepReadiness
@@ -23,6 +24,7 @@ ExecutiveOutcome = Literal[
 
 ExecutiveOperation = Literal[
     "plan.propose",
+    "plan.materialize",
     "plan.ask",
     "plan.run",
     "plan.patch",
@@ -62,6 +64,7 @@ class ExecutiveDecision:
     step_id: str | None = None
     action_id: str | None = None
     verification_id: str | None = None
+    proposal_event_id: str | None = None
     capability: str | None = None
     blockers: tuple[StepBlocker, ...] = ()
     goal_candidates: tuple[ExecutiveGoalCandidate, ...] = ()
@@ -128,6 +131,16 @@ def decide_next(
 
     plan = state.plan
     if plan is None:
+        pending = find_latest_pending_plan_proposal(database_path, goal_id=goal.id)
+        if pending is not None and _matches_initial_plan_need(pending):
+            return _decision(
+                state,
+                outcome="PROCEED",
+                reason_code="plan_proposal_ready_to_materialize",
+                reason="já existe uma proposta de Plan concluída e ainda não materializada",
+                operation="plan.materialize",
+                proposal_event_id=pending.event_id,
+            )
         return _decision(
             state,
             outcome="PROCEED",
@@ -264,6 +277,23 @@ def _decide_active_plan(
         blocker = next(
             blocker for blocker in step.blockers if blocker.kind == failure.blocker_kind
         )
+        pending = find_latest_pending_plan_proposal(database_path, goal_id=state.goal.id)
+        if pending is not None and _matches_plan_failure(pending, failure):
+            return _step_decision(
+                state,
+                readiness.plan,
+                step,
+                outcome="PROCEED",
+                reason_code="replan_proposal_ready_to_materialize",
+                reason=(
+                    "a proposta de replanejamento atual já foi concluída e pode ser materializada"
+                ),
+                operation="plan.materialize",
+                action_id=failure.action_id,
+                verification_id=failure.verification_id,
+                proposal_event_id=pending.event_id,
+                blockers=(blocker,),
+            )
         return _step_decision(
             state,
             readiness.plan,
@@ -351,6 +381,23 @@ def _decide_completed_plan(
             operation="goal.complete",
             plan_id=plan.id,
             verification_id=assessment.verification_id,
+        )
+
+    pending = find_latest_pending_plan_proposal(database_path, goal_id=state.goal.id)
+    if pending is not None and _matches_completed_plan_continuation(
+        pending,
+        plan=plan,
+        assessment_verification_id=assessment.verification_id,
+    ):
+        return _decision(
+            state,
+            outcome="PROCEED",
+            reason_code="continuation_proposal_ready_to_materialize",
+            reason="a proposta de continuação do Goal já foi concluída e pode ser materializada",
+            operation="plan.materialize",
+            plan_id=plan.id,
+            verification_id=assessment.verification_id,
+            proposal_event_id=pending.event_id,
         )
 
     return _decision(
@@ -507,6 +554,38 @@ def _user_ask_review(
     return None
 
 
+def _matches_initial_plan_need(proposal: PendingPlanProposal) -> bool:
+    return (
+        proposal.source_active_plan_id is None
+        and proposal.source_completed_plan_id is None
+        and proposal.source_goal_assessment_id is None
+    )
+
+
+def _matches_plan_failure(
+    proposal: PendingPlanProposal,
+    failure: PlanFailureContext,
+) -> bool:
+    return (
+        proposal.source_active_plan_id == failure.plan_id
+        and proposal.source_active_plan_revision == failure.plan_revision
+        and proposal.source_failure_verification_id == failure.verification_id
+    )
+
+
+def _matches_completed_plan_continuation(
+    proposal: PendingPlanProposal,
+    *,
+    plan: Plan,
+    assessment_verification_id: str,
+) -> bool:
+    return (
+        proposal.source_completed_plan_id == plan.id
+        and proposal.source_goal_assessment_id == assessment_verification_id
+        and proposal.source_active_plan_id is None
+    )
+
+
 def _bindable_file_patch_step(readiness: PlanReadiness) -> StepReadiness | None:
     for step in readiness.steps:
         if step.state != "BLOCKED" or step.capability != "unknown":
@@ -594,6 +673,7 @@ def _decision(
     step_id: str | None = None,
     action_id: str | None = None,
     verification_id: str | None = None,
+    proposal_event_id: str | None = None,
     capability: str | None = None,
     blockers: tuple[StepBlocker, ...] = (),
 ) -> ExecutiveDecision:
@@ -608,6 +688,7 @@ def _decision(
         step_id=step_id,
         action_id=action_id,
         verification_id=verification_id,
+        proposal_event_id=proposal_event_id,
         capability=capability,
         blockers=blockers,
     )
@@ -625,6 +706,7 @@ def _step_decision(
     requires_model: bool = False,
     action_id: str | None = None,
     verification_id: str | None = None,
+    proposal_event_id: str | None = None,
     capability: str | None = None,
     blockers: tuple[StepBlocker, ...] = (),
 ) -> ExecutiveDecision:
@@ -639,6 +721,7 @@ def _step_decision(
         step_id=step.step_id,
         action_id=action_id,
         verification_id=verification_id,
+        proposal_event_id=proposal_event_id,
         capability=capability if capability is not None else step.capability,
         blockers=blockers,
     )

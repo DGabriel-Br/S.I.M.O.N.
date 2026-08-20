@@ -51,6 +51,7 @@ def test_current_help_preserves_release_surface_and_exposes_executive() -> None:
     for command in (
         "resume",
         "executive-next",
+        "executive-step",
         "goal-propose",
         "goal-accept",
         "plan-propose",

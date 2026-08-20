@@ -10,6 +10,9 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - primeiro `ExecutiveDecision` determinístico e read-only sobre `resume` e `PlanReadiness`;
 - comando `executive-next` para inspecionar a próxima operação legítima ou o gate atual sem executá-lo;
 - decisões estruturadas para seleção de Goal, input humano, confirmação, autorização operacional, retry, replanejamento, Verification e conclusão de Plan/Goal.
+- runner foreground `executive-step` que executa no máximo uma decisão `PROCEED` segura por chamada e reavalia o estado sem continuar o ciclo;
+- detecção de propostas de Plan pendentes, separando explicitamente `plan.propose` de `plan.materialize` em ciclos diferentes;
+- serviço reutilizável de proposta de Plan, preservando o gate que impede chamada ao modelo quando um Plan ACTIVE saudável ainda possui resolução local.
 
 ## [0.1.0] - 2026-08-19
 

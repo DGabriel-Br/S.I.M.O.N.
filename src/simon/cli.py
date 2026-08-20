@@ -26,22 +26,25 @@ from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, decide_next
+from simon.executive_runner import ExecutiveRunReceipt, run_executive_once
 from simon.experience_memory import promote_experience_to_memory
 from simon.experiences import suspend_active_experiences
 from simon.file_patch import FilePatchRequest, execute_next_file_patch, retry_file_patch
 from simon.file_patch_verification import verify_file_patch_state
 from simon.goal_completion import complete_goal_from_assessment
-from simon.goal_intake import accept_goal_proposal, get_goal_acceptance_open_questions
-from simon.goal_verification import assess_goal_outcome, get_latest_goal_assessment_context
-from simon.goals import OPEN_STATUSES, get_goal
+from simon.goal_intake import accept_goal_proposal
+from simon.goal_verification import assess_goal_outcome
+from simon.goals import get_goal
 from simon.memories import Memory
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
 from simon.plan_completion import complete_verified_plan
-from simon.plan_failure import get_active_plan_failure_context
 from simon.plan_intake import materialize_plan_proposal
-from simon.planning import propose_plan
-from simon.plans import get_active_plan
+from simon.plan_proposal import (
+    PlanProposalGateError,
+    ensure_plan_proposal_allowed,
+    propose_plan_for_goal,
+)
 from simon.process_binding import ProcessRunRequest
 from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.process_verification import verify_process_run_execution
@@ -94,6 +97,21 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
     )
+
+    executive_step = commands.add_parser(
+        "executive-step",
+        help="executa no máximo uma decisão PROCEED segura e para para reavaliar o estado",
+    )
+    executive_step.add_argument(
+        "--model",
+        help="modelo local usado somente quando a próxima decisão exigir cognição",
+    )
+    executive_step.add_argument(
+        "goal_id",
+        nargs="?",
+        help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
+    )
+    _add_ollama_arguments(executive_step)
 
     model_check = commands.add_parser(
         "model-check",
@@ -534,6 +552,14 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         return _resume(database_path, args.goal_id)
     if args.command == "executive-next":
         return _executive_next(database_path, args.goal_id)
+    if args.command == "executive-step":
+        return _executive_step(
+            database_path,
+            args.goal_id,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+        )
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -678,6 +704,51 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
     return 0
 
 
+def _executive_step(
+    database_path: Path,
+    goal_id: str | None,
+    base_url: str,
+    timeout_seconds: float,
+    model: str | None,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds) if model else None
+    try:
+        receipt = run_executive_once(
+            database_path,
+            goal_id=goal_id,
+            provider=provider,
+            model=model,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Executive runner: falha ({exc})")
+        return 1
+
+    _print_executive_run_receipt(receipt)
+    if receipt.status == "FAILED":
+        return 1
+    if receipt.status == "MODEL_REQUIRED":
+        return 2
+    return 0
+
+
+def _print_executive_run_receipt(receipt: ExecutiveRunReceipt) -> None:
+    print(f"Executive runner: {receipt.status}")
+    print("Decisão avaliada:")
+    _print_executive_decision(receipt.decision)
+    if receipt.status == "EXECUTED":
+        print(f"Operação executada: {receipt.executed_operation}")
+        print(f"Resultado: {receipt.result_type} {receipt.result_id}")
+        print("Próxima decisão, não executada:")
+        if receipt.next_decision is None:
+            raise RuntimeError("runner EXECUTED sem próxima decisão reconstruída")
+        _print_executive_decision(receipt.next_decision)
+    elif receipt.status == "MODEL_REQUIRED":
+        print("Execução: não realizada; informe --model para esta decisão cognitiva")
+    elif receipt.status == "FAILED":
+        print(f"Execução: falhou ({receipt.error})")
+    else:
+        print("Execução: não realizada; a decisão atual exige um gate externo ao runner")
+
 
 def _executive_next(database_path: Path, goal_id: str | None) -> int:
     try:
@@ -700,6 +771,7 @@ def _print_executive_decision(decision: ExecutiveDecision) -> None:
     print(f"Step: {decision.step_id or 'nenhum'}")
     print(f"Action: {decision.action_id or 'nenhuma'}")
     print(f"Verification: {decision.verification_id or 'nenhuma'}")
+    print(f"Proposta de Plan: {decision.proposal_event_id or 'nenhuma'}")
     print(f"Capability: {decision.capability or 'nenhuma'}")
 
     if decision.goal_candidates:
@@ -1230,29 +1302,6 @@ def _experience_remember(
     return 0
 
 
-def _active_plan_replanning_gate_message(readiness: PlanReadiness) -> str:
-    if readiness.next_step is not None:
-        return (
-            f"Plan ACTIVE {readiness.plan.id} ainda possui step executável: "
-            f"{readiness.next_step.step_id}"
-        )
-
-    pending = next((step for step in readiness.steps if step.state != "VERIFIED"), None)
-    if pending is None:
-        return f"Plan ACTIVE {readiness.plan.id} já está totalmente VERIFIED; use plan-complete"
-    if pending.state == "IN_PROGRESS":
-        return (
-            f"Plan ACTIVE {readiness.plan.id} possui step em andamento: "
-            f"{pending.step_id}"
-        )
-
-    blockers = ", ".join(blocker.kind for blocker in pending.blockers) or "BLOCKED"
-    return (
-        f"Plan ACTIVE {readiness.plan.id} requer resolução local no step "
-        f"{pending.step_id}: {blockers}"
-    )
-
-
 def _plan_propose(
     database_path: Path,
     base_url: str,
@@ -1260,137 +1309,35 @@ def _plan_propose(
     model: str,
     goal_id: str,
 ) -> int:
-    goal = get_goal(database_path, goal_id)
-    if goal is None:
-        print(f"Proposta de Plan: falha (goal não encontrado: {goal_id})")
-        return 1
-    if goal.status not in OPEN_STATUSES:
-        print(f"Proposta de Plan: falha (goal não está aberto: {goal.status})")
-        return 1
-
-    desired_description = goal.desired_state.get("description")
-    context_query = " ".join(
-        part
-        for part in (
-            goal.title,
-            desired_description if isinstance(desired_description, str) else "",
-            *(
-                str(criterion.get("description", ""))
-                for criterion in goal.success_criteria
-                if isinstance(criterion, dict)
-            ),
-        )
-        if part.strip()
-    )
-    if not context_query:
-        context_query = goal.title
-
-    trace_id = f"trc_{uuid4().hex}"
-
     try:
-        active_plan = get_active_plan(database_path, goal.id)
-        plan_failure = None
-        if active_plan is not None:
-            plan_failure = get_active_plan_failure_context(database_path, goal_id=goal.id)
-            if plan_failure is None:
-                readiness = evaluate_active_plan(database_path, goal_id=goal.id)
-                print(
-                    "Proposta de Plan: não gerada ("
-                    + _active_plan_replanning_gate_message(readiness)
-                    + ")"
-                )
-                return 0
-
-        context = build_cognitive_context(database_path, text=context_query)
-        goal_assessment = get_latest_goal_assessment_context(database_path, goal.id)
-        if goal_assessment is not None and goal_assessment.verdict == "SATISFIED":
-            print(
-                "Proposta de Plan: não gerada "
-                "(assessment de Goal SATISFIED aguarda goal-complete)"
-            )
-            return 0
-        intake_open_questions = get_goal_acceptance_open_questions(database_path, goal.id)
-        open_questions = () if goal_assessment is not None else intake_open_questions
-        append_event(
-            database_path,
-            Event.create(
-                kind="cognition.context.built",
-                source="cognition",
-                payload={
-                    "purpose": "plan",
-                    "goal_ids": [item.id for item in context.goals],
-                    "entity_ids": [entity.id for entity in context.entities],
-                    "claim_ids": [claim.id for claim in context.claims],
-                    "memory_ids": [memory.id for memory in context.memories],
-                },
-                trace_id=trace_id,
-                goal_id=goal.id,
-            ),
-        )
-        provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
-        result = propose_plan(
-            provider,
-            model=model,
-            goal=goal,
-            open_questions=open_questions,
-            context=context,
-            goal_assessment=goal_assessment,
-            plan_failure=plan_failure,
-        )
-    except (ModelProviderError, TypeError, ValueError) as exc:
-        append_event(
-            database_path,
-            Event.create(
-                kind="cognition.plan_proposal.failed",
-                source="cognition",
-                payload={"model": model, "error": str(exc)},
-                trace_id=trace_id,
-                goal_id=goal.id,
-            ),
-        )
+        ensure_plan_proposal_allowed(database_path, goal_id=goal_id)
+    except PlanProposalGateError as exc:
+        print(f"Proposta de Plan: não gerada ({exc})")
+        return 0
+    except (TypeError, ValueError) as exc:
         print(f"Proposta de Plan: falha ({exc})")
         return 1
 
-    proposal_event = Event.create(
-        kind="cognition.plan_proposal.completed",
-        source="cognition",
-        payload={
-            "model": result.model,
-            "proposal": result.output.model_dump(mode="json"),
-            "source_open_questions": list(open_questions),
-            "source_goal_assessment_id": (
-                goal_assessment.verification_id if goal_assessment is not None else None
-            ),
-            "source_completed_plan_id": (
-                goal_assessment.plan_id if goal_assessment is not None else None
-            ),
-            "source_active_plan_id": (
-                plan_failure.plan_id if plan_failure is not None else None
-            ),
-            "source_active_plan_revision": (
-                plan_failure.plan_revision if plan_failure is not None else None
-            ),
-            "source_failure_step_id": (
-                plan_failure.step_id if plan_failure is not None else None
-            ),
-            "source_failure_action_id": (
-                plan_failure.action_id if plan_failure is not None else None
-            ),
-            "source_failure_verification_id": (
-                plan_failure.verification_id if plan_failure is not None else None
-            ),
-            "source_failure_blocker_kind": (
-                plan_failure.blocker_kind if plan_failure is not None else None
-            ),
-            "prompt_eval_count": result.prompt_eval_count,
-            "eval_count": result.eval_count,
-            "total_duration_ns": result.total_duration_ns,
-            "repair_count": result.repair_count,
-        },
-        trace_id=trace_id,
-        goal_id=goal.id,
-    )
-    append_event(database_path, proposal_event)
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
+    try:
+        receipt = propose_plan_for_goal(
+            database_path,
+            provider,
+            model=model,
+            goal_id=goal_id,
+        )
+    except PlanProposalGateError as exc:
+        print(f"Proposta de Plan: não gerada ({exc})")
+        return 0
+    except (ModelProviderError, TypeError, ValueError) as exc:
+        print(f"Proposta de Plan: falha ({exc})")
+        return 1
+
+    result = receipt.result
+    goal = receipt.goal
+    context = receipt.context
+    goal_assessment = receipt.goal_assessment
+    plan_failure = receipt.plan_failure
 
     print(f"Modelo: {result.model}")
     print(f"Goal: {goal.id} ({goal.title})")
@@ -1442,7 +1389,7 @@ def _plan_propose(
         print("Questões em aberto: nenhuma")
 
     _print_model_metrics(result)
-    print(f"ID da proposta: {proposal_event.id}")
+    print(f"ID da proposta: {receipt.proposal_event.id}")
     print("Plan persistido: não")
     return 0
 

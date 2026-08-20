@@ -252,6 +252,28 @@ O decisor já distingue:
 
 `decide_next()` não cria Event, Action ou Verification e não altera lifecycle. O comando `executive-next` apenas torna essa decisão observável na CLI.
 
-## Próximo passo de implementação
+## Primeiro runner foreground implementado
 
-O próximo incremento deve adicionar um runner foreground que receba uma decisão `PROCEED`, execute no máximo uma operação segura já existente e então pare. O runner não deve executar gates de usuário ou efeitos externos autorizáveis. Depois dessa transição, outro ciclo reconstrói o Core e decide novamente.
+`run_executive_once()` consome a decisão atual e aplica a regra:
+
+```text
+decidir
+→ executar no máximo uma operação PROCEED segura
+→ reconstruir estado
+→ expor a próxima decisão
+→ parar
+```
+
+O runner nunca executa decisões `NEEDS_USER_INPUT`, `NEEDS_USER_CONFIRMATION` ou `NEEDS_OPERATION_AUTHORIZATION`. Operações cognitivas exigem um `ModelProvider` e um modelo explícitos; sem isso, o runner retorna `MODEL_REQUIRED` sem alterar o estado. Falha na operação produz `FAILED` e não autoriza automaticamente retry.
+
+As operações `PROCEED` atualmente executáveis pelo runner são proposta e materialização de Plan, `user.ask`, `cognition.analyze`, Verification objetiva de `process.run` e `file.patch`, assessments semânticos, retry local de `user.ask`, conclusão determinística de Plan e assessment de Goal. Efeitos externos e confirmações continuam fora do runner.
+
+Uma proposta de Plan não é materializada na mesma chamada. Depois de `plan.propose`, o decisor reconhece o Event pendente e retorna `plan.materialize` para o ciclo seguinte. Isso evita repetir propostas e preserva a regra de uma transição por ciclo.
+
+A CLI expõe esse comportamento com:
+
+```powershell
+uv run simon executive-step [--model MODELO] [goal_id]
+```
+
+O próximo incremento deve provar um ciclo foreground mais longo atravessando múltiplas chamadas e pelo menos um restart, sem introduzir loop contínuo ou atravessar gates humanos.

@@ -5547,4 +5547,17 @@ A linha de desenvolvimento pós-v0.1 passa a ser `0.2.0.dev0`. O primeiro códig
 
 A precedência implementada cobre Action em andamento, `user.ask` em espera, Verification pendente, confirmação de assessment, retry local, falha epistemológica que exige replan, step `READY`, binding especializado de `CHANGE/unknown` para `file.patch`, conclusão de Plan, assessment de Goal e gate de conclusão do Goal. O decisor não escolhe modelo e apenas marca `requires_model` quando a operação futura depender de um `ModelProvider`.
 
-O comando `executive-next [goal_id]` expõe essa decisão na CLI sem persistir Action, Event ou Verification. Múltiplos Goals abertos produzem `NEEDS_GOAL_SELECTION`. O próximo incremento adicionará um runner que consome somente decisões `PROCEED` e executa no máximo uma transição segura antes de reconstruir o estado.
+O comando `executive-next [goal_id]` expõe essa decisão na CLI sem persistir Action, Event ou Verification. Múltiplos Goals abertos produzem `NEEDS_GOAL_SELECTION`. O runner descrito na seção seguinte consome apenas decisões `PROCEED` e preserva a regra de uma única transição antes de reconstruir o estado.
+
+
+### 33.9. Runner foreground de uma transição
+
+O Executive ganha `run_executive_once()`, responsável por consumir a decisão atual e executar no máximo uma operação `PROCEED` segura. A chamada nunca percorre um loop interno. Depois da transição, o estado é reconstruído e uma nova `ExecutiveDecision` é retornada apenas como observação do próximo ciclo.
+
+O resultado do runner distingue `EXECUTED`, `STOPPED`, `MODEL_REQUIRED` e `FAILED`. `STOPPED` preserva gates de usuário, confirmação e autorização operacional sem criar efeitos. `MODEL_REQUIRED` ocorre quando a decisão é legítima, mas depende de cognição e nenhum provider/model foi fornecido. `FAILED` registra a falha da chamada sem convertê-la em autorização de retry.
+
+O runner pode conduzir somente operações internas já autorizadas pelo contrato: proposta e materialização de Plan, `user.ask`, `cognition.analyze`, Verification objetiva, assessments, retry local de `user.ask`, conclusão de Plan e assessment de Goal. `process.run`, `file.patch`, retries operacionais, confirmações de assessment, conclusão confirmada de Goal e promoção de Memory permanecem fora do executor automático.
+
+`ExecutiveDecision` passa a reconhecer proposta de Plan concluída e não materializada. Nessa condição, a próxima operação é `plan.materialize` com referência explícita ao Event de proposta. Proposta e materialização nunca acontecem no mesmo ciclo. Para replanejamento, a proposta pendente só é aceita quando sua provenance ainda corresponde ao Plan, revisão e Verification de falha atuais; para continuação após assessment de Goal, precisa corresponder ao Plan concluído e ao assessment atual.
+
+O comando `executive-step [--model MODELO] [goal_id]` expõe o runner. Uma chamada que executa algo imprime a decisão consumida, a referência do resultado e a próxima decisão não executada. O SQLite permanece no schema 11.
