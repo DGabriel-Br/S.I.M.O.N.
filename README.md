@@ -657,3 +657,11 @@ Antes da chamada ao modelo, o Context Builder seleciona de forma determinística
 
 A entrada, a seleção de contexto e o resultado estruturado são preservados como Events com o mesmo `trace_id`, preparando a base de observabilidade sem criar ainda um objeto persistente `CognitiveJob`.
 
+
+## Fase 2: Executive
+
+A versão `0.1.0` permanece como base estável. A Fase 2 começa pela camada que conduz esse Core, sem enfraquecer seus gates.
+
+O primeiro Executive será foreground e single-focus. Ele reconstruirá estado persistido, consumirá `PlanReadiness` e decidirá uma única próxima operação legítima por ciclo. Operações internas e epistemicamente seguras poderão ser conduzidas automaticamente; autorizações de execução, patch, retry, confirmações humanas e promoção de Memory continuam gates reais.
+
+O contrato completo da primeira etapa está em `PHASE_2_EXECUTIVE.md`. O primeiro código dessa fase será apenas um decisor determinístico. Ele não executará Actions ainda e não adicionará scheduler, Attention scoring, paralelismo ou novas capabilities.

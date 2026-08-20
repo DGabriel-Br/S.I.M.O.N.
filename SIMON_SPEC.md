@@ -5482,3 +5482,63 @@ A distribuição final continua sendo validada pelo smoke reproduzível em `scri
 O v0.1 permanece deliberadamente sem Executive/Attention persistente, seleção automática de Memory, invalidação automática de Plan por assumptions, roteamento entre modelos, busca vetorial, visão, voz ou interface gráfica. Essas capacidades pertencem à fase seguinte e devem consumir os contratos estabilizados em vez de substituí-los.
 
 A versão final do pacote é `simon-local==0.1.0`, com Python `>=3.14,<3.15` e SQLite schema 11.
+
+## 33. Fase 2: Executive sobre o Core v0.1.0
+
+### 33.1. Regra de evolução
+
+A Fase 2 consome os contratos estabilizados em `0.1.0`. Executive, interação natural e capabilities futuras não podem reabrir invariantes do Core por conveniência. Em particular, continuam autoritativas a tentativa mais recente de cada step, a Verification mais recente dessa tentativa, os blockers de `PlanReadiness`, provenance imutável, gates humanos explícitos e exclusão mútua por diretório de dados.
+
+O Executive coordena autoridade existente; ele não cria autoridade nova.
+
+### 33.2. Executive mínimo foreground
+
+O primeiro corte é deliberadamente single-focus e não persistente. A solicitação foreground atual e zero ou um Goal selecionado formam o foco. Exatamente um Goal aberto pode ser selecionado automaticamente; múltiplos Goals permanecem ambíguos até escolha explícita ou identificação inequívoca pelo usuário.
+
+Não entram neste corte Background scheduler, FocusSession persistente, Attention scoring, preempção, paralelismo ou priorização probabilística entre Goals.
+
+### 33.3. Classes de autoridade
+
+As operações se dividem em três classes.
+
+`EXECUTIVE_AUTONOMOUS` contém condução sem novo consentimento humano, como reconstrução de estado, readiness, interpretação, propostas cognitivas, materialização de Plan já autorizado, Verification objetiva, assessments semânticos, conclusão determinística de Plan e avaliação de Goal.
+
+`USER_TURN_BOUND` contém operações cujo efeito representa uma escolha ou confirmação humana, como aceitar Goal, responder `user.ask` e confirmar assessment. Elas só poderão ser roteadas automaticamente quando existir provenance explícita que vincule o turno real do usuário ao gate. Até lá, o Executive deve parar e pedir a decisão.
+
+`EXPLICIT_OPERATION_GATE` contém efeitos externos e decisões deliberadamente autorizadas no v0.1, incluindo `process.run`, `file.patch`, retries operacionais e promoção de Experience para Memory. Um Goal desejado não concede implicitamente esses grants.
+
+### 33.4. Resultado de decisão
+
+Cada ciclo do Executive produz exatamente uma decisão observável:
+
+```text
+PROCEED
+NEEDS_USER_INPUT
+NEEDS_USER_CONFIRMATION
+NEEDS_OPERATION_AUTHORIZATION
+NEEDS_GOAL_SELECTION
+BLOCKED
+DONE
+```
+
+`PROCEED` aponta para uma única operação do Core. Os demais resultados preservam o objeto ou blocker concreto que impede continuidade. O Executive não transforma blocker em autorização e não executa mais de uma mudança de estado sem reavaliar o Core.
+
+### 33.5. Precedência determinística
+
+No primeiro corte, prioridade é lifecycle, não score. O Executive trata primeiro Actions em andamento ou aguardando usuário; depois Verification pendente; gates de confirmação; recoveries operacionais; falhas epistemológicas que exigem replan; step READY; conclusão do Plan; avaliação do Goal; gate de conclusão do Goal; e por fim `DONE`.
+
+Essa precedência consome `PlanReadiness` e os objetos persistidos. Ela não replica nem substitui a lógica de readiness.
+
+### 33.6. Fronteira do modelo
+
+ModelProvider pode interpretar, propor Goals/Plans, analisar e avaliar semanticamente. Ele não decide se autorização humana aconteceu, se blocker pode ser ignorado, se escopo pode ser expandido, se Action histórica volta a ser atual ou se Verification histórica substitui evidência mais recente.
+
+### 33.7. Golden Scenario inicial
+
+O primeiro cenário da Fase 2 começa com Goal e Plan já persistidos e usa somente capabilities existentes. O usuário pede em linguagem natural para continuar o Goal. O Executive reconstrói estado, seleciona o foco quando não há ambiguidade, conduz automaticamente operações epistemicamente seguras e para nos gates reais de autorização ou confirmação. O cenário precisa atravessar restart e terminar em `DONE` sem depender de memória do processo anterior.
+
+O corte não promete ainda resolver "corrija este script" do zero. A v0.1 não possui leitura geral de arquivos nem proposta estruturada de patch suficiente para esse caso sem adicionar novas capabilities. Essas capabilities só devem nascer depois que a orquestração foreground estiver provada.
+
+### 33.8. Primeiro incremento de código
+
+O próximo incremento implementará somente a decisão determinística do Executive sobre `reconstruct_resume_state()` e `PlanReadiness`. Essa camada responderá qual operação é legítima a seguir ou qual gate impede continuidade. Ela ainda não executará a operação. Um runner será adicionado somente depois que o contrato de decisão estiver coberto por testes.
