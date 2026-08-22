@@ -43,6 +43,7 @@ from simon.goals import get_goal
 from simon.memories import Memory
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
+from simon.operation_proposal import ProcessRunProposal, propose_process_run
 from simon.plan_completion import complete_verified_plan
 from simon.plan_intake import materialize_plan_proposal
 from simon.plan_proposal import (
@@ -341,6 +342,35 @@ def build_parser() -> argparse.ArgumentParser:
         "arguments",
         nargs=argparse.REMAINDER,
         help="argumentos entregues diretamente ao executável",
+    )
+
+    process_propose = commands.add_parser(
+        "process-propose",
+        help="materializa uma proposta concreta de process.run sem executar o processo",
+    )
+    process_propose.add_argument(
+        "goal_id",
+        help="ID do Goal cujo process.run atual receberá uma proposta concreta",
+    )
+    process_propose.add_argument(
+        "--cwd",
+        required=True,
+        help="diretório de trabalho proposto",
+    )
+    process_propose.add_argument(
+        "--process-timeout",
+        type=float,
+        default=120.0,
+        help="timeout proposto em segundos",
+    )
+    process_propose.add_argument(
+        "executable",
+        help="executável proposto, iniciado diretamente e sem shell implícito",
+    )
+    process_propose.add_argument(
+        "arguments",
+        nargs=argparse.REMAINDER,
+        help="argumentos exatos propostos para o executável",
     )
 
     process_retry = commands.add_parser(
@@ -691,6 +721,15 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         return _plan_ask(database_path, args.goal_id)
     if args.command == "plan-run":
         return _plan_run(
+            database_path,
+            args.goal_id,
+            args.executable,
+            args.arguments,
+            args.cwd,
+            args.process_timeout,
+        )
+    if args.command == "process-propose":
+        return _process_propose(
             database_path,
             args.goal_id,
             args.executable,
@@ -1730,6 +1769,53 @@ def _plan_run(
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
 
+
+
+def _process_propose(
+    database_path: Path,
+    goal_id: str,
+    executable: str,
+    arguments: Sequence[str],
+    working_directory: str,
+    timeout_seconds: float,
+) -> int:
+    try:
+        request = ProcessRunRequest(
+            executable=executable,
+            arguments=tuple(arguments),
+            working_directory=working_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        proposal = propose_process_run(
+            database_path,
+            goal_id=goal_id,
+            request=request,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Proposta process.run: falha ({exc})")
+        return 1
+
+    _print_process_run_proposal(proposal)
+    return 0
+
+
+def _print_process_run_proposal(proposal: ProcessRunProposal) -> None:
+    print(f"Proposta operacional: {proposal.event.id}")
+    print("Tipo: process.run")
+    print(f"Goal: {proposal.goal_id}")
+    print(f"Plan: {proposal.plan_id} rev{proposal.plan_revision}")
+    print(f"Step: {proposal.step_id}")
+    print(f"Motivo: {proposal.reason}")
+    print(f"Verificação esperada: {proposal.verification}")
+    print(f"Executável: {proposal.request.executable}")
+    print(f"Diretório: {proposal.request.working_directory}")
+    print(f"Timeout: {proposal.request.timeout_seconds:.3f}s")
+    print("Argumentos (argv):")
+    for index, value in enumerate(proposal.request.argv()):
+        print(f"  [{index}] {value}")
+    print("Execução realizada: não")
+    print("Autorização registrada: não")
+    print('Próximo passo: responda ao gate atual com "sim" ou "pode executar".')
 
 def _process_retry(
     database_path: Path,

@@ -17,6 +17,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - condutor foreground `executive-continue` que encadeia operações `PROCEED` seguras, reconstrói o estado entre transições e para no primeiro gate, falta de modelo, falha, `DONE` ou limite explícito.
 - gateway `user-turn` para registrar um turno humano com provenance explícita e rotear somente o intent determinístico `CONTINUE` ao condutor seguro, sem converter linguagem natural em autorização operacional.
 - respostas humanas vinculadas ao gate atual: texto livre responde somente a `user.ask` em `WAITING`, confirmações afirmativas explícitas confirmam somente o assessment ou Goal atualmente solicitado, e `NEEDS_OPERATION_AUTHORIZATION` continua exigindo comando operacional concreto.
+- proposta concreta de `process.run` persistida antes da autorização natural: `process-propose` registra executável, argv, cwd e timeout sem criar Action; um turno afirmativo posterior só pode autorizar a proposta mais recente que ainda corresponda ao gate atual.
 
 ## [0.1.0] - 2026-08-19
 

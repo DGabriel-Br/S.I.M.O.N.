@@ -696,7 +696,15 @@ uv run simon user-turn [--goal-id gol_...] [--model qwen3.5:4b-q4_K_M] "continue
 
 `user-turn` persiste o texto literal como `user.turn.received` com `source=user`. Fora de um gate contextual, o único intent de controle reconhecido continua sendo o estreito e determinístico `CONTINUE`. Quando o Executive está em `NEEDS_USER_INPUT`, o próprio texto do turno pode responder somente à `user.ask` `WAITING` identificada pela decisão atual. Quando está em `NEEDS_USER_CONFIRMATION`, apenas confirmações afirmativas explícitas como `sim` ou `confirmo` podem promover exatamente a Verification ou Goal referenciado pelo gate.
 
-O turno continua não sendo autorização operacional genérica. Diante de `NEEDS_OPERATION_AUTHORIZATION`, inclusive um `sim` é registrado como não tratado e nenhuma Action externa é criada. `process.run`, `file.patch` e retries operacionais continuam exigindo seus comandos concretos e parâmetros completos. Depois de uma resposta ou confirmação contextual válida, o condutor pode retomar somente operações `PROCEED` seguras até o próximo gate.
+O turno continua não sendo autorização operacional genérica. Para o primeiro caso operacional suportado, `process.run`, os parâmetros precisam ser materializados antes em uma proposta concreta:
+
+```powershell
+uv run simon process-propose gol_... --cwd C:\projeto python -m pytest
+```
+
+`process-propose` persiste executável, argumentos, `cwd` e timeout em `executive.operation.proposed`, com `source=system`, sem criar Action e sem registrar autorização. Enquanto essa proposta ainda corresponder exatamente ao Goal, Plan e step do gate atual, um turno afirmativo explícito como `sim`, `autorizo` ou `pode executar` pode autorizar somente aquela proposta. O `process.run.authorized` continua sendo produzido pelo executor existente com `source=user` e `trace_id` do turno que aprovou a operação.
+
+Sem proposta concreta, um `sim` diante de `NEEDS_OPERATION_AUTHORIZATION` continua sem efeito. `file.patch` e retries operacionais também permanecem fora desse roteamento natural neste corte. Depois de uma autorização contextual válida, o condutor retoma somente operações `PROCEED` seguras até o próximo gate.
 
 O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
 

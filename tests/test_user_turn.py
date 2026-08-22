@@ -442,9 +442,7 @@ def test_affirmative_turn_does_not_authorize_operation_gate(tmp_path: Path) -> N
     assert receipt.intent is None
     assert receipt.effect_type is None
     assert receipt.executive_receipt is None
-    assert receipt.routing_event.payload["reason_code"] == (
-        "operation_authorization_requires_explicit_command"
-    )
+    assert receipt.routing_event.payload["reason_code"] == "operation_proposal_required"
     gate = receipt.routing_event.payload["gate"]
     assert gate["outcome"] == "NEEDS_OPERATION_AUTHORIZATION"
     assert gate["operation"] == "plan.run"

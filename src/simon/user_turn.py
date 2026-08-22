@@ -12,11 +12,18 @@ from simon.executive import ExecutiveDecision, decide_next
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
+from simon.operation_proposal import find_current_process_run_proposal
+from simon.process_execution import execute_next_process_run
 from simon.user_ask import answer_user_ask
 
-UserTurnIntent = Literal["CONTINUE", "ANSWER", "CONFIRM"]
+UserTurnIntent = Literal["CONTINUE", "ANSWER", "CONFIRM", "AUTHORIZE"]
 UserTurnStatus = Literal["ROUTED", "UNSUPPORTED", "FAILED"]
-UserTurnEffectType = Literal["user.response", "verification.confirmed", "goal.completed"]
+UserTurnEffectType = Literal[
+    "user.response",
+    "verification.confirmed",
+    "goal.completed",
+    "process.run",
+]
 
 _CONTINUE_UTTERANCES = {
     "continue",
@@ -40,6 +47,14 @@ _CONFIRM_UTTERANCES = {
     "confirmado",
     "sim confirmo",
     "pode confirmar",
+}
+
+_AUTHORIZE_UTTERANCES = {
+    "sim",
+    "autorizo",
+    "pode executar",
+    "pode rodar",
+    "sim pode executar",
 }
 
 
@@ -75,7 +90,7 @@ class UserTurnReceipt:
             raise ValueError("CONTINUE não pode declarar efeito de gate")
         if (
             self.status == "ROUTED"
-            and self.intent in {"ANSWER", "CONFIRM"}
+            and self.intent in {"ANSWER", "CONFIRM", "AUTHORIZE"}
             and self.effect_type is None
         ):
             raise ValueError(f"{self.intent} exige efeito de gate persistido")
@@ -164,12 +179,14 @@ def handle_user_turn(
         )
 
     if decision.outcome == "NEEDS_OPERATION_AUTHORIZATION":
-        return _unsupported_turn(
+        return _route_operation_authorization_turn(
             database_path,
             turn_event=turn_event,
-            goal_id=decision.goal_id or goal_id,
-            reason_code="operation_authorization_requires_explicit_command",
-            current_decision=decision,
+            decision=decision,
+            text=normalized_text,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
         )
 
     return _unsupported_turn(
@@ -370,6 +387,92 @@ def _route_confirmation(
     )
 
 
+def _route_operation_authorization_turn(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    decision: ExecutiveDecision,
+    text: str,
+    provider: ModelProvider | None,
+    model: str | None,
+    max_transitions: int,
+) -> UserTurnReceipt:
+    goal_id = decision.goal_id
+    if not _is_explicit_operation_authorization(text):
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=goal_id,
+            reason_code="explicit_operation_authorization_required",
+            current_decision=decision,
+        )
+    if decision.operation != "plan.run" or decision.capability != "process.run":
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=goal_id,
+            reason_code="operation_proposal_not_supported",
+            current_decision=decision,
+        )
+
+    proposal = find_current_process_run_proposal(database_path, decision)
+    if proposal is None:
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=goal_id,
+            reason_code="operation_proposal_required",
+            current_decision=decision,
+        )
+
+    try:
+        execution = execute_next_process_run(
+            database_path,
+            goal_id=proposal.goal_id,
+            request=proposal.request,
+            trace_id=turn_event.id,
+        )
+        executive_receipt = run_executive_until_gate(
+            database_path,
+            goal_id=proposal.goal_id,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="AUTHORIZE",
+            goal_id=proposal.goal_id,
+            error=str(exc),
+            reason_code="operation_authorization_routing_failed",
+            current_decision=decision,
+        )
+
+    routing_event = _append_routed_event(
+        database_path,
+        turn_event=turn_event,
+        intent="AUTHORIZE",
+        executive_receipt=executive_receipt,
+        authority_scope="CURRENT_OPERATION_PROPOSAL_ONLY",
+        goal_id=proposal.goal_id,
+        current_decision=decision,
+        effect_type="process.run",
+        effect_id=execution.action.id,
+        proposal_event_id=proposal.event.id,
+    )
+    return UserTurnReceipt(
+        status="ROUTED",
+        turn_event=turn_event,
+        intent="AUTHORIZE",
+        routing_event=routing_event,
+        executive_receipt=executive_receipt,
+        effect_type="process.run",
+        effect_id=execution.action.id,
+    )
+
+
 def _append_routed_event(
     database_path: Path,
     *,
@@ -381,6 +484,7 @@ def _append_routed_event(
     current_decision: ExecutiveDecision | None = None,
     effect_type: UserTurnEffectType | None = None,
     effect_id: str | None = None,
+    proposal_event_id: str | None = None,
 ) -> Event:
     payload: dict[str, object] = {
         "turn_event_id": turn_event.id,
@@ -405,6 +509,8 @@ def _append_routed_event(
     if effect_type is not None and effect_id is not None:
         payload["effect_type"] = effect_type
         payload["effect_id"] = effect_id
+    if proposal_event_id is not None:
+        payload["proposal_event_id"] = proposal_event_id
 
     routing_event = Event.create(
         kind="executive.user_turn.routed",
@@ -428,7 +534,12 @@ def _unsupported_turn(
     payload: dict[str, object] = {
         "turn_event_id": turn_event.id,
         "reason_code": reason_code,
-        "supported_intents": ["CONTINUE", "ANSWER_AT_USER_INPUT_GATE", "CONFIRM_AT_GATE"],
+        "supported_intents": [
+            "CONTINUE",
+            "ANSWER_AT_USER_INPUT_GATE",
+            "CONFIRM_AT_GATE",
+            "AUTHORIZE_CURRENT_PROCESS_PROPOSAL",
+        ],
     }
     if current_decision is not None:
         payload["gate"] = _decision_gate_payload(current_decision)
@@ -513,6 +624,10 @@ def _required_decision_value(
 
 def _is_explicit_confirmation(text: str) -> bool:
     return _normalize_turn_text(text) in _CONFIRM_UTTERANCES
+
+
+def _is_explicit_operation_authorization(text: str) -> bool:
+    return _normalize_turn_text(text) in _AUTHORIZE_UTTERANCES
 
 
 def _normalize_turn_text(text: str) -> str:

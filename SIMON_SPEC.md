@@ -5613,6 +5613,25 @@ Quando a decisão é `NEEDS_USER_INPUT` com `action.answer`, o turno não vazio 
 
 Quando a decisão é `NEEDS_USER_CONFIRMATION`, somente uma confirmação afirmativa pertencente ao conjunto determinístico suportado pode ser aplicada. `verification.confirm` usa exatamente o `verification_id` do assessment atual; `goal.complete` usa exatamente o assessment `goal.semantic` atual. Ambos os serviços existentes revalidam freshness e provenance antes de promover o estado.
 
-`NEEDS_OPERATION_AUTHORIZATION` continua fora da linguagem natural contextual. Mesmo uma resposta afirmativa não autoriza `process.run`, `file.patch` nem retry operacional. O gateway registra a tentativa como não tratada e exige a fronteira operacional explícita que já recebe os parâmetros concretos da execução ou alteração.
+`NEEDS_OPERATION_AUTHORIZATION` só entra na linguagem natural quando existe uma proposta operacional concreta que corresponda ao gate atual. O primeiro caso suportado é `process.run`, detalhado na seção 33.14. Sem essa proposta, uma resposta afirmativa não cria Action. `file.patch` e retries operacionais continuam exigindo as fronteiras explícitas anteriores.
 
-O Event de roteamento contextual inclui o snapshot do gate consumido, `effect_type`, `effect_id` e uma `authority_scope` limitada ao gate atual. O ModelProvider não classifica confirmações nem escolhe o alvo. O SQLite permanece no schema 11.
+O Event de roteamento contextual inclui o snapshot do gate consumido, `effect_type`, `effect_id` e uma `authority_scope` limitada ao gate atual. O ModelProvider não classifica confirmações, não escolhe o alvo e não cria autorização. O SQLite permanece no schema 11.
+
+
+### 33.14. Proposta concreta de autorização para process.run
+
+O primeiro bridge entre uma autorização conversacional e um efeito externo é deliberadamente específico para `process.run`. A proposta não executa nada e não representa consentimento. Ela apenas congela os parâmetros exatos que serão apresentados ao usuário antes do gate.
+
+`propose_process_run()` exige que `decide_next()` esteja em `NEEDS_OPERATION_AUTHORIZATION`, com operação `plan.run` e capability `process.run`. O request é ligado ao Plan ACTIVE por `bind_process_run_step()` e então persistido como Event `executive.operation.proposed`, com `source=system`. O payload registra Goal, Plan, revisão, step, critério de Verification, executável, argv, working directory e timeout. Nenhuma Action ou Verification é criada.
+
+A CLI expõe essa materialização com:
+
+```powershell
+uv run simon process-propose gol_ID --cwd C:\projeto python -m pytest
+```
+
+Somente a proposta mais recente de `process.run` para o Goal pode ser considerada. Para permanecer válida, ela precisa continuar correspondendo ao mesmo Goal, Plan e step que a `ExecutiveDecision` atual está pedindo para autorizar. Criar uma proposta nova registra qual proposta anterior ela substitui; uma proposta pertencente a um gate antigo não é reaproveitada.
+
+Se o usuário responder afirmativamente enquanto essa proposta continua atual, `user-turn` usa exatamente o `ProcessRunRequest` persistido e chama `execute_next_process_run()` com o ID de `user.turn.received` como `trace_id`. O executor mantém seu contrato antigo: cria `process.run.authorized` com `source=user`, cria a Action e executa sem shell implícito. O gateway não fabrica um segundo grant; ele apenas vincula a fala humana ao grant que o Core já sabe registrar.
+
+O Event `executive.user_turn.routed` registra `authority_scope=CURRENT_OPERATION_PROPOSAL_ONLY`, o `proposal_event_id` consumido e a Action resultante. Sem proposta, com texto não afirmativo, com proposta stale ou diante de outro tipo de autorização operacional, nenhuma Action externa é criada. O SQLite permanece no schema 11.
