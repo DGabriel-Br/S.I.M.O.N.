@@ -59,6 +59,7 @@ from simon.step_readiness import PlanReadiness, evaluate_active_plan
 from simon.storage import initialize_storage
 from simon.user_ask import answer_user_ask, dispatch_next_user_ask, retry_user_ask
 from simon.user_ask_verification import assess_user_ask_response
+from simon.user_turn import UserTurnReceipt, handle_user_turn
 
 
 class ModelDiagnosticResponse(BaseModel):
@@ -138,6 +139,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
     )
     _add_ollama_arguments(executive_continue)
+
+    user_turn = commands.add_parser(
+        "user-turn",
+        help="registra um turno humano e roteia intents naturais explicitamente suportados",
+    )
+    user_turn.add_argument(
+        "--goal-id",
+        help="Goal foreground explícito; se omitido, o Executive aplica sua regra normal de foco",
+    )
+    user_turn.add_argument(
+        "--model",
+        help="modelo local usado somente por operações cognitivas seguras do Executive",
+    )
+    user_turn.add_argument(
+        "--max-transitions",
+        type=int,
+        default=32,
+        help="limite de transições seguras executadas pelo turno (padrão: 32)",
+    )
+    user_turn.add_argument(
+        "text",
+        nargs="+",
+        help="texto literal do turno humano, por exemplo: continue esse Goal",
+    )
+    _add_ollama_arguments(user_turn)
 
     model_check = commands.add_parser(
         "model-check",
@@ -595,6 +621,16 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.model,
             args.max_transitions,
         )
+    if args.command == "user-turn":
+        return _user_turn(
+            database_path,
+            " ".join(args.text),
+            args.goal_id,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.max_transitions,
+        )
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -794,6 +830,58 @@ def _executive_continue(
     if receipt.status == "MODEL_REQUIRED":
         return 2
     return 0
+
+
+def _user_turn(
+    database_path: Path,
+    text: str,
+    goal_id: str | None,
+    base_url: str,
+    timeout_seconds: float,
+    model: str | None,
+    max_transitions: int,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds) if model else None
+    try:
+        receipt = handle_user_turn(
+            database_path,
+            text,
+            goal_id=goal_id,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"User turn: falha ({exc})")
+        return 1
+
+    _print_user_turn_receipt(receipt)
+    if receipt.status == "FAILED":
+        return 1
+    if receipt.status == "UNSUPPORTED":
+        return 2
+    if (
+        receipt.executive_receipt is not None
+        and receipt.executive_receipt.status == "MODEL_REQUIRED"
+    ):
+        return 2
+    return 0
+
+
+def _print_user_turn_receipt(receipt: UserTurnReceipt) -> None:
+    print(f"User turn: {receipt.status}")
+    print(f"Turn Event: {receipt.turn_event.id}")
+    print(f"Intent: {receipt.intent or 'não suportado'}")
+    print(f"Routing Event: {receipt.routing_event.id}")
+
+    if receipt.status == "ROUTED" and receipt.executive_receipt is None:
+        raise RuntimeError("turno ROUTED sem resultado do Executive")
+    if receipt.status == "ROUTED" and receipt.executive_receipt is not None:
+        _print_executive_continue_receipt(receipt.executive_receipt)
+    elif receipt.status == "UNSUPPORTED":
+        print("Execução: não realizada; o gateway natural ainda não suporta esse intent")
+    else:
+        print(f"Execução: falhou ao rotear o turno ({receipt.error})")
 
 
 def _print_executive_continue_receipt(receipt: ExecutiveContinueReceipt) -> None:

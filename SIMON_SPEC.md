@@ -5591,3 +5591,16 @@ O comando `executive-continue [--model MODELO] [--max-transitions N] [goal_id]` 
 
 Efeitos externos e escolhas humanas continuam fora do condutor. Em particular, `process.run`, `file.patch`, retries operacionais, `action.answer`, `verification.confirm`, `goal.complete` e promoção de Memory permanecem gates explícitos. O SQLite continua no schema 11.
 
+
+### 33.12. Gateway foreground de turno humano
+
+A primeira borda de interação natural é `handle_user_turn()` e o comando `user-turn`. Todo texto recebido é persistido como Event `user.turn.received` com `source=user` antes de qualquer condução. Esse Event prova que o usuário produziu o turno, mas não constitui autorização operacional genérica.
+
+O único intent roteável neste corte é `CONTINUE`, reconhecido por um conjunto pequeno e determinístico de formulações equivalentes. O ModelProvider não participa dessa classificação. Texto não reconhecido produz `user.turn.unhandled` e nenhuma operação do Executive é executada. Isso impede que similaridade linguística ou inferência probabilística amplie grants.
+
+Um turno `CONTINUE` reconhecido chama o condutor foreground com exatamente a autoridade que ele já possuía. O Event `executive.user_turn.routed`, com `source=system`, referencia o `user.turn.received` por `trace_id` e declara `authority_scope=EXECUTIVE_SAFE_CONTINUATION`. O payload registra status, quantidade de transições, decisão final e referências dos resultados produzidos pelo condutor.
+
+`CONTINUE` não satisfaz `NEEDS_OPERATION_AUTHORIZATION`, `NEEDS_USER_CONFIRMATION` ou `NEEDS_USER_INPUT`. Em particular, ele não autoriza `process.run`, `file.patch`, retries operacionais, `verification.confirm`, `goal.complete` nem promoção de Memory. Se houver múltiplos Goals abertos e nenhum Goal explícito no turno, `NEEDS_GOAL_SELECTION` continua autoritativo.
+
+A CLI usa `--goal-id` somente para indicar foco explícito e aceita `--model` e `--max-transitions` como parâmetros do condutor. Nenhuma tabela ou migration nova é necessária; os Events existentes são suficientes para a provenance deste primeiro gateway.
+

@@ -688,6 +688,14 @@ uv run simon executive-continue [--model qwen3.5:4b-q4_K_M] [--max-transitions 3
 
 `executive-continue` continua reconstruindo o estado entre cada transição. Ele nunca atravessa input humano, confirmação ou autorização operacional e possui um limite explícito de transições por chamada. Se o limite for atingido, a próxima decisão permanece `PROCEED` e pode ser retomada em uma nova invocação.
 
+A primeira borda de linguagem natural foreground também está disponível:
+
+```powershell
+uv run simon user-turn [--goal-id gol_...] [--model qwen3.5:4b-q4_K_M] "continue esse Goal"
+```
+
+`user-turn` persiste o texto literal como `user.turn.received` com `source=user` e roteia apenas um intent estreito e determinístico: `CONTINUE`. O turno não é autorização. O Event de roteamento registra `authority_scope=EXECUTIVE_SAFE_CONTINUATION`, e qualquer `process.run`, `file.patch`, retry operacional ou confirmação continua interrompendo o fluxo no gate já definido pelo Core. Frases ainda não suportadas são registradas como `user.turn.unhandled` e não executam nada.
+
 O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
 
 Proposta e materialização de Plan também permanecem ciclos separados: `plan.propose` gera o Event de proposta e para; o próximo ciclo reconhece a proposta pendente como `plan.materialize`. Isso impede que uma única chamada esconda duas mudanças de estado.

@@ -324,4 +324,32 @@ uv run simon executive-continue [--model MODELO] [--max-transitions 32] [goal_id
 O limite existe mesmo em foreground para que uma inconsistência de readiness não possa produzir um loop sem fronteira. Atingir o limite não autoriza a operação seguinte; a decisão final permanece observável e uma nova chamada pode continuar a partir do SQLite.
 
 O condutor não muda a classificação de autoridade. `process.run`, `file.patch`, retries operacionais, respostas do usuário e confirmações continuam interrompendo o fluxo. O ganho é apenas ergonômico: várias operações internas consecutivas podem ser conduzidas em uma chamada sem esconder os estados intermediários, que continuam persistidos e são registrados no receipt da execução.
+## Primeiro gateway de turno humano
+
+A entrada foreground passa a ter provenance explícita com `handle_user_turn()` e o comando `user-turn`. O primeiro intent suportado é deliberadamente estreito: `CONTINUE`. A classificação é determinística e não usa ModelProvider, porque interpretar linguagem aproximada como grant operacional violaria a fronteira de autoridade desta fase.
+
+O turno literal é persistido antes da condução como:
+
+```text
+user.turn.received
+source=user
+text=<texto literal>
+requested_goal_id=<opcional>
+```
+
+Quando o intent é reconhecido, o Executive usa `run_executive_until_gate()` sem ganhar permissões adicionais. Um segundo Event de sistema, `executive.user_turn.routed`, referencia o turno pelo `trace_id` e registra `authority_scope=EXECUTIVE_SAFE_CONTINUATION`, status do condutor, transições executadas e decisão final. Isso torna auditável a diferença entre "o usuário pediu para continuar" e "o usuário autorizou um efeito específico".
+
+Exemplos aceitos neste corte incluem `continue`, `continue esse Goal` e variantes explícitas de `continue este objetivo`. Expressões ambíguas como `pode continuar` não são tratadas como `CONTINUE`, e ordens como `execute tudo` são persistidas como `user.turn.unhandled` sem executar qualquer operação.
+
+O gateway preserva integralmente os gates existentes:
+
+```text
+"continue esse Goal"
+→ Executive conduz apenas PROCEED seguro
+→ process.run READY
+→ NEEDS_OPERATION_AUTHORIZATION
+→ PARA
+```
+
+Com múltiplos Goals abertos e nenhum `--goal-id`, o resultado continua sendo `NEEDS_GOAL_SELECTION`. O gateway não cria ranking de foco. Modelo e `--max-transitions` são apenas repassados ao condutor para as operações já autorizadas pelo contrato do Executive. O SQLite permanece no schema 11.
 
