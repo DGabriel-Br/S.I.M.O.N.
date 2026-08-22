@@ -14,6 +14,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - detecção de propostas de Plan pendentes, separando explicitamente `plan.propose` de `plan.materialize` em ciclos diferentes;
 - serviço reutilizável de proposta de Plan, preservando o gate que impede chamada ao modelo quando um Plan ACTIVE saudável ainda possui resolução local.
 - Golden Scenario integrado do Executive atravessando autorizações reais, Verifications automáticas, cognição, confirmações humanas e múltiplos restarts até `DONE`, sem loop monolítico ou nova migration.
+- condutor foreground `executive-continue` que encadeia operações `PROCEED` seguras, reconstrói o estado entre transições e para no primeiro gate, falta de modelo, falha, `DONE` ou limite explícito.
 
 ## [0.1.0] - 2026-08-19
 

@@ -310,3 +310,18 @@ Os processos novos recebem apenas o diretório de dados e o `goal_id`; não comp
 O cenário também prova que `executive-step` não atravessa `NEEDS_OPERATION_AUTHORIZATION` nem `NEEDS_USER_CONFIRMATION`. Efeitos externos e confirmações continuam acontecendo pelos gates explícitos já existentes.
 
 Nenhuma mudança de produção ou migration foi necessária para essa validação. O próximo incremento pode evoluir a ergonomia foreground, mas não precisa criar um loop contínuo para provar continuidade.
+
+## Condutor foreground limitado
+
+`run_executive_until_gate()` reutiliza o runner de uma transição para avançar por uma sequência de decisões `PROCEED` seguras. Depois de cada transição o estado é reconstruído antes de qualquer nova decisão. O condutor para imediatamente quando encontra input humano, confirmação, autorização operacional, falta de modelo, falha, `DONE` ou o limite configurado de transições.
+
+A CLI expõe o fluxo com:
+
+```powershell
+uv run simon executive-continue [--model MODELO] [--max-transitions 32] [goal_id]
+```
+
+O limite existe mesmo em foreground para que uma inconsistência de readiness não possa produzir um loop sem fronteira. Atingir o limite não autoriza a operação seguinte; a decisão final permanece observável e uma nova chamada pode continuar a partir do SQLite.
+
+O condutor não muda a classificação de autoridade. `process.run`, `file.patch`, retries operacionais, respostas do usuário e confirmações continuam interrompendo o fluxo. O ganho é apenas ergonômico: várias operações internas consecutivas podem ser conduzidas em uma chamada sem esconder os estados intermediários, que continuam persistidos e são registrados no receipt da execução.
+

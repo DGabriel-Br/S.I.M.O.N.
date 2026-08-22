@@ -24,6 +24,14 @@ ExecutiveRunStatus = Literal[
     "FAILED",
 ]
 
+ExecutiveContinueStatus = Literal[
+    "STOPPED",
+    "DONE",
+    "MODEL_REQUIRED",
+    "FAILED",
+    "LIMIT_REACHED",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutiveRunReceipt:
@@ -49,6 +57,36 @@ class ExecutiveRunReceipt:
             raise ValueError(f"{self.status} não pode declarar operação executada")
         if self.status == "FAILED" and not self.error:
             raise ValueError("FAILED exige mensagem de erro")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutiveContinueReceipt:
+    status: ExecutiveContinueStatus
+    initial_decision: ExecutiveDecision
+    final_decision: ExecutiveDecision
+    transitions: tuple[ExecutiveRunReceipt, ...] = ()
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if any(receipt.status != "EXECUTED" for receipt in self.transitions):
+            raise ValueError("transitions aceita somente execuções concluídas")
+        if self.status == "FAILED" and not self.error:
+            raise ValueError("FAILED exige mensagem de erro")
+        if self.status != "FAILED" and self.error is not None:
+            raise ValueError(f"{self.status} não pode declarar erro")
+        if self.status == "DONE" and self.final_decision.outcome != "DONE":
+            raise ValueError("DONE exige decisão final DONE")
+        if (
+            self.status == "MODEL_REQUIRED"
+            and (self.final_decision.outcome != "PROCEED" or not self.final_decision.requires_model)
+        ):
+            raise ValueError("MODEL_REQUIRED exige decisão PROCEED que dependa de modelo")
+        if self.status == "LIMIT_REACHED" and self.final_decision.outcome != "PROCEED":
+            raise ValueError("LIMIT_REACHED exige decisão final ainda executável")
+
+    @property
+    def transitions_executed(self) -> int:
+        return len(self.transitions)
 
 
 def run_executive_once(
@@ -96,6 +134,108 @@ def run_executive_once(
         result_id=result_id,
         next_decision=next_decision,
     )
+
+
+def run_executive_until_gate(
+    database_path: Path,
+    *,
+    goal_id: str | None = None,
+    provider: ModelProvider | None = None,
+    model: str | None = None,
+    max_transitions: int = 32,
+) -> ExecutiveContinueReceipt:
+    """Avança por decisões PROCEED seguras e para no primeiro gate ou limite."""
+    if max_transitions <= 0:
+        raise ValueError("max_transitions deve ser maior que zero")
+
+    transitions: list[ExecutiveRunReceipt] = []
+    initial_decision: ExecutiveDecision | None = None
+
+    while len(transitions) < max_transitions:
+        receipt = run_executive_once(
+            database_path,
+            goal_id=goal_id,
+            provider=provider,
+            model=model,
+        )
+        if initial_decision is None:
+            initial_decision = receipt.decision
+        current_initial_decision = initial_decision
+
+        if receipt.status == "EXECUTED":
+            transitions.append(receipt)
+            final_decision = _required_next_decision(receipt)
+            terminal = _terminal_continue_status(
+                final_decision,
+                provider=provider,
+                model=model,
+            )
+            if terminal is not None:
+                return ExecutiveContinueReceipt(
+                    status=terminal,
+                    initial_decision=current_initial_decision,
+                    final_decision=final_decision,
+                    transitions=tuple(transitions),
+                )
+            continue
+
+        if receipt.status == "FAILED":
+            return ExecutiveContinueReceipt(
+                status="FAILED",
+                initial_decision=current_initial_decision,
+                final_decision=receipt.decision,
+                transitions=tuple(transitions),
+                error=receipt.error,
+            )
+
+        if receipt.status == "MODEL_REQUIRED":
+            return ExecutiveContinueReceipt(
+                status="MODEL_REQUIRED",
+                initial_decision=current_initial_decision,
+                final_decision=receipt.decision,
+                transitions=tuple(transitions),
+            )
+
+        final_status: ExecutiveContinueStatus = (
+            "DONE" if receipt.decision.outcome == "DONE" else "STOPPED"
+        )
+        return ExecutiveContinueReceipt(
+            status=final_status,
+            initial_decision=current_initial_decision,
+            final_decision=receipt.decision,
+            transitions=tuple(transitions),
+        )
+
+    if not transitions or initial_decision is None:
+        raise RuntimeError("condutor atingiu limite sem executar transição")
+    final_decision = _required_next_decision(transitions[-1])
+    return ExecutiveContinueReceipt(
+        status="LIMIT_REACHED",
+        initial_decision=initial_decision,
+        final_decision=final_decision,
+        transitions=tuple(transitions),
+    )
+
+
+def _terminal_continue_status(
+    decision: ExecutiveDecision,
+    *,
+    provider: ModelProvider | None,
+    model: str | None,
+) -> ExecutiveContinueStatus | None:
+    if decision.outcome == "DONE":
+        return "DONE"
+    if decision.outcome != "PROCEED":
+        return "STOPPED"
+    if decision.requires_model and (provider is None or model is None or not model.strip()):
+        return "MODEL_REQUIRED"
+    return None
+
+
+def _required_next_decision(receipt: ExecutiveRunReceipt) -> ExecutiveDecision:
+    if receipt.next_decision is None:
+        raise RuntimeError("runner EXECUTED sem próxima decisão reconstruída")
+    return receipt.next_decision
 
 
 def _execute_safe_operation(

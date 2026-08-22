@@ -5581,3 +5581,13 @@ A continuidade deve depender exclusivamente dos objetos persistidos e de `recons
 
 A validação deste cenário não introduz nova capability, tabela ou migration; o SQLite permanece no schema 11.
 
+### 33.11. Condutor foreground limitado
+
+A ergonomia foreground evolui com `run_executive_until_gate()`. O condutor não introduz um novo scheduler e não altera `ExecutiveDecision`; ele apenas chama o runner seguro repetidamente enquanto a decisão reconstruída continuar `PROCEED`. Cada transição continua isolada por uma nova leitura do estado persistido.
+
+A execução termina em um destes estados: `STOPPED`, `DONE`, `MODEL_REQUIRED`, `FAILED` ou `LIMIT_REACHED`. `STOPPED` preserva qualquer gate externo já definido; `MODEL_REQUIRED` não escolhe um modelo; `FAILED` não autoriza retry; `DONE` representa lifecycle concluído; `LIMIT_REACHED` interrompe uma sequência ainda `PROCEED` sem consumir a operação seguinte.
+
+O comando `executive-continue [--model MODELO] [--max-transitions N] [goal_id]` expõe esse comportamento. O padrão é 32 transições por chamada e valores menores que 1 são inválidos. O limite é uma proteção foreground contra ciclos acidentais de decisão, não um orçamento persistente nem uma política de Attention.
+
+Efeitos externos e escolhas humanas continuam fora do condutor. Em particular, `process.run`, `file.patch`, retries operacionais, `action.answer`, `verification.confirm`, `goal.complete` e promoção de Memory permanecem gates explícitos. O SQLite continua no schema 11.
+

@@ -26,7 +26,12 @@ from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, decide_next
-from simon.executive_runner import ExecutiveRunReceipt, run_executive_once
+from simon.executive_runner import (
+    ExecutiveContinueReceipt,
+    ExecutiveRunReceipt,
+    run_executive_once,
+    run_executive_until_gate,
+)
 from simon.experience_memory import promote_experience_to_memory
 from simon.experiences import suspend_active_experiences
 from simon.file_patch import FilePatchRequest, execute_next_file_patch, retry_file_patch
@@ -112,6 +117,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
     )
     _add_ollama_arguments(executive_step)
+
+    executive_continue = commands.add_parser(
+        "executive-continue",
+        help="avança por operações PROCEED seguras até o primeiro gate ou limite",
+    )
+    executive_continue.add_argument(
+        "--model",
+        help="modelo local reutilizado enquanto decisões cognitivas PROCEED forem encontradas",
+    )
+    executive_continue.add_argument(
+        "--max-transitions",
+        type=int,
+        default=32,
+        help="limite de transições seguras executadas em uma única chamada (padrão: 32)",
+    )
+    executive_continue.add_argument(
+        "goal_id",
+        nargs="?",
+        help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
+    )
+    _add_ollama_arguments(executive_continue)
 
     model_check = commands.add_parser(
         "model-check",
@@ -560,6 +586,15 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.timeout,
             args.model,
         )
+    if args.command == "executive-continue":
+        return _executive_continue(
+            database_path,
+            args.goal_id,
+            args.ollama_url,
+            args.timeout,
+            args.model,
+            args.max_transitions,
+        )
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -730,6 +765,58 @@ def _executive_step(
         return 2
     return 0
 
+
+
+def _executive_continue(
+    database_path: Path,
+    goal_id: str | None,
+    base_url: str,
+    timeout_seconds: float,
+    model: str | None,
+    max_transitions: int,
+) -> int:
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds) if model else None
+    try:
+        receipt = run_executive_until_gate(
+            database_path,
+            goal_id=goal_id,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Executive continue: falha ({exc})")
+        return 1
+
+    _print_executive_continue_receipt(receipt)
+    if receipt.status == "FAILED":
+        return 1
+    if receipt.status == "MODEL_REQUIRED":
+        return 2
+    return 0
+
+
+def _print_executive_continue_receipt(receipt: ExecutiveContinueReceipt) -> None:
+    print(f"Executive continue: {receipt.status}")
+    print(f"Transições executadas: {receipt.transitions_executed}")
+    for index, transition in enumerate(receipt.transitions, start=1):
+        print(
+            f"{index}. {transition.executed_operation} -> "
+            f"{transition.result_type} {transition.result_id}"
+        )
+
+    print("Decisão final:")
+    _print_executive_decision(receipt.final_decision)
+    if receipt.status == "MODEL_REQUIRED":
+        print("Parada: informe --model para continuar a decisão cognitiva")
+    elif receipt.status == "LIMIT_REACHED":
+        print("Parada: limite de transições seguras atingido; execute novamente para continuar")
+    elif receipt.status == "FAILED":
+        print(f"Parada: execução falhou ({receipt.error})")
+    elif receipt.status == "DONE":
+        print("Parada: Goal concluído")
+    else:
+        print("Parada: o próximo estado exige um gate externo ao condutor")
 
 def _print_executive_run_receipt(receipt: ExecutiveRunReceipt) -> None:
     print(f"Executive runner: {receipt.status}")
