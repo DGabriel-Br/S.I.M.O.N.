@@ -5561,3 +5561,23 @@ O runner pode conduzir somente operações internas já autorizadas pelo contrat
 `ExecutiveDecision` passa a reconhecer proposta de Plan concluída e não materializada. Nessa condição, a próxima operação é `plan.materialize` com referência explícita ao Event de proposta. Proposta e materialização nunca acontecem no mesmo ciclo. Para replanejamento, a proposta pendente só é aceita quando sua provenance ainda corresponde ao Plan, revisão e Verification de falha atuais; para continuação após assessment de Goal, precisa corresponder ao Plan concluído e ao assessment atual.
 
 O comando `executive-step [--model MODELO] [goal_id]` expõe o runner. Uma chamada que executa algo imprime a decisão consumida, a referência do resultado e a próxima decisão não executada. O SQLite permanece no schema 11.
+
+### 33.10. Golden Scenario foreground com restart
+
+A primeira prova integrada do Executive usa um Goal e um Plan persistidos com `process.run`, `cognition.analyze`, `CHANGE/unknown -> file.patch`, nova execução e análise final. Cada invocação de `executive-step` continua limitada a uma transição `PROCEED`; efeitos externos e confirmações permanecem gates explícitos fora do runner.
+
+O cenário deve demonstrar, em uma única história causal:
+
+- `NEEDS_OPERATION_AUTHORIZATION` antes de cada `process.run` e `file.patch`;
+- Verification objetiva conduzida pelo Executive depois da autorização e execução externas;
+- `cognition.analyze` e assessments executados apenas com `ModelProvider` e modelo explícitos;
+- `NEEDS_USER_CONFIRMATION` antes de promover assessments SATISFIED;
+- conclusão de Plan e assessment de Goal em ciclos separados;
+- confirmação final do Goal fora do runner;
+- pelo menos três reinícios reais de processo durante o mesmo Goal;
+- reconstrução final `DONE` em um processo que não compartilha memória com as invocações anteriores.
+
+A continuidade deve depender exclusivamente dos objetos persistidos e de `reconstruct_resume_state()`. O teste não pode usar um loop monolítico, não pode fabricar provenance `source=user` e não pode autorizar efeitos externos em nome do usuário.
+
+A validação deste cenário não introduz nova capability, tabela ou migration; o SQLite permanece no schema 11.
+

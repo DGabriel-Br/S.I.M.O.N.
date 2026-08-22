@@ -13,6 +13,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - runner foreground `executive-step` que executa no máximo uma decisão `PROCEED` segura por chamada e reavalia o estado sem continuar o ciclo;
 - detecção de propostas de Plan pendentes, separando explicitamente `plan.propose` de `plan.materialize` em ciclos diferentes;
 - serviço reutilizável de proposta de Plan, preservando o gate que impede chamada ao modelo quando um Plan ACTIVE saudável ainda possui resolução local.
+- Golden Scenario integrado do Executive atravessando autorizações reais, Verifications automáticas, cognição, confirmações humanas e múltiplos restarts até `DONE`, sem loop monolítico ou nova migration.
 
 ## [0.1.0] - 2026-08-19
 

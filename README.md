@@ -680,6 +680,8 @@ uv run simon executive-step [--model qwen3.5:4b-q4_K_M] [goal_id]
 
 `executive-step` consome somente uma decisão `PROCEED`. Se a decisão atual exigir input humano, confirmação ou autorização operacional, ele para sem executar nada. Quando a operação é segura, executa exatamente uma transição, reconstrói o estado e mostra a próxima decisão sem executá-la. O `--model` só é necessário quando a decisão marcada como `requires_model` precisar ser executada.
 
+O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
+
 Proposta e materialização de Plan também permanecem ciclos separados: `plan.propose` gera o Event de proposta e para; o próximo ciclo reconhece a proposta pendente como `plan.materialize`. Isso impede que uma única chamada esconda duas mudanças de estado.
 
 O contrato completo está em `PHASE_2_EXECUTIVE.md`. Scheduler, Attention scoring, paralelismo e novas capabilities continuam fora deste corte.

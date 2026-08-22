@@ -276,4 +276,37 @@ A CLI expõe esse comportamento com:
 uv run simon executive-step [--model MODELO] [goal_id]
 ```
 
-O próximo incremento deve provar um ciclo foreground mais longo atravessando múltiplas chamadas e pelo menos um restart, sem introduzir loop contínuo ou atravessar gates humanos.
+## Golden Scenario foreground integrado validado
+
+O runner já possui um cenário integrado que percorre um Goal de correção de script em múltiplas chamadas independentes. O teste começa com um Plan persistido de cinco steps (`process.run`, `cognition.analyze`, `CHANGE/unknown`, `process.run`, `cognition.analyze`) e usa o Executive somente para operações `PROCEED` seguras.
+
+O fluxo provado é:
+
+```text
+Executive para em process.run
+→ usuário autoriza plan-run
+→ novo processo executa process.verify
+→ Executive executa cognition.analyze
+→ Executive executa analysis.assess
+→ para em NEEDS_USER_CONFIRMATION
+→ usuário confirma
+→ para em file.patch
+→ usuário autoriza plan-patch
+→ novo processo executa file.verify
+→ para em process.run
+→ usuário autoriza nova execução
+→ novo processo executa process.verify
+→ Executive analisa e avalia a saída final
+→ usuário confirma o assessment
+→ Executive conclui o Plan
+→ Executive avalia o Goal
+→ para em confirmação final
+→ usuário conclui o Goal
+→ novo processo reconstrói DONE
+```
+
+Os processos novos recebem apenas o diretório de dados e o `goal_id`; não compartilham objetos Python, provider ou contexto em memória com o processo anterior. Isso prova que a continuidade do Executive deriva do SQLite e dos contratos do Core.
+
+O cenário também prova que `executive-step` não atravessa `NEEDS_OPERATION_AUTHORIZATION` nem `NEEDS_USER_CONFIRMATION`. Efeitos externos e confirmações continuam acontecendo pelos gates explícitos já existentes.
+
+Nenhuma mudança de produção ou migration foi necessária para essa validação. O próximo incremento pode evoluir a ergonomia foreground, mas não precisa criar um loop contínuo para provar continuidade.
