@@ -5596,7 +5596,7 @@ Efeitos externos e escolhas humanas continuam fora do condutor. Em particular, `
 
 A primeira borda de interação natural é `handle_user_turn()` e o comando `user-turn`. Todo texto recebido é persistido como Event `user.turn.received` com `source=user` antes de qualquer condução. Esse Event prova que o usuário produziu o turno, mas não constitui autorização operacional genérica.
 
-O único intent roteável neste corte é `CONTINUE`, reconhecido por um conjunto pequeno e determinístico de formulações equivalentes. O ModelProvider não participa dessa classificação. Texto não reconhecido produz `user.turn.unhandled` e nenhuma operação do Executive é executada. Isso impede que similaridade linguística ou inferência probabilística amplie grants.
+O único intent de controle livre neste corte é `CONTINUE`, reconhecido por um conjunto pequeno e determinístico de formulações equivalentes. O ModelProvider não participa dessa classificação. Fora dos gates contextuais descritos na seção 33.13, texto não reconhecido produz `user.turn.unhandled` e nenhuma operação do Executive é executada. Isso impede que similaridade linguística ou inferência probabilística amplie grants.
 
 Um turno `CONTINUE` reconhecido chama o condutor foreground com exatamente a autoridade que ele já possuía. O Event `executive.user_turn.routed`, com `source=system`, referencia o `user.turn.received` por `trace_id` e declara `authority_scope=EXECUTIVE_SAFE_CONTINUATION`. O payload registra status, quantidade de transições, decisão final e referências dos resultados produzidos pelo condutor.
 
@@ -5604,3 +5604,15 @@ Um turno `CONTINUE` reconhecido chama o condutor foreground com exatamente a aut
 
 A CLI usa `--goal-id` somente para indicar foco explícito e aceita `--model` e `--max-transitions` como parâmetros do condutor. Nenhuma tabela ou migration nova é necessária; os Events existentes são suficientes para a provenance deste primeiro gateway.
 
+
+### 33.13. Resposta humana contextual ao gate aberto
+
+`user-turn` passa a consultar `ExecutiveDecision` para distinguir um texto humano genérico de uma resposta válida ao gate atual. Essa interpretação contextual não amplia grants: ela só pode satisfazer um gate que o Core já declarou explicitamente.
+
+Quando a decisão é `NEEDS_USER_INPUT` com `action.answer`, o turno não vazio é aplicado somente à `user.ask` `WAITING` referenciada por `action_id`. O Event `user.response.received` usa o `user.turn.received` como `trace_id`, preservando a causalidade entre fala humana e resposta persistida. Depois disso, o condutor pode avançar pelas operações `PROCEED` seguras até o próximo gate.
+
+Quando a decisão é `NEEDS_USER_CONFIRMATION`, somente uma confirmação afirmativa pertencente ao conjunto determinístico suportado pode ser aplicada. `verification.confirm` usa exatamente o `verification_id` do assessment atual; `goal.complete` usa exatamente o assessment `goal.semantic` atual. Ambos os serviços existentes revalidam freshness e provenance antes de promover o estado.
+
+`NEEDS_OPERATION_AUTHORIZATION` continua fora da linguagem natural contextual. Mesmo uma resposta afirmativa não autoriza `process.run`, `file.patch` nem retry operacional. O gateway registra a tentativa como não tratada e exige a fronteira operacional explícita que já recebe os parâmetros concretos da execução ou alteração.
+
+O Event de roteamento contextual inclui o snapshot do gate consumido, `effect_type`, `effect_id` e uma `authority_scope` limitada ao gate atual. O ModelProvider não classifica confirmações nem escolhe o alvo. O SQLite permanece no schema 11.

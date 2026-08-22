@@ -873,6 +873,8 @@ def _print_user_turn_receipt(receipt: UserTurnReceipt) -> None:
     print(f"Turn Event: {receipt.turn_event.id}")
     print(f"Intent: {receipt.intent or 'não suportado'}")
     print(f"Routing Event: {receipt.routing_event.id}")
+    if receipt.effect_type is not None and receipt.effect_id is not None:
+        print(f"Efeito do gate: {receipt.effect_type} {receipt.effect_id}")
 
     if receipt.status == "ROUTED" and receipt.executive_receipt is None:
         raise RuntimeError("turno ROUTED sem resultado do Executive")

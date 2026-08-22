@@ -16,6 +16,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - Golden Scenario integrado do Executive atravessando autorizações reais, Verifications automáticas, cognição, confirmações humanas e múltiplos restarts até `DONE`, sem loop monolítico ou nova migration.
 - condutor foreground `executive-continue` que encadeia operações `PROCEED` seguras, reconstrói o estado entre transições e para no primeiro gate, falta de modelo, falha, `DONE` ou limite explícito.
 - gateway `user-turn` para registrar um turno humano com provenance explícita e rotear somente o intent determinístico `CONTINUE` ao condutor seguro, sem converter linguagem natural em autorização operacional.
+- respostas humanas vinculadas ao gate atual: texto livre responde somente a `user.ask` em `WAITING`, confirmações afirmativas explícitas confirmam somente o assessment ou Goal atualmente solicitado, e `NEEDS_OPERATION_AUTHORIZATION` continua exigindo comando operacional concreto.
 
 ## [0.1.0] - 2026-08-19
 

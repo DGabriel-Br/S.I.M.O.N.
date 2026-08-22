@@ -326,7 +326,7 @@ O limite existe mesmo em foreground para que uma inconsistência de readiness n�
 O condutor não muda a classificação de autoridade. `process.run`, `file.patch`, retries operacionais, respostas do usuário e confirmações continuam interrompendo o fluxo. O ganho é apenas ergonômico: várias operações internas consecutivas podem ser conduzidas em uma chamada sem esconder os estados intermediários, que continuam persistidos e são registrados no receipt da execução.
 ## Primeiro gateway de turno humano
 
-A entrada foreground passa a ter provenance explícita com `handle_user_turn()` e o comando `user-turn`. O primeiro intent suportado é deliberadamente estreito: `CONTINUE`. A classificação é determinística e não usa ModelProvider, porque interpretar linguagem aproximada como grant operacional violaria a fronteira de autoridade desta fase.
+A entrada foreground passa a ter provenance explícita com `handle_user_turn()` e o comando `user-turn`. Fora de um gate que já espera contribuição humana, o primeiro intent de controle suportado é deliberadamente estreito: `CONTINUE`. A classificação desse comando é determinística e não usa ModelProvider, porque interpretar linguagem aproximada como grant operacional violaria a fronteira de autoridade desta fase.
 
 O turno literal é persistido antes da condução como:
 
@@ -341,7 +341,7 @@ Quando o intent é reconhecido, o Executive usa `run_executive_until_gate()` sem
 
 Exemplos aceitos neste corte incluem `continue`, `continue esse Goal` e variantes explícitas de `continue este objetivo`. Expressões ambíguas como `pode continuar` não são tratadas como `CONTINUE`, e ordens como `execute tudo` são persistidas como `user.turn.unhandled` sem executar qualquer operação.
 
-O gateway preserva integralmente os gates existentes:
+O comando `CONTINUE` preserva integralmente os gates existentes:
 
 ```text
 "continue esse Goal"
@@ -353,3 +353,15 @@ O gateway preserva integralmente os gates existentes:
 
 Com múltiplos Goals abertos e nenhum `--goal-id`, o resultado continua sendo `NEEDS_GOAL_SELECTION`. O gateway não cria ranking de foco. Modelo e `--max-transitions` são apenas repassados ao condutor para as operações já autorizadas pelo contrato do Executive. O SQLite permanece no schema 11.
 
+
+## Respostas humanas vinculadas ao gate
+
+O gateway passa a interpretar parte do turno pelo estado atual, não apenas pelo texto isolado. A regra é deliberadamente estreita: o significado contextual só existe quando `decide_next()` identifica um gate que já espera aquela categoria de contribuição humana.
+
+Em `NEEDS_USER_INPUT` com operação `action.answer`, qualquer texto não vazio que não seja um comando `CONTINUE` explícito pode ser vinculado à `user.ask` `WAITING` atual. `answer_user_ask()` recebe o `action_id` da própria `ExecutiveDecision` e usa o ID de `user.turn.received` como `trace_id`; assim, a resposta fica causalmente ligada ao turno que a forneceu. Depois da resposta, o condutor retoma apenas operações `PROCEED` seguras.
+
+Em `NEEDS_USER_CONFIRMATION`, o gateway exige uma confirmação afirmativa determinística e curta. `sim`, `confirmo`, `confirmado`, `sim confirmo` e `pode confirmar` são aceitos somente quando a decisão atual aponta `verification.confirm` ou `goal.complete`. O alvo confirmado é sempre o `verification_id` presente na decisão reconstruída. A função de confirmação revalida que o assessment ainda é atual antes de persistir qualquer efeito.
+
+`NEEDS_OPERATION_AUTHORIZATION` não aceita confirmação natural neste corte. Um `sim` diante de `plan.run`, `plan.patch` ou retry operacional produz `user.turn.unhandled` com `reason_code=operation_authorization_requires_explicit_command`. Isso preserva a necessidade de executável, argumentos, workspace, patch ou demais parâmetros concretos e impede que uma resposta genérica seja promovida a grant operacional.
+
+Turnos contextuais roteados registram `executive.user_turn.routed` com um snapshot do gate consumido, `authority_scope` específico e referência ao efeito persistido. As scopes atuais são `CURRENT_USER_INPUT_GATE_ONLY` e `CURRENT_CONFIRMATION_GATE_ONLY`. Fora desses gates, texto livre continua sem efeito. Nenhuma tabela ou migration nova é necessária.

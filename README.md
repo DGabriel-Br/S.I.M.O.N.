@@ -694,7 +694,9 @@ A primeira borda de linguagem natural foreground também está disponível:
 uv run simon user-turn [--goal-id gol_...] [--model qwen3.5:4b-q4_K_M] "continue esse Goal"
 ```
 
-`user-turn` persiste o texto literal como `user.turn.received` com `source=user` e roteia apenas um intent estreito e determinístico: `CONTINUE`. O turno não é autorização. O Event de roteamento registra `authority_scope=EXECUTIVE_SAFE_CONTINUATION`, e qualquer `process.run`, `file.patch`, retry operacional ou confirmação continua interrompendo o fluxo no gate já definido pelo Core. Frases ainda não suportadas são registradas como `user.turn.unhandled` e não executam nada.
+`user-turn` persiste o texto literal como `user.turn.received` com `source=user`. Fora de um gate contextual, o único intent de controle reconhecido continua sendo o estreito e determinístico `CONTINUE`. Quando o Executive está em `NEEDS_USER_INPUT`, o próprio texto do turno pode responder somente à `user.ask` `WAITING` identificada pela decisão atual. Quando está em `NEEDS_USER_CONFIRMATION`, apenas confirmações afirmativas explícitas como `sim` ou `confirmo` podem promover exatamente a Verification ou Goal referenciado pelo gate.
+
+O turno continua não sendo autorização operacional genérica. Diante de `NEEDS_OPERATION_AUTHORIZATION`, inclusive um `sim` é registrado como não tratado e nenhuma Action externa é criada. `process.run`, `file.patch` e retries operacionais continuam exigindo seus comandos concretos e parâmetros completos. Depois de uma resposta ou confirmação contextual válida, o condutor pode retomar somente operações `PROCEED` seguras até o próximo gate.
 
 O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
 
