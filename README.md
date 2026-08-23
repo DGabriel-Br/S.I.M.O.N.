@@ -748,3 +748,17 @@ uv run simon executive-gate [goal_id]
 A apresentação possui três situações úteis. `PROPOSAL_REQUIRED` lista os parâmetros ainda ausentes e mostra o comando exato de materialização apropriado ao gate atual. `READY_FOR_AUTHORIZATION` mostra a proposta válida mais recente, seus parâmetros congelados e as respostas afirmativas aceitas. Fora de um gate operacional, o resultado é `NOT_OPERATION_GATE`. Nenhum desses estados cria Event, Action, Verification ou autorização.
 
 O diagnóstico cobre `process.run`, `file.patch`, `process.retry`, `file.retry` e `analysis.retry`. Ele não tenta inventar executável, `cwd`, conteúdo de patch ou modelo; quando esses dados ainda não foram fornecidos, apenas os declara como inputs necessários. `executive-next`, `executive-step`, `executive-continue` e `user-turn` também imprimem essa apresentação automaticamente quando sua decisão final exige autorização operacional.
+
+### Materialização conversacional de processos
+
+Quando o gate atual pede `process.run` ou `process.retry`, `user-turn` já pode materializar a proposta sem exigir que o usuário escreva `process-propose` manualmente:
+
+```powershell
+uv run simon user-turn --goal-id gol_... "Rode uv run pytest neste projeto"
+```
+
+O primeiro corte é determinístico. `Rode` ou `Execute` identifica a intenção de materializar, enquanto `neste projeto` resolve o working directory para o diretório foreground da CLI. O comando é convertido em executável + argumentos, o timeout usa o padrão de `ProcessRunRequest` e `executive.operation.proposed` recebe o `trace_id` do turno humano. Nenhuma Action é criada e nenhum processo é iniciado.
+
+O turno retorna ao mesmo `NEEDS_OPERATION_AUTHORIZATION`, agora apresentado como `READY_FOR_AUTHORIZATION`. A autorização continua exigindo um segundo turno explícito, como `sim` ou `pode executar`. Uma frase que tenta juntar proposta e autorização no mesmo texto não ganha as duas autoridades.
+
+Nesta etapa a gramática não aceita shell, pipelines, redirecionamentos ou argumentos entre aspas. Casos mais complexos continuam usando `process-propose` e `process-retry-propose`. `file.patch`, `file.retry` e `analysis.retry` permanecem com suas materializações técnicas próprias.

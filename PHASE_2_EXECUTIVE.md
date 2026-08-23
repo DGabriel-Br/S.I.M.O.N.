@@ -410,3 +410,17 @@ Quando não existe proposta válida, a visão declara somente os inputs concreto
 Quando uma proposta válida já existe, a apresentação reutiliza os mesmos helpers `find_current_*_proposal()` usados pelo gateway de autorização. Portanto ela só mostra `READY_FOR_AUTHORIZATION` se a proposta continuar atual segundo Goal, Plan, revisão, step, Action, Verification e evidência aplicáveis. O Event da proposta, os parâmetros congelados e exemplos de respostas afirmativas são apresentados, mas nenhuma autorização é criada.
 
 A CLI expõe essa leitura por `executive-gate [goal_id]` e também a imprime automaticamente quando `executive-next`, `executive-step`, `executive-continue` ou `user-turn` terminam em autorização operacional. Esse incremento melhora ergonomia sem transformar apresentação em proposta, proposta em consentimento ou linguagem natural em grant.
+
+## Materialização conversacional de process.run
+
+O primeiro bridge entre linguagem natural e proposta operacional concreta cobre somente `process.run` e `process.retry`. Esse corte não usa ModelProvider e não tenta compreender comandos arbitrários: ele aceita uma gramática foreground pequena e auditável, como `Rode uv run pytest neste projeto` ou `Execute uv run pytest neste projeto`.
+
+A expressão `neste projeto` é resolvida deterministicamente para o diretório foreground fornecido pelo chamador. Na CLI, esse diretório é `Path.cwd()` e também é registrado em `user.turn.received` como `foreground_working_directory`. O texto do comando é separado em executável e argumentos sem shell implícito; operadores de shell e argumentos com aspas permanecem fora do primeiro corte e exigem os comandos técnicos de proposta.
+
+Quando o gate atual é `plan.run/process.run`, o turno materializa `executive.operation.proposed` por `propose_process_run()`. Quando o gate é `process.retry`, o `action_id` vem exclusivamente da `ExecutiveDecision` atual e a materialização usa `propose_process_retry()`. Em ambos os casos o Event da proposta recebe o ID de `user.turn.received` como `trace_id`, nenhum processo é iniciado e nenhuma Action é criada.
+
+A rota registra `intent=MATERIALIZE`, `authority_scope=CURRENT_OPERATION_GATE_MATERIALIZATION_ONLY` e `effect_type=operation.proposal`. Depois da materialização, o condutor apenas reconstrói o mesmo gate, agora com a proposta disponível para uma autorização futura. A mesma fala nunca materializa e autoriza ao mesmo tempo.
+
+A apresentação read-only do gate passa a expor exemplos dessa entrada conversacional para `process.run` e `process.retry`, preservando o comando técnico como fallback. `file.patch`, `file.retry` e `analysis.retry` continuam exigindo suas materializações explícitas atuais até existir uma gramática própria demonstrada por necessidade real.
+
+O SQLite permanece no schema 11.

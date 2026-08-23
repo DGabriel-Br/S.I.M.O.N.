@@ -14,17 +14,23 @@ from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until
 from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
+from simon.operation_materialization import (
+    OperationMaterializationInputError,
+    parse_process_command_turn,
+)
 from simon.operation_proposal import (
     find_current_cognition_analysis_retry_proposal,
     find_current_file_patch_proposal,
     find_current_file_patch_retry_proposal,
     find_current_process_retry_proposal,
     find_current_process_run_proposal,
+    propose_process_retry,
+    propose_process_run,
 )
 from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.user_ask import answer_user_ask
 
-UserTurnIntent = Literal["CONTINUE", "ANSWER", "CONFIRM", "AUTHORIZE"]
+UserTurnIntent = Literal["CONTINUE", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"]
 UserTurnStatus = Literal["ROUTED", "UNSUPPORTED", "FAILED"]
 UserTurnEffectType = Literal[
     "user.response",
@@ -35,6 +41,7 @@ UserTurnEffectType = Literal[
     "process.retry",
     "file.retry",
     "analysis.retry",
+    "operation.proposal",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -105,7 +112,7 @@ class UserTurnReceipt:
             raise ValueError("CONTINUE não pode declarar efeito de gate")
         if (
             self.status == "ROUTED"
-            and self.intent in {"ANSWER", "CONFIRM", "AUTHORIZE"}
+            and self.intent in {"ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"}
             and self.effect_type is None
         ):
             raise ValueError(f"{self.intent} exige efeito de gate persistido")
@@ -119,6 +126,7 @@ def handle_user_turn(
     provider: ModelProvider | None = None,
     model: str | None = None,
     max_transitions: int = 32,
+    working_directory: Path | None = None,
 ) -> UserTurnReceipt:
     """Registra um turno humano e aplica somente o significado permitido pelo gate atual."""
     normalized_text = text.strip()
@@ -133,6 +141,9 @@ def handle_user_turn(
         payload={
             "text": normalized_text,
             "requested_goal_id": goal_id,
+            "foreground_working_directory": (
+                str(working_directory.resolve()) if working_directory is not None else None
+            ),
         },
         goal_id=goal_id,
     )
@@ -194,6 +205,18 @@ def handle_user_turn(
         )
 
     if decision.outcome == "NEEDS_OPERATION_AUTHORIZATION":
+        materialized = _route_operation_materialization_turn(
+            database_path,
+            turn_event=turn_event,
+            decision=decision,
+            text=normalized_text,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
+            working_directory=working_directory,
+        )
+        if materialized is not None:
+            return materialized
         return _route_operation_authorization_turn(
             database_path,
             turn_event=turn_event,
@@ -399,6 +422,99 @@ def _route_confirmation(
         executive_receipt=executive_receipt,
         effect_type=effect_type,
         effect_id=effect_id,
+    )
+
+
+def _route_operation_materialization_turn(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    decision: ExecutiveDecision,
+    text: str,
+    provider: ModelProvider | None,
+    model: str | None,
+    max_transitions: int,
+    working_directory: Path | None,
+) -> UserTurnReceipt | None:
+    if decision.operation not in {"plan.run", "process.retry"}:
+        return None
+
+    try:
+        materialization = parse_process_command_turn(
+            text,
+            working_directory=working_directory,
+        )
+    except OperationMaterializationInputError as exc:
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=decision.goal_id,
+            reason_code=exc.reason_code,
+            current_decision=decision,
+        )
+    if materialization is None:
+        return None
+
+    goal_id = _required_decision_value(decision.goal_id, "goal_id", decision)
+    try:
+        if decision.operation == "plan.run" and decision.capability == "process.run":
+            proposal = propose_process_run(
+                database_path,
+                goal_id=goal_id,
+                request=materialization.request,
+                trace_id=turn_event.id,
+            )
+            proposal_event_id = proposal.event.id
+        elif decision.operation == "process.retry":
+            action_id = _required_decision_value(decision.action_id, "action_id", decision)
+            retry_proposal = propose_process_retry(
+                database_path,
+                action_id=action_id,
+                request=materialization.request,
+                trace_id=turn_event.id,
+            )
+            proposal_event_id = retry_proposal.event.id
+        else:
+            return None
+
+        executive_receipt = run_executive_until_gate(
+            database_path,
+            goal_id=goal_id,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="MATERIALIZE",
+            goal_id=goal_id,
+            error=str(exc),
+            reason_code="operation_materialization_failed",
+            current_decision=decision,
+        )
+
+    routing_event = _append_routed_event(
+        database_path,
+        turn_event=turn_event,
+        intent="MATERIALIZE",
+        executive_receipt=executive_receipt,
+        authority_scope="CURRENT_OPERATION_GATE_MATERIALIZATION_ONLY",
+        goal_id=goal_id,
+        current_decision=decision,
+        effect_type="operation.proposal",
+        effect_id=proposal_event_id,
+        proposal_event_id=proposal_event_id,
+    )
+    return UserTurnReceipt(
+        status="ROUTED",
+        turn_event=turn_event,
+        intent="MATERIALIZE",
+        routing_event=routing_event,
+        executive_receipt=executive_receipt,
+        effect_type="operation.proposal",
+        effect_id=proposal_event_id,
     )
 
 
@@ -705,6 +821,8 @@ def _unsupported_turn(
         "reason_code": reason_code,
         "supported_intents": [
             "CONTINUE",
+            "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",
+            "MATERIALIZE_CURRENT_PROCESS_RETRY_PROPOSAL",
             "ANSWER_AT_USER_INPUT_GATE",
             "CONFIRM_AT_GATE",
             "AUTHORIZE_CURRENT_PROCESS_PROPOSAL",

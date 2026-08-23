@@ -88,6 +88,10 @@ def test_process_gate_explains_missing_concrete_proposal(tmp_path: Path) -> None
     assert presentation.materialization_command is not None
     assert "process-propose" in presentation.materialization_command
     assert goal.id in presentation.materialization_command
+    assert presentation.materialization_examples == (
+        "Rode <executável> [args...] neste projeto",
+        "Execute <executável> [args...] neste projeto",
+    )
 
 
 def test_process_gate_presents_current_proposal_ready_for_authorization(tmp_path: Path) -> None:
@@ -241,6 +245,8 @@ def test_executive_gate_cli_explains_how_to_materialize_current_process_gate(
     assert "Tipo de proposta: process.run" in output
     assert "Inputs necessários:" in output
     assert "process-propose" in output
+    assert "Entradas conversacionais aceitas:" in output
+    assert '"Rode <executável> [args...] neste projeto"' in output
     assert "Autorização disponível agora: não" in output
 
 

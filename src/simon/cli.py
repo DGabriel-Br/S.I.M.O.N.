@@ -1062,6 +1062,7 @@ def _user_turn(
             provider=provider,
             model=model,
             max_transitions=max_transitions,
+            working_directory=Path.cwd(),
         )
     except (RuntimeError, TypeError, ValueError) as exc:
         print(f"User turn: falha ({exc})")
@@ -1191,6 +1192,10 @@ def _print_operation_gate_presentation(presentation: OperationGatePresentation) 
         for name in presentation.required_inputs:
             print(f"- {name}")
         print(f"Comando de materialização: {presentation.materialization_command}")
+        if presentation.materialization_examples:
+            print("Entradas conversacionais aceitas:")
+            for text in presentation.materialization_examples:
+                print(f'- "{text}"')
         print("Autorização disponível agora: não")
     elif presentation.status == "READY_FOR_AUTHORIZATION":
         print(f"Proposta atual: {presentation.proposal_event_id}")

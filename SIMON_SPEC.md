@@ -5708,3 +5708,19 @@ Os estados da apresentação são:
 `READY_FOR_AUTHORIZATION` deve usar os mesmos validadores de proposta corrente do gateway natural. A apresentação inclui o ID de `executive.operation.proposed`, parâmetros congelados, Verification esperada e exemplos de respostas afirmativas aceitas, mas continua read-only. A presença dessa visão não constitui autorização e não muda `source=user`.
 
 A CLI `executive-gate [goal_id]` expõe a visão diretamente. Comandos que já produzem uma decisão final, incluindo `executive-next`, `executive-step`, `executive-continue` e `user-turn`, podem imprimir a mesma apresentação automaticamente ao parar em `NEEDS_OPERATION_AUTHORIZATION`. O SQLite permanece no schema 11.
+
+### 33.19. Materialização conversacional de process.run
+
+A primeira materialização operacional por turno humano deve ser limitada a `process.run` e `process.retry`, que compartilham `ProcessRunRequest`. O gateway não usa modelo para esta etapa e não transforma texto livre em comando. A gramática inicial reconhece somente formas foreground explícitas equivalentes a `Rode <executável> [args...] neste projeto` e `Execute <executável> [args...] neste projeto`.
+
+`neste projeto` precisa ser resolvido por um `working_directory` fornecido pelo chamador. Na CLI, o valor é o `Path.cwd()` da invocação e deve ser persistido em `user.turn.received` como `foreground_working_directory`. A resolução é contextual e determinística; não é inferência de caminho pelo modelo.
+
+O parser precisa produzir `ProcessRunRequest` com `shell=False` implícito pelo executor existente. O primeiro corte não suporta operadores de shell, múltiplas linhas ou argumentos com aspas; nesses casos a entrada deve permanecer sem efeito e o usuário pode usar a CLI técnica de proposta.
+
+Se a decisão atual for `NEEDS_OPERATION_AUTHORIZATION / plan.run / process.run`, a materialização chama `propose_process_run()` com `trace_id=user.turn.received.id`. Se for `NEEDS_OPERATION_AUTHORIZATION / process.retry`, o `action_id` deve vir da própria `ExecutiveDecision` e a materialização chama `propose_process_retry()`. Nenhum ID de Action pode ser extraído do texto humano.
+
+Uma materialização bem-sucedida registra `executive.user_turn.routed` com `intent=MATERIALIZE`, `authority_scope=CURRENT_OPERATION_GATE_MATERIALIZATION_ONLY` e `effect_type=operation.proposal`. O efeito referenciado é o Event `executive.operation.proposed`; ele continua com `source=system` e não constitui grant.
+
+Após criar a proposta, o gateway pode reconstruir o Executive para apresentar `READY_FOR_AUTHORIZATION`, mas não pode consumir a autorização no mesmo turno. Materialização e autorização exigem dois turnos semanticamente separados. A apresentação read-only de `PROPOSAL_REQUIRED` pode mostrar exemplos da gramática conversacional suportada para `process.run` e `process.retry` sem remover os comandos técnicos de fallback.
+
+`file.patch`, `file.retry` e `analysis.retry` permanecem fora desta gramática até existir um contrato textual próprio que preserve seus parâmetros concretos sem ambiguidade. Nenhuma migration é necessária e o SQLite permanece no schema 11.

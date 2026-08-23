@@ -40,6 +40,7 @@ class OperationGatePresentation:
     proposal_event_id: str | None = None
     required_inputs: tuple[str, ...] = ()
     materialization_command: str | None = None
+    materialization_examples: tuple[str, ...] = ()
     details: tuple[OperationGateField, ...] = ()
     authorization_examples: tuple[str, ...] = ()
 
@@ -91,6 +92,10 @@ def describe_operation_gate(
                 proposal_type="process.run",
                 required_inputs=("executable", "arguments", "working_directory", "timeout_seconds"),
                 command=_process_run_command(decision),
+                materialization_examples=(
+                    'Rode <executável> [args...] neste projeto',
+                    'Execute <executável> [args...] neste projeto',
+                ),
             )
         )
 
@@ -122,6 +127,10 @@ def describe_operation_gate(
                 proposal_type="process.retry",
                 required_inputs=("executable", "arguments", "working_directory", "timeout_seconds"),
                 command=_process_retry_command(decision),
+                materialization_examples=(
+                    'Rode <executável> [args...] neste projeto',
+                    'Execute <executável> [args...] neste projeto',
+                ),
             )
         )
 
@@ -168,6 +177,7 @@ def _proposal_required(
     proposal_type: str,
     required_inputs: tuple[str, ...],
     command: str,
+    materialization_examples: tuple[str, ...] = (),
 ) -> OperationGatePresentation:
     details = _gate_context_fields(decision)
     return OperationGatePresentation(
@@ -176,6 +186,7 @@ def _proposal_required(
         proposal_type=proposal_type,
         required_inputs=required_inputs,
         materialization_command=command,
+        materialization_examples=materialization_examples,
         details=details,
     )
 
