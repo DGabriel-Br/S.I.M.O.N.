@@ -719,3 +719,14 @@ O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chama
 Proposta e materialização de Plan também permanecem ciclos separados: `plan.propose` gera o Event de proposta e para; o próximo ciclo reconhece a proposta pendente como `plan.materialize`. Isso impede que uma única chamada esconda duas mudanças de estado.
 
 O contrato completo está em `PHASE_2_EXECUTIVE.md`. Scheduler, Attention scoring, paralelismo e novas capabilities continuam fora deste corte.
+
+### Propostas de retry operacionais
+
+Falhas ou interrupções de `process.run` e `file.patch` também podem ser apresentadas antes da nova autorização. `process-retry-propose` e `file-retry-propose` persistem a Action anterior e os parâmetros exatos da nova tentativa, sem executar nada. Um `user-turn` afirmativo só consome a proposta mais recente que ainda corresponda ao gate `retry_authorization_required` atual; a autorização real continua sendo `action.retry.authorized` com `source=user`.
+
+```powershell
+uv run simon process-retry-propose act_ID --cwd C:\projeto python -m pytest
+uv run simon file-retry-propose act_ID --workspace C:\projeto --file script.py --old "valor = 9" --new "valor = 2"
+```
+
+`analysis.retry` continua usando sua fronteira explícita própria neste corte, pois também exige modelo e provider definidos.

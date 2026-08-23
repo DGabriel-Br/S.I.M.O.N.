@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from simon.actions import Action, get_action
 from simon.events import Event, append_event, get_event
 from simon.executive import ExecutiveDecision, decide_next
 from simon.file_patch import FilePatchRequest, bind_file_patch_step
@@ -33,6 +34,35 @@ class FilePatchProposal:
     reason: str
     verification: str
     capability_detail: str
+    request: FilePatchRequest
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessRetryProposal:
+    event: Event
+    goal_id: str
+    plan_id: str
+    plan_revision: int
+    step_id: str
+    reason: str
+    verification: str
+    retry_of_action_id: str
+    previous_status: str
+    request: ProcessRunRequest
+
+
+@dataclass(frozen=True, slots=True)
+class FilePatchRetryProposal:
+    event: Event
+    goal_id: str
+    plan_id: str
+    plan_revision: int
+    step_id: str
+    reason: str
+    verification: str
+    capability_detail: str
+    retry_of_action_id: str
+    previous_status: str
     request: FilePatchRequest
 
 
@@ -153,6 +183,227 @@ def propose_file_patch(
         reason=decision.reason,
         verification=binding.verification,
         capability_detail=binding.capability_detail,
+        request=request,
+    )
+
+
+def propose_process_retry(
+    database_path: Path,
+    *,
+    action_id: str,
+    request: ProcessRunRequest,
+    trace_id: str | None = None,
+) -> ProcessRetryProposal:
+    """Persiste uma nova tentativa concreta de process.run sem autorizar o retry."""
+    original = _require_retry_action(database_path, action_id, kind="process.run")
+    decision = decide_next(database_path, goal_id=original.goal_id)
+    _require_retry_authorization_gate(decision, operation="process.retry", original=original)
+
+    readiness = evaluate_active_plan(database_path, goal_id=original.goal_id)
+    if readiness.plan.id != original.plan_id:
+        raise ValueError("retry process.run exige a tentativa no Plan ACTIVE atual")
+    binding = bind_process_run_step(
+        readiness.plan,
+        step_id=original.step_id,
+        request=request,
+    )
+    previous_event_id = _latest_operation_proposal_event_id(database_path, original.goal_id)
+    event = Event.create(
+        kind="executive.operation.proposed",
+        source="system",
+        payload={
+            "proposal_type": "process.retry",
+            "operation": "process.retry",
+            "reason_code": decision.reason_code,
+            "reason": decision.reason,
+            "goal_id": binding.goal_id,
+            "plan_id": binding.plan_id,
+            "plan_revision": binding.plan_revision,
+            "step_id": binding.step_id,
+            "capability": "process.run",
+            "verification": binding.verification,
+            "retry_of_action_id": original.id,
+            "previous_status": original.status,
+            "request": request.model_dump(mode="json"),
+            "argv": list(request.argv()),
+            "supersedes_proposal_event_id": previous_event_id,
+        },
+        trace_id=trace_id,
+        goal_id=binding.goal_id,
+    )
+    append_event(database_path, event)
+    return ProcessRetryProposal(
+        event=event,
+        goal_id=binding.goal_id,
+        plan_id=binding.plan_id,
+        plan_revision=binding.plan_revision,
+        step_id=binding.step_id,
+        reason=decision.reason,
+        verification=binding.verification,
+        retry_of_action_id=original.id,
+        previous_status=original.status,
+        request=request,
+    )
+
+
+def propose_file_patch_retry(
+    database_path: Path,
+    *,
+    action_id: str,
+    request: FilePatchRequest,
+    trace_id: str | None = None,
+) -> FilePatchRetryProposal:
+    """Persiste uma nova tentativa concreta de file.patch sem autorizar o retry."""
+    original = _require_retry_action(database_path, action_id, kind="file.patch")
+    decision = decide_next(database_path, goal_id=original.goal_id)
+    _require_retry_authorization_gate(decision, operation="file.retry", original=original)
+
+    readiness = evaluate_active_plan(database_path, goal_id=original.goal_id)
+    if readiness.plan.id != original.plan_id:
+        raise ValueError("retry file.patch exige a tentativa no Plan ACTIVE atual")
+    binding = bind_file_patch_step(
+        readiness.plan,
+        step_id=original.step_id,
+        request=request,
+    )
+    previous_event_id = _latest_operation_proposal_event_id(database_path, original.goal_id)
+    event = Event.create(
+        kind="executive.operation.proposed",
+        source="system",
+        payload={
+            "proposal_type": "file.retry",
+            "operation": "file.retry",
+            "reason_code": decision.reason_code,
+            "reason": decision.reason,
+            "goal_id": binding.goal_id,
+            "plan_id": binding.plan_id,
+            "plan_revision": binding.plan_revision,
+            "step_id": binding.step_id,
+            "capability": "file.patch",
+            "capability_detail": binding.capability_detail,
+            "verification": binding.verification,
+            "retry_of_action_id": original.id,
+            "previous_status": original.status,
+            "request": request.model_dump(mode="json"),
+            "supersedes_proposal_event_id": previous_event_id,
+        },
+        trace_id=trace_id,
+        goal_id=binding.goal_id,
+    )
+    append_event(database_path, event)
+    return FilePatchRetryProposal(
+        event=event,
+        goal_id=binding.goal_id,
+        plan_id=binding.plan_id,
+        plan_revision=binding.plan_revision,
+        step_id=binding.step_id,
+        reason=decision.reason,
+        verification=binding.verification,
+        capability_detail=binding.capability_detail,
+        retry_of_action_id=original.id,
+        previous_status=original.status,
+        request=request,
+    )
+
+
+def find_current_process_retry_proposal(
+    database_path: Path,
+    decision: ExecutiveDecision,
+) -> ProcessRetryProposal | None:
+    if decision.outcome != "NEEDS_OPERATION_AUTHORIZATION" or decision.operation != "process.retry":
+        return None
+    original = _decision_retry_action(database_path, decision, kind="process.run")
+    if original is None:
+        return None
+    event = _latest_operation_proposal_event(database_path, original.goal_id)
+    if event is None:
+        return None
+    payload = event.payload
+    if not _retry_payload_matches(payload, decision, original, proposal_type="process.retry"):
+        return None
+    raw_revision = payload.get("plan_revision")
+    raw_reason = payload.get("reason")
+    raw_verification = payload.get("verification")
+    if (
+        not isinstance(raw_revision, int)
+        or not isinstance(raw_reason, str)
+        or not isinstance(raw_verification, str)
+    ):
+        return None
+    readiness = evaluate_active_plan(database_path, goal_id=original.goal_id)
+    if readiness.plan.id != original.plan_id or readiness.plan.revision != raw_revision:
+        return None
+    try:
+        request = ProcessRunRequest.model_validate(payload.get("request"))
+        binding = bind_process_run_step(readiness.plan, step_id=original.step_id, request=request)
+    except (TypeError, ValueError):
+        return None
+    if binding.verification != raw_verification.strip():
+        return None
+    return ProcessRetryProposal(
+        event=event,
+        goal_id=original.goal_id,
+        plan_id=original.plan_id,
+        plan_revision=raw_revision,
+        step_id=original.step_id,
+        reason=raw_reason.strip(),
+        verification=raw_verification.strip(),
+        retry_of_action_id=original.id,
+        previous_status=original.status,
+        request=request,
+    )
+
+
+def find_current_file_patch_retry_proposal(
+    database_path: Path,
+    decision: ExecutiveDecision,
+) -> FilePatchRetryProposal | None:
+    if decision.outcome != "NEEDS_OPERATION_AUTHORIZATION" or decision.operation != "file.retry":
+        return None
+    original = _decision_retry_action(database_path, decision, kind="file.patch")
+    if original is None:
+        return None
+    event = _latest_operation_proposal_event(database_path, original.goal_id)
+    if event is None:
+        return None
+    payload = event.payload
+    if not _retry_payload_matches(payload, decision, original, proposal_type="file.retry"):
+        return None
+    raw_revision = payload.get("plan_revision")
+    raw_reason = payload.get("reason")
+    raw_verification = payload.get("verification")
+    raw_detail = payload.get("capability_detail")
+    if (
+        not isinstance(raw_revision, int)
+        or not isinstance(raw_reason, str)
+        or not isinstance(raw_verification, str)
+        or not isinstance(raw_detail, str)
+    ):
+        return None
+    readiness = evaluate_active_plan(database_path, goal_id=original.goal_id)
+    if readiness.plan.id != original.plan_id or readiness.plan.revision != raw_revision:
+        return None
+    try:
+        request = FilePatchRequest.model_validate(payload.get("request"))
+        binding = bind_file_patch_step(readiness.plan, step_id=original.step_id, request=request)
+    except (TypeError, ValueError):
+        return None
+    if (
+        binding.verification != raw_verification.strip()
+        or binding.capability_detail != raw_detail.strip()
+    ):
+        return None
+    return FilePatchRetryProposal(
+        event=event,
+        goal_id=original.goal_id,
+        plan_id=original.plan_id,
+        plan_revision=raw_revision,
+        step_id=original.step_id,
+        reason=raw_reason.strip(),
+        verification=raw_verification.strip(),
+        capability_detail=raw_detail.strip(),
+        retry_of_action_id=original.id,
+        previous_status=original.status,
         request=request,
     )
 
@@ -309,6 +560,70 @@ def find_current_process_run_proposal(
         verification=raw_verification.strip(),
         request=request,
     )
+
+
+def _require_retry_action(database_path: Path, action_id: str, *, kind: str) -> Action:
+    action = get_action(database_path, action_id)
+    if action is None:
+        raise ValueError(f"action não encontrada: {action_id}")
+    if action.kind != kind:
+        raise ValueError(f"action não representa {kind}: {action_id}")
+    if action.status not in {"FAILED", "INTERRUPTED"}:
+        raise ValueError(f"retry {kind} exige Action FAILED ou INTERRUPTED: {action.status}")
+    return action
+
+
+def _require_retry_authorization_gate(
+    decision: ExecutiveDecision,
+    *,
+    operation: str,
+    original: Action,
+) -> None:
+    if decision.outcome != "NEEDS_OPERATION_AUTHORIZATION" or decision.operation != operation:
+        raise ValueError(f"o gate atual não solicita {operation}")
+    if decision.action_id != original.id:
+        raise ValueError("o gate de retry não corresponde à Action informada")
+    if decision.reason_code != "retry_authorization_required":
+        raise ValueError("o gate atual não representa retry autorizado")
+
+
+def _decision_retry_action(
+    database_path: Path,
+    decision: ExecutiveDecision,
+    *,
+    kind: str,
+) -> Action | None:
+    action_id = decision.action_id
+    if action_id is None:
+        return None
+    action = get_action(database_path, action_id)
+    if action is None or action.kind != kind or action.status not in {"FAILED", "INTERRUPTED"}:
+        return None
+    return action
+
+
+def _retry_payload_matches(
+    payload: dict[str, object],
+    decision: ExecutiveDecision,
+    original: Action,
+    *,
+    proposal_type: str,
+) -> bool:
+    return (
+        payload.get("proposal_type") == proposal_type
+        and payload.get("operation") == decision.operation
+        and payload.get("reason_code") == decision.reason_code
+        and payload.get("goal_id") == original.goal_id
+        and payload.get("plan_id") == original.plan_id
+        and payload.get("step_id") == original.step_id
+        and payload.get("retry_of_action_id") == original.id
+        and payload.get("previous_status") == original.status
+    )
+
+
+def _latest_operation_proposal_event(database_path: Path, goal_id: str) -> Event | None:
+    event_id = _latest_operation_proposal_event_id(database_path, goal_id)
+    return get_event(database_path, event_id) if event_id is not None else None
 
 
 def _latest_operation_proposal_event_id(database_path: Path, goal_id: str) -> str | None:

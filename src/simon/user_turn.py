@@ -10,14 +10,16 @@ from simon.assessment_confirmation import confirm_action_assessment
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, decide_next
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
-from simon.file_patch import execute_next_file_patch
+from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
 from simon.operation_proposal import (
     find_current_file_patch_proposal,
+    find_current_file_patch_retry_proposal,
+    find_current_process_retry_proposal,
     find_current_process_run_proposal,
 )
-from simon.process_execution import execute_next_process_run
+from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.user_ask import answer_user_ask
 
 UserTurnIntent = Literal["CONTINUE", "ANSWER", "CONFIRM", "AUTHORIZE"]
@@ -28,6 +30,8 @@ UserTurnEffectType = Literal[
     "goal.completed",
     "process.run",
     "file.patch",
+    "process.retry",
+    "file.retry",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -477,6 +481,68 @@ def _route_operation_authorization_turn(
             )
         effect_type = "file.patch"
         effect_id = patch_execution.action.id
+    elif decision.operation == "process.retry":
+        process_retry_proposal = find_current_process_retry_proposal(database_path, decision)
+        if process_retry_proposal is None:
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="operation_proposal_required",
+                current_decision=decision,
+            )
+        proposal_goal_id = process_retry_proposal.goal_id
+        proposal_event_id = process_retry_proposal.event.id
+        try:
+            process_retry_execution = retry_process_run(
+                database_path,
+                action_id=process_retry_proposal.retry_of_action_id,
+                request=process_retry_proposal.request,
+                trace_id=turn_event.id,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="AUTHORIZE",
+                goal_id=proposal_goal_id,
+                error=str(exc),
+                reason_code="operation_authorization_routing_failed",
+                current_decision=decision,
+            )
+        effect_type = "process.retry"
+        effect_id = process_retry_execution.action.id
+    elif decision.operation == "file.retry":
+        file_retry_proposal = find_current_file_patch_retry_proposal(database_path, decision)
+        if file_retry_proposal is None:
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="operation_proposal_required",
+                current_decision=decision,
+            )
+        proposal_goal_id = file_retry_proposal.goal_id
+        proposal_event_id = file_retry_proposal.event.id
+        try:
+            file_retry_execution = retry_file_patch(
+                database_path,
+                action_id=file_retry_proposal.retry_of_action_id,
+                request=file_retry_proposal.request,
+                trace_id=turn_event.id,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="AUTHORIZE",
+                goal_id=proposal_goal_id,
+                error=str(exc),
+                reason_code="operation_authorization_routing_failed",
+                current_decision=decision,
+            )
+        effect_type = "file.retry"
+        effect_id = file_retry_execution.action.id
     else:
         return _unsupported_turn(
             database_path,
@@ -594,6 +660,9 @@ def _unsupported_turn(
             "ANSWER_AT_USER_INPUT_GATE",
             "CONFIRM_AT_GATE",
             "AUTHORIZE_CURRENT_PROCESS_PROPOSAL",
+            "AUTHORIZE_CURRENT_FILE_PATCH_PROPOSAL",
+            "AUTHORIZE_CURRENT_PROCESS_RETRY_PROPOSAL",
+            "AUTHORIZE_CURRENT_FILE_RETRY_PROPOSAL",
         ],
     }
     if current_decision is not None:

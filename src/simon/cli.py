@@ -45,8 +45,12 @@ from simon.model_provider import ModelProvider, ModelProviderError, StructuredMo
 from simon.ollama_provider import OllamaProvider
 from simon.operation_proposal import (
     FilePatchProposal,
+    FilePatchRetryProposal,
+    ProcessRetryProposal,
     ProcessRunProposal,
     propose_file_patch,
+    propose_file_patch_retry,
+    propose_process_retry,
     propose_process_run,
 )
 from simon.plan_completion import complete_verified_plan
@@ -378,6 +382,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="argumentos exatos propostos para o executável",
     )
 
+    process_retry_propose = commands.add_parser(
+        "process-retry-propose",
+        help="materializa uma proposta concreta de retry process.run sem executar",
+    )
+    process_retry_propose.add_argument(
+        "action_id",
+        help="ID da tentativa process.run FAILED ou INTERRUPTED a ser refeita",
+    )
+    process_retry_propose.add_argument(
+        "--cwd",
+        required=True,
+        help="diretório de trabalho proposto para a nova tentativa",
+    )
+    process_retry_propose.add_argument(
+        "--process-timeout",
+        type=float,
+        default=120.0,
+        help="timeout proposto da nova tentativa em segundos",
+    )
+    process_retry_propose.add_argument(
+        "executable",
+        help="executável proposto para a nova tentativa",
+    )
+    process_retry_propose.add_argument(
+        "arguments",
+        nargs=argparse.REMAINDER,
+        help="argumentos exatos propostos para a nova tentativa",
+    )
+
     process_retry = commands.add_parser(
         "process-retry",
         help="autoriza nova tentativa process.run após falha ou interrupção operacional",
@@ -469,6 +502,38 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         dest="replacement_text",
         help="trecho UTF-8 substituto proposto; use string vazia para remoção",
+    )
+
+    file_retry_propose = commands.add_parser(
+        "file-retry-propose",
+        help="materializa uma proposta concreta de retry file.patch sem modificar arquivo",
+    )
+    file_retry_propose.add_argument(
+        "action_id",
+        help="ID da tentativa file.patch FAILED ou INTERRUPTED a ser refeita",
+    )
+    file_retry_propose.add_argument(
+        "--workspace",
+        required=True,
+        help="diretório raiz proposto para a nova tentativa",
+    )
+    file_retry_propose.add_argument(
+        "--file",
+        required=True,
+        dest="relative_path",
+        help="caminho relativo proposto dentro do workspace",
+    )
+    file_retry_propose.add_argument(
+        "--old",
+        required=True,
+        dest="expected_text",
+        help="trecho UTF-8 esperado para a nova tentativa",
+    )
+    file_retry_propose.add_argument(
+        "--new",
+        required=True,
+        dest="replacement_text",
+        help="trecho UTF-8 substituto proposto para a nova tentativa",
     )
 
     file_retry = commands.add_parser(
@@ -774,6 +839,15 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.cwd,
             args.process_timeout,
         )
+    if args.command == "process-retry-propose":
+        return _process_retry_propose(
+            database_path,
+            args.action_id,
+            args.executable,
+            args.arguments,
+            args.cwd,
+            args.process_timeout,
+        )
     if args.command == "process-retry":
         return _process_retry(
             database_path,
@@ -796,6 +870,15 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         return _file_propose(
             database_path,
             args.goal_id,
+            args.workspace,
+            args.relative_path,
+            args.expected_text,
+            args.replacement_text,
+        )
+    if args.command == "file-retry-propose":
+        return _file_retry_propose(
+            database_path,
+            args.action_id,
             args.workspace,
             args.relative_path,
             args.expected_text,
@@ -1863,6 +1946,54 @@ def _print_process_run_proposal(proposal: ProcessRunProposal) -> None:
     print("Autorização registrada: não")
     print('Próximo passo: responda ao gate atual com "sim" ou "pode executar".')
 
+def _process_retry_propose(
+    database_path: Path,
+    action_id: str,
+    executable: str,
+    arguments: Sequence[str],
+    working_directory: str,
+    timeout_seconds: float,
+) -> int:
+    try:
+        request = ProcessRunRequest(
+            executable=executable,
+            arguments=tuple(arguments),
+            working_directory=working_directory,
+            timeout_seconds=timeout_seconds,
+        )
+        proposal = propose_process_retry(
+            database_path,
+            action_id=action_id,
+            request=request,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Proposta retry process.run: falha ({exc})")
+        return 1
+
+    _print_process_retry_proposal(proposal)
+    return 0
+
+
+def _print_process_retry_proposal(proposal: ProcessRetryProposal) -> None:
+    print(f"Proposta operacional: {proposal.event.id}")
+    print("Tipo: process.retry")
+    print(f"Action anterior: {proposal.retry_of_action_id} ({proposal.previous_status})")
+    print(f"Goal: {proposal.goal_id}")
+    print(f"Plan: {proposal.plan_id} rev{proposal.plan_revision}")
+    print(f"Step: {proposal.step_id}")
+    print(f"Motivo: {proposal.reason}")
+    print(f"Verificação esperada: {proposal.verification}")
+    print(f"Executável: {proposal.request.executable}")
+    print(f"Diretório: {proposal.request.working_directory}")
+    print(f"Timeout: {proposal.request.timeout_seconds:.3f}s")
+    print("Argumentos (argv):")
+    for index, value in enumerate(proposal.request.argv()):
+        print(f"  [{index}] {value}")
+    print("Nova tentativa realizada: não")
+    print("Autorização de retry registrada: não")
+    print('Próximo passo: responda ao gate atual com "sim" ou "pode executar".')
+
+
 def _process_retry(
     database_path: Path,
     action_id: str,
@@ -2000,6 +2131,55 @@ def _print_file_patch_proposal(proposal: FilePatchProposal) -> None:
     print("Modificação realizada: não")
     print("Autorização registrada: não")
     print('Próximo passo: responda ao gate atual com "sim" ou "pode aplicar".')
+
+def _file_retry_propose(
+    database_path: Path,
+    action_id: str,
+    workspace: str,
+    relative_path: str,
+    expected_text: str,
+    replacement_text: str,
+) -> int:
+    try:
+        request = FilePatchRequest(
+            workspace=workspace,
+            relative_path=relative_path,
+            expected_text=expected_text,
+            replacement_text=replacement_text,
+        )
+        proposal = propose_file_patch_retry(
+            database_path,
+            action_id=action_id,
+            request=request,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Proposta retry file.patch: falha ({exc})")
+        return 1
+
+    _print_file_retry_proposal(proposal)
+    return 0
+
+
+def _print_file_retry_proposal(proposal: FilePatchRetryProposal) -> None:
+    print(f"Proposta operacional: {proposal.event.id}")
+    print("Tipo: file.retry")
+    print(f"Action anterior: {proposal.retry_of_action_id} ({proposal.previous_status})")
+    print(f"Goal: {proposal.goal_id}")
+    print(f"Plan: {proposal.plan_id} rev{proposal.plan_revision}")
+    print(f"Step: {proposal.step_id}")
+    print(f"Motivo: {proposal.reason}")
+    print(f"Capability detail: {proposal.capability_detail}")
+    print(f"Verificação esperada: {proposal.verification}")
+    print(f"Workspace: {proposal.request.workspace}")
+    print(f"Arquivo: {proposal.request.relative_path}")
+    print("Trecho esperado:")
+    print(proposal.request.expected_text)
+    print("Substituição proposta:")
+    print(proposal.request.replacement_text)
+    print("Nova tentativa realizada: não")
+    print("Autorização de retry registrada: não")
+    print('Próximo passo: responda ao gate atual com "sim" ou "pode aplicar".')
+
 
 def _file_retry(
     database_path: Path,

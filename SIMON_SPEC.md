@@ -5654,3 +5654,17 @@ Somente a proposta operacional mais recente do Goal pode ser consumida. Para con
 Um turno afirmativo explícito como `sim`, `pode aplicar`, `pode alterar` ou `pode modificar` pode consumir a proposta atual. O gateway chama `execute_next_file_patch()` com o ID de `user.turn.received` como `trace_id`; o executor existente cria `file.patch.authorized` com `source=user`, aplica a substituição localizada e registra hashes e resultado como antes. A proposta não antecipa a validação do conteúdo real do arquivo: ausência, ambiguidade do trecho, path inválido em runtime ou outro erro operacional continuam sendo responsabilidade do executor e podem produzir uma Action `FAILED`.
 
 O Event `executive.user_turn.routed` usa `authority_scope=CURRENT_OPERATION_PROPOSAL_ONLY`, registra o `proposal_event_id` consumido e a Action `file.patch` resultante. Sem proposta, com texto não afirmativo ou com proposta stale, nenhuma alteração é realizada. Retries de `file.patch` continuam fora deste bridge natural. O SQLite permanece no schema 11.
+
+### 33.16. Propostas concretas para retries de process.run e file.patch
+
+Retries operacionais continuam sendo decisões `NEEDS_OPERATION_AUTHORIZATION`, nunca operações `PROCEED`. Para permitir aprovação conversacional sem transformar um "sim" em permissão aberta, o Executive passa a materializar uma nova tentativa concreta antes do consentimento.
+
+`propose_process_retry()` exige uma Action `process.run` `FAILED` ou `INTERRUPTED` que seja exatamente o `action_id` exposto pela decisão atual `process.retry`. O novo `ProcessRunRequest` é ligado ao mesmo step do Plan ACTIVE e persistido como `executive.operation.proposed`, com `proposal_type=process.retry`, `retry_of_action_id`, `previous_status`, revisão do Plan, critério de Verification e argv completo. A CLI correspondente é `process-retry-propose`.
+
+`propose_file_patch_retry()` aplica a mesma regra a `file.retry`. A Action anterior precisa ser `file.patch` `FAILED` ou `INTERRUPTED` e precisa coincidir com o `action_id` do gate atual. O `FilePatchRequest` corrigido é ligado ao mesmo `CHANGE/unknown`, e a proposta persiste workspace, caminho relativo, textos da substituição, `capability_detail`, Verification, Action anterior e status anterior. A CLI correspondente é `file-retry-propose`.
+
+Nenhuma das duas propostas cria Action, escreve em arquivo ou inicia processo. No turno afirmativo posterior, o gateway revalida Goal, Plan, revisão, step, operação, `reason_code=retry_authorization_required`, Action anterior e request persistido. Só então chama os serviços antigos `retry_process_run()` ou `retry_file_patch()` com o `trace_id` de `user.turn.received`.
+
+A autoridade real permanece `action.retry.authorized` com `source=user`. A proposta usa `source=system` e não constitui consentimento. Se uma tentativa posterior substituir a Action que motivou o gate, a proposta antiga não pode ser reutilizada. `analysis.retry` permanece fora desta seção porque sua nova tentativa também exige seleção explícita de modelo/provider.
+
+O SQLite permanece no schema 11.

@@ -371,3 +371,17 @@ O mesmo contrato de proposta concreta passa a cobrir `file.patch`. `file-propose
 Sem proposta concreta, texto afirmativo continua sem efeito. Uma proposta mais nova substitui a anterior para aquele Goal, e propostas que já não correspondem ao Plan/step atuais não podem ser consumidas. Retries operacionais permanecem fora do gateway natural neste corte.
 
 Turnos contextuais roteados registram `executive.user_turn.routed` com um snapshot do gate consumido, `authority_scope` específico e referência ao efeito persistido. As scopes atuais são `CURRENT_USER_INPUT_GATE_ONLY`, `CURRENT_CONFIRMATION_GATE_ONLY` e `CURRENT_OPERATION_PROPOSAL_ONLY`. Fora desses gates, texto livre continua sem efeito. Nenhuma tabela ou migration nova é necessária.
+
+## Propostas concretas para retries operacionais
+
+O mesmo bridge de autorização concreta passa a cobrir retries de `process.run` e `file.patch`. Uma falha ou interrupção continua produzindo `NEEDS_OPERATION_AUTHORIZATION`; o gateway não transforma esse estado em retry automático e um turno afirmativo isolado continua sem efeito.
+
+`process-retry-propose` recebe o `action_id` FAILED ou INTERRUPTED e um novo `ProcessRunRequest`. A proposta persiste `retry_of_action_id`, `previous_status`, Goal, Plan, revisão, step, critério de Verification, executável, argv, working directory e timeout. Nenhuma nova Action é criada nessa etapa.
+
+`file-retry-propose` faz o equivalente para uma tentativa `file.patch`, congelando a Action anterior e um novo `FilePatchRequest` com workspace, caminho relativo, trecho esperado e substituição. A proposta não altera o filesystem e não antecipa as validações operacionais do executor.
+
+Um turno afirmativo posterior só pode consumir a proposta de retry mais recente que ainda corresponda à `ExecutiveDecision` atual, inclusive ao mesmo `action_id` que o gate `retry_authorization_required` está pedindo para revisar. Se outra tentativa passar a ser a tentativa atual, a proposta antiga deixa de ser elegível.
+
+A execução continua usando `retry_process_run()` ou `retry_file_patch()` com o ID de `user.turn.received` como `trace_id`. Portanto `action.retry.authorized` permanece o único Event autoritativo de `source=user`; `executive.operation.proposed` continua sendo apenas proposta.
+
+`analysis.retry` permanece fora deste bridge por enquanto. Como a nova tentativa cognitiva depende também de um `ModelProvider` e de um modelo explícito, seu contrato de proposta será tratado separadamente em vez de ampliar prematuramente a abstração dos retries operacionais.

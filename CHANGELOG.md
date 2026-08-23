@@ -19,6 +19,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - respostas humanas vinculadas ao gate atual: texto livre responde somente a `user.ask` em `WAITING`, confirmações afirmativas explícitas confirmam somente o assessment ou Goal atualmente solicitado, e `NEEDS_OPERATION_AUTHORIZATION` continua exigindo comando operacional concreto.
 - proposta concreta de `process.run` persistida antes da autorização natural: `process-propose` registra executável, argv, cwd e timeout sem criar Action; um turno afirmativo posterior só pode autorizar a proposta mais recente que ainda corresponda ao gate atual.
 - proposta concreta de `file.patch` no mesmo contrato: `file-propose` registra workspace, arquivo relativo, trecho esperado e substituição sem modificar o filesystem; um turno afirmativo posterior só pode aplicar a proposta atual revalidada contra Goal, Plan, revisão e step.
+- propostas concretas de retry para `process.run` e `file.patch`: `process-retry-propose` e `file-retry-propose` congelam a Action anterior e os parâmetros da nova tentativa sem executá-la; um turno afirmativo só pode consumir a proposta ainda correspondente ao gate `retry_authorization_required` atual.
 
 ## [0.1.0] - 2026-08-19
 

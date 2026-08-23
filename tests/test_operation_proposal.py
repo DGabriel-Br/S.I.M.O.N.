@@ -7,16 +7,21 @@ from simon.actions import list_actions_for_plan
 from simon.cli import main
 from simon.events import get_event
 from simon.executive import decide_next
-from simon.file_patch import FilePatchRequest
+from simon.file_patch import FilePatchRequest, execute_next_file_patch
 from simon.goals import Goal, insert_goal
 from simon.operation_proposal import (
     find_current_file_patch_proposal,
+    find_current_file_patch_retry_proposal,
+    find_current_process_retry_proposal,
     find_current_process_run_proposal,
     propose_file_patch,
+    propose_file_patch_retry,
+    propose_process_retry,
     propose_process_run,
 )
 from simon.plans import create_plan
 from simon.process_binding import ProcessRunRequest
+from simon.process_execution import execute_next_process_run
 from simon.storage import initialize_storage
 from simon.user_turn import handle_user_turn
 
@@ -426,3 +431,294 @@ def test_non_explicit_text_does_not_accept_current_file_patch_proposal(tmp_path:
     )
     assert target.read_text(encoding="utf-8") == "valor = 1\n"
     assert list_actions_for_plan(database_path, plan_id) == ()
+
+
+def test_process_retry_proposal_binds_failed_action_without_retrying(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_plan(database_path)
+    failed = execute_next_process_run(
+        database_path,
+        goal_id=goal.id,
+        request=ProcessRunRequest(
+            executable=str(tmp_path / "missing-executable"),
+            arguments=(),
+            working_directory=str(tmp_path),
+            timeout_seconds=5,
+        ),
+    )
+    assert failed.action.status == "FAILED"
+    request = _request(tmp_path, "retry-proposal")
+
+    proposal = propose_process_retry(
+        database_path,
+        action_id=failed.action.id,
+        request=request,
+    )
+
+    assert proposal.retry_of_action_id == failed.action.id
+    assert proposal.previous_status == "FAILED"
+    assert proposal.request == request
+    assert len(list_actions_for_plan(database_path, plan_id)) == 1
+    assert proposal.event.payload["proposal_type"] == "process.retry"
+    assert proposal.event.payload["retry_of_action_id"] == failed.action.id
+
+    decision = decide_next(database_path, goal_id=goal.id)
+    current = find_current_process_retry_proposal(database_path, decision)
+    assert current is not None
+    assert current.event.id == proposal.event.id
+
+
+def test_affirmative_turn_executes_only_current_process_retry_proposal(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_plan(database_path)
+    failed = execute_next_process_run(
+        database_path,
+        goal_id=goal.id,
+        request=ProcessRunRequest(
+            executable=str(tmp_path / "missing-executable"),
+            arguments=(),
+            working_directory=str(tmp_path),
+            timeout_seconds=5,
+        ),
+    )
+    proposal = propose_process_retry(
+        database_path,
+        action_id=failed.action.id,
+        request=_request(tmp_path, "recovered"),
+    )
+
+    receipt = handle_user_turn(database_path, "pode executar", goal_id=goal.id)
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "AUTHORIZE"
+    assert receipt.effect_type == "process.retry"
+    assert receipt.routing_event.payload["proposal_event_id"] == proposal.event.id
+    actions = list_actions_for_plan(database_path, plan_id)
+    assert len(actions) == 2
+    retry = actions[-1]
+    assert retry.status == "COMPLETED"
+    assert retry.input_data["retry_of_action_id"] == failed.action.id
+    authorization_id = retry.input_data["authorization_event_id"]
+    assert isinstance(authorization_id, str)
+    authorization = get_event(database_path, authorization_id)
+    assert authorization is not None
+    assert authorization.kind == "action.retry.authorized"
+    assert authorization.source == "user"
+    assert authorization.trace_id == receipt.turn_event.id
+
+
+def test_process_retry_requires_current_proposal(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_plan(database_path)
+    failed = execute_next_process_run(
+        database_path,
+        goal_id=goal.id,
+        request=ProcessRunRequest(
+            executable=str(tmp_path / "missing-executable"),
+            arguments=(),
+            working_directory=str(tmp_path),
+            timeout_seconds=5,
+        ),
+    )
+    assert failed.action.status == "FAILED"
+
+    receipt = handle_user_turn(database_path, "sim", goal_id=goal.id)
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "operation_proposal_required"
+    assert len(list_actions_for_plan(database_path, plan_id)) == 1
+
+
+def test_process_retry_propose_cli_presents_retry_without_execution(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    data_dir = tmp_path / "data"
+    database_path, _ = initialize_storage(data_dir)
+    goal, plan_id = _goal_and_plan(database_path)
+    failed = execute_next_process_run(
+        database_path,
+        goal_id=goal.id,
+        request=ProcessRunRequest(
+            executable=str(tmp_path / "missing-executable"),
+            arguments=(),
+            working_directory=str(tmp_path),
+            timeout_seconds=5,
+        ),
+    )
+
+    exit_code = main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "process-retry-propose",
+            failed.action.id,
+            "--cwd",
+            str(tmp_path),
+            sys.executable,
+            "-c",
+            "print('retry-cli')",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Tipo: process.retry" in output
+    assert f"Action anterior: {failed.action.id} (FAILED)" in output
+    assert "Nova tentativa realizada: não" in output
+    assert "Autorização de retry registrada: não" in output
+    assert len(list_actions_for_plan(database_path, plan_id)) == 1
+
+
+def test_file_retry_proposal_binds_failed_patch_without_modifying_file(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 9\
+", encoding="utf-8")
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_change_plan(database_path)
+    failed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_patch_request(workspace),
+    )
+    assert failed.action.status == "FAILED"
+    request = _patch_request(workspace, expected="valor = 9", replacement="valor = 2")
+
+    proposal = propose_file_patch_retry(
+        database_path,
+        action_id=failed.action.id,
+        request=request,
+    )
+
+    assert proposal.retry_of_action_id == failed.action.id
+    assert proposal.previous_status == "FAILED"
+    assert target.read_text(encoding="utf-8") == "valor = 9\
+"
+    assert len(list_actions_for_plan(database_path, plan_id)) == 1
+    decision = decide_next(database_path, goal_id=goal.id)
+    current = find_current_file_patch_retry_proposal(database_path, decision)
+    assert current is not None
+    assert current.event.id == proposal.event.id
+
+
+def test_affirmative_turn_executes_only_current_file_retry_proposal(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 9\
+", encoding="utf-8")
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_change_plan(database_path)
+    failed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_patch_request(workspace),
+    )
+    proposal = propose_file_patch_retry(
+        database_path,
+        action_id=failed.action.id,
+        request=_patch_request(workspace, expected="valor = 9", replacement="valor = 2"),
+    )
+
+    receipt = handle_user_turn(database_path, "pode aplicar", goal_id=goal.id)
+
+    assert receipt.status == "ROUTED"
+    assert receipt.effect_type == "file.retry"
+    assert receipt.routing_event.payload["proposal_event_id"] == proposal.event.id
+    assert target.read_text(encoding="utf-8") == "valor = 2\
+"
+    actions = list_actions_for_plan(database_path, plan_id)
+    assert len(actions) == 2
+    retry = actions[-1]
+    assert retry.status == "COMPLETED"
+    assert retry.input_data["retry_of_action_id"] == failed.action.id
+    authorization_id = retry.input_data["authorization_event_id"]
+    assert isinstance(authorization_id, str)
+    authorization = get_event(database_path, authorization_id)
+    assert authorization is not None
+    assert authorization.kind == "action.retry.authorized"
+    assert authorization.source == "user"
+    assert authorization.trace_id == receipt.turn_event.id
+
+
+def test_file_retry_propose_cli_presents_retry_without_modification(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "script.py"
+    target.write_text("valor = 9\
+", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    database_path, _ = initialize_storage(data_dir)
+    goal, plan_id = _goal_and_change_plan(database_path)
+    failed = execute_next_file_patch(
+        database_path,
+        goal_id=goal.id,
+        request=_patch_request(workspace),
+    )
+
+    exit_code = main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "file-retry-propose",
+            failed.action.id,
+            "--workspace",
+            str(workspace),
+            "--file",
+            "script.py",
+            "--old",
+            "valor = 9",
+            "--new",
+            "valor = 2",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Tipo: file.retry" in output
+    assert f"Action anterior: {failed.action.id} (FAILED)" in output
+    assert "Nova tentativa realizada: não" in output
+    assert target.read_text(encoding="utf-8") == "valor = 9\
+"
+    assert len(list_actions_for_plan(database_path, plan_id)) == 1
+
+
+def test_latest_process_retry_proposal_supersedes_older_attempt_request(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id = _goal_and_plan(database_path)
+    failed = execute_next_process_run(
+        database_path,
+        goal_id=goal.id,
+        request=ProcessRunRequest(
+            executable=str(tmp_path / "missing-executable"),
+            arguments=(),
+            working_directory=str(tmp_path),
+            timeout_seconds=5,
+        ),
+    )
+    first = propose_process_retry(
+        database_path,
+        action_id=failed.action.id,
+        request=_request(tmp_path, "first-retry"),
+    )
+    second_request = _request(tmp_path, "second-retry")
+    second = propose_process_retry(
+        database_path,
+        action_id=failed.action.id,
+        request=second_request,
+    )
+
+    assert second.event.payload["supersedes_proposal_event_id"] == first.event.id
+
+    receipt = handle_user_turn(database_path, "sim", goal_id=goal.id)
+
+    assert receipt.status == "ROUTED"
+    assert receipt.routing_event.payload["proposal_event_id"] == second.event.id
+    actions = list_actions_for_plan(database_path, plan_id)
+    assert len(actions) == 2
+    assert actions[-1].input_data["request"] == second_request.model_dump(mode="json")
