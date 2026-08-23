@@ -400,3 +400,13 @@ A aprovação chama `retry_cognition_analysis()` com o modelo congelado na propo
 Na CLI, `user-turn` constrói o provider local mesmo quando o turno não recebe `--model`; isso não chama o modelo por si só. Se o gate consumido for uma proposta `analysis.retry`, o modelo vem obrigatoriamente da proposta. O parâmetro `--model` do turno continua sendo usado apenas pelo condutor para operações cognitivas seguras posteriores. Sem provider na API direta, a proposta não é consumida.
 
 O SQLite permanece no schema 11.
+
+## Apresentação read-only do gate operacional
+
+`describe_operation_gate()` transforma uma `ExecutiveDecision` de `NEEDS_OPERATION_AUTHORIZATION` em uma visão estruturada sem alterar estado. A apresentação distingue `PROPOSAL_REQUIRED`, `READY_FOR_AUTHORIZATION`, `NOT_OPERATION_GATE` e um fallback `UNSUPPORTED_GATE` para futuras operações ainda sem bridge.
+
+Quando não existe proposta válida, a visão declara somente os inputs concretos que ainda faltam e o comando correspondente para materializá-los. O Executive não deduz executável, argumentos, `cwd`, workspace, trecho de patch, substituição ou modelo. Para retries, o `action_id` já selecionado pelo gate é preservado no comando sugerido.
+
+Quando uma proposta válida já existe, a apresentação reutiliza os mesmos helpers `find_current_*_proposal()` usados pelo gateway de autorização. Portanto ela só mostra `READY_FOR_AUTHORIZATION` se a proposta continuar atual segundo Goal, Plan, revisão, step, Action, Verification e evidência aplicáveis. O Event da proposta, os parâmetros congelados e exemplos de respostas afirmativas são apresentados, mas nenhuma autorização é criada.
+
+A CLI expõe essa leitura por `executive-gate [goal_id]` e também a imprime automaticamente quando `executive-next`, `executive-step`, `executive-continue` ou `user-turn` terminam em autorização operacional. Esse incremento melhora ergonomia sem transformar apresentação em proposta, proposta em consentimento ou linguagem natural em grant.

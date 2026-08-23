@@ -736,3 +736,15 @@ uv run simon analysis-retry-propose --model qwen3.5:4b-q4_K_M act_ID
 ```
 
 A proposta congela a Action anterior, a revisão do Plan, o critério de Verification, o modelo e os `evidence_event_ids` atualmente verificados. Um `user-turn` afirmativo só autoriza a proposta mais recente ainda correspondente ao gate; se a evidência verificada mudar, a proposta deixa de ser válida. A autoridade real continua sendo `action.retry.authorized` com `source=user`. O modelo da tentativa vem da proposta, não de inferência do texto humano.
+
+### Apresentação automática do gate operacional
+
+Quando o Executive para em `NEEDS_OPERATION_AUTHORIZATION`, a CLI passa a explicar automaticamente o estado do gate. O mesmo diagnóstico read-only pode ser chamado diretamente com:
+
+```powershell
+uv run simon executive-gate [goal_id]
+```
+
+A apresentação possui três situações úteis. `PROPOSAL_REQUIRED` lista os parâmetros ainda ausentes e mostra o comando exato de materialização apropriado ao gate atual. `READY_FOR_AUTHORIZATION` mostra a proposta válida mais recente, seus parâmetros congelados e as respostas afirmativas aceitas. Fora de um gate operacional, o resultado é `NOT_OPERATION_GATE`. Nenhum desses estados cria Event, Action, Verification ou autorização.
+
+O diagnóstico cobre `process.run`, `file.patch`, `process.retry`, `file.retry` e `analysis.retry`. Ele não tenta inventar executável, `cwd`, conteúdo de patch ou modelo; quando esses dados ainda não foram fornecidos, apenas os declara como inputs necessários. `executive-next`, `executive-step`, `executive-continue` e `user-turn` também imprimem essa apresentação automaticamente quando sua decisão final exige autorização operacional.

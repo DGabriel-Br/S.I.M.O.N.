@@ -5691,3 +5691,20 @@ A autoridade real continua sendo o Event `action.retry.authorized` criado pelo e
 Na CLI, `user-turn` pode construir o adapter Ollama sem um `--model` explícito no turno para permitir o consumo de uma proposta cognitiva já materializada; construir o adapter não chama o runtime. O modelo autorizado continua vindo da proposta. Operações cognitivas seguras posteriores ainda param em `MODEL_REQUIRED` caso o turno não tenha fornecido um modelo ao condutor.
 
 O SQLite permanece no schema 11.
+
+### 33.18. Apresentação read-only do gate operacional
+
+A camada Executive deve tornar um gate operacional compreensível antes de qualquer nova automação de parâmetros. `describe_operation_gate()` recebe a `ExecutiveDecision` já reconstruída e produz uma `OperationGatePresentation` sem persistir Event, criar Action ou alterar qualquer lifecycle. `describe_current_operation_gate()` apenas combina `decide_next()` com essa leitura.
+
+Os estados da apresentação são:
+
+- `NOT_OPERATION_GATE`: a decisão atual não pede autorização operacional;
+- `PROPOSAL_REQUIRED`: o gate é suportado, mas ainda não existe proposta concreta válida;
+- `READY_FOR_AUTHORIZATION`: existe uma proposta atual que pode ser apresentada ao usuário;
+- `UNSUPPORTED_GATE`: fallback explícito para uma futura operação de autorização ainda sem apresentação conhecida.
+
+`PROPOSAL_REQUIRED` deve declarar os inputs concretos ausentes e pode fornecer um comando de materialização, mas não pode inferir os valores. Para `process.run` e `process.retry`, faltam executável, argumentos, working directory e timeout. Para `file.patch` e `file.retry`, faltam workspace, caminho relativo, trecho esperado e substituição. Para `analysis.retry`, o único input de proposta que falta é o modelo explícito; a Action anterior já vem do gate.
+
+`READY_FOR_AUTHORIZATION` deve usar os mesmos validadores de proposta corrente do gateway natural. A apresentação inclui o ID de `executive.operation.proposed`, parâmetros congelados, Verification esperada e exemplos de respostas afirmativas aceitas, mas continua read-only. A presença dessa visão não constitui autorização e não muda `source=user`.
+
+A CLI `executive-gate [goal_id]` expõe a visão diretamente. Comandos que já produzem uma decisão final, incluindo `executive-next`, `executive-step`, `executive-continue` e `user-turn`, podem imprimir a mesma apresentação automaticamente ao parar em `NEEDS_OPERATION_AUTHORIZATION`. O SQLite permanece no schema 11.

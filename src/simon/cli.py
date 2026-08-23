@@ -26,6 +26,11 @@ from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, decide_next
+from simon.executive_gate import (
+    OperationGatePresentation,
+    describe_current_operation_gate,
+    describe_operation_gate,
+)
 from simon.executive_runner import (
     ExecutiveContinueReceipt,
     ExecutiveRunReceipt,
@@ -111,6 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="decide deterministicamente a próxima operação legítima sem executá-la",
     )
     executive_next.add_argument(
+        "goal_id",
+        nargs="?",
+        help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
+    )
+
+    executive_gate = commands.add_parser(
+        "executive-gate",
+        help="descreve o gate operacional atual e a proposta concreta, sem executar nada",
+    )
+    executive_gate.add_argument(
         "goal_id",
         nargs="?",
         help="Goal foreground; se houver somente um Goal aberto, ele é selecionado automaticamente",
@@ -752,6 +767,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         return _resume(database_path, args.goal_id)
     if args.command == "executive-next":
         return _executive_next(database_path, args.goal_id)
+    if args.command == "executive-gate":
+        return _executive_gate(database_path, args.goal_id)
     if args.command == "executive-step":
         return _executive_step(
             database_path,
@@ -985,6 +1002,10 @@ def _executive_step(
         return 1
 
     _print_executive_run_receipt(receipt)
+    final_decision = (
+        receipt.next_decision if receipt.next_decision is not None else receipt.decision
+    )
+    _print_operation_gate_if_applicable(database_path, final_decision)
     if receipt.status == "FAILED":
         return 1
     if receipt.status == "MODEL_REQUIRED":
@@ -1015,6 +1036,7 @@ def _executive_continue(
         return 1
 
     _print_executive_continue_receipt(receipt)
+    _print_operation_gate_if_applicable(database_path, receipt.final_decision)
     if receipt.status == "FAILED":
         return 1
     if receipt.status == "MODEL_REQUIRED":
@@ -1046,6 +1068,11 @@ def _user_turn(
         return 1
 
     _print_user_turn_receipt(receipt)
+    if receipt.executive_receipt is not None:
+        _print_operation_gate_if_applicable(
+            database_path,
+            receipt.executive_receipt.final_decision,
+        )
     if receipt.status == "FAILED":
         return 1
     if receipt.status == "UNSUPPORTED":
@@ -1125,7 +1152,56 @@ def _executive_next(database_path: Path, goal_id: str | None) -> int:
         return 1
 
     _print_executive_decision(decision)
+    _print_operation_gate_if_applicable(database_path, decision)
     return 0
+
+
+def _executive_gate(database_path: Path, goal_id: str | None) -> int:
+    try:
+        presentation = describe_current_operation_gate(database_path, goal_id=goal_id)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Executive gate: falha ({exc})")
+        return 1
+
+    _print_operation_gate_presentation(presentation)
+    return 0
+
+
+def _print_operation_gate_if_applicable(
+    database_path: Path,
+    decision: ExecutiveDecision,
+) -> None:
+    presentation = describe_operation_gate(database_path, decision)
+    if presentation.status != "NOT_OPERATION_GATE":
+        print("Gate operacional:")
+        _print_operation_gate_presentation(presentation)
+
+
+def _print_operation_gate_presentation(presentation: OperationGatePresentation) -> None:
+    print(f"Estado do gate: {presentation.status}")
+    print(f"Operação: {presentation.decision.operation or 'nenhuma'}")
+    print(f"Tipo de proposta: {presentation.proposal_type or 'nenhum'}")
+
+    for field in presentation.details:
+        print(f"{field.label}: {field.value}")
+
+    if presentation.status == "PROPOSAL_REQUIRED":
+        print("Falta materializar uma proposta concreta.")
+        print("Inputs necessários:")
+        for name in presentation.required_inputs:
+            print(f"- {name}")
+        print(f"Comando de materialização: {presentation.materialization_command}")
+        print("Autorização disponível agora: não")
+    elif presentation.status == "READY_FOR_AUTHORIZATION":
+        print(f"Proposta atual: {presentation.proposal_event_id}")
+        print("Autorização disponível agora: sim, somente para esta proposta")
+        print("Respostas explícitas aceitas:")
+        for text in presentation.authorization_examples:
+            print(f'- "{text}"')
+    elif presentation.status == "UNSUPPORTED_GATE":
+        print("Este gate operacional ainda não possui apresentação concreta suportada.")
+    else:
+        print("Gate operacional atual: nenhum")
 
 
 def _print_executive_decision(decision: ExecutiveDecision) -> None:
