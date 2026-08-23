@@ -5665,6 +5665,29 @@ Retries operacionais continuam sendo decisões `NEEDS_OPERATION_AUTHORIZATION`, 
 
 Nenhuma das duas propostas cria Action, escreve em arquivo ou inicia processo. No turno afirmativo posterior, o gateway revalida Goal, Plan, revisão, step, operação, `reason_code=retry_authorization_required`, Action anterior e request persistido. Só então chama os serviços antigos `retry_process_run()` ou `retry_file_patch()` com o `trace_id` de `user.turn.received`.
 
-A autoridade real permanece `action.retry.authorized` com `source=user`. A proposta usa `source=system` e não constitui consentimento. Se uma tentativa posterior substituir a Action que motivou o gate, a proposta antiga não pode ser reutilizada. `analysis.retry` permanece fora desta seção porque sua nova tentativa também exige seleção explícita de modelo/provider.
+A autoridade real permanece `action.retry.authorized` com `source=user`. A proposta usa `source=system` e não constitui consentimento. Se uma tentativa posterior substituir a Action que motivou o gate, a proposta antiga não pode ser reutilizada. O retry cognitivo possui requisitos adicionais de modelo e evidência e é especificado na seção 33.17.
+
+O SQLite permanece no schema 11.
+
+
+### 33.17. Proposta concreta para analysis.retry
+
+O retry de `cognition.analyze` usa o mesmo princípio de autorização concreta, mas não pode ser reduzido a uma Action anterior e parâmetros WORLD. A nova tentativa também depende do modelo escolhido e da visão epistemicamente atual das evidências anteriores. Por isso, `analysis.retry` possui um payload próprio em `executive.operation.proposed`.
+
+`propose_cognition_analysis_retry()` exige uma Action `cognition.analyze` `FAILED` ou `INTERRUPTED` que seja exatamente o `action_id` do gate atual `NEEDS_OPERATION_AUTHORIZATION / analysis.retry`. O helper read-only `get_cognition_retry_context()` revalida que a Action pertence ao Plan ACTIVE, que continua sendo a tentativa mais recente do step e que o único blocker é `PREVIOUS_ATTEMPT_REQUIRES_REVIEW`.
+
+A proposta persiste `proposal_type=analysis.retry`, Goal, Plan, revisão, step, `retry_of_action_id`, `previous_status`, critério de Verification, modelo explícito e a sequência ordenada de `evidence_event_ids` produzida por `_verified_prior_evidence`: somente evidências de tentativas anteriores `COMPLETED` cuja Verification mais recente continua `VERIFIED` podem entrar. O Event usa `source=system`; não chama `ModelProvider`, não cria Action e não registra autorização. A CLI é:
+
+```powershell
+uv run simon analysis-retry-propose --model <modelo> <action_id>
+```
+
+`find_current_cognition_analysis_retry_proposal()` só retorna a proposta operacional mais recente do Goal se o gate, Action anterior, status, Plan, revisão, Verification, modelo persistido e evidências ainda forem válidos. Alteração posterior da Verification de uma dependência, nova revisão de Plan ou nova tentativa no step invalida a proposta.
+
+Quando um turno afirmativo explícito consome a proposta, o gateway exige um `ModelProvider` disponível, mas usa obrigatoriamente o modelo congelado na proposta. `retry_cognition_analysis()` recebe também a revisão do Plan e os IDs de evidência esperados. Ele reconstrói o contexto novamente e recusa a nova Action se a revisão ou a evidência tiverem mudado; `_execute_cognition_analysis_attempt()` repete a comparação imediatamente antes de criar o retry.
+
+A autoridade real continua sendo o Event `action.retry.authorized` criado pelo executor existente com `source=user` e `trace_id` de `user.turn.received`. Seu payload registra `retry_of_action_id`, `previous_status`, capability, modelo e evidências consumidas. O Event de proposta nunca substitui esse grant.
+
+Na CLI, `user-turn` pode construir o adapter Ollama sem um `--model` explícito no turno para permitir o consumo de uma proposta cognitiva já materializada; construir o adapter não chama o runtime. O modelo autorizado continua vindo da proposta. Operações cognitivas seguras posteriores ainda param em `MODEL_REQUIRED` caso o turno não tenha fornecido um modelo ao condutor.
 
 O SQLite permanece no schema 11.

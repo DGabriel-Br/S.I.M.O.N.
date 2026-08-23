@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from simon.actions import Action, get_action
+from simon.cognition_analysis import get_cognition_retry_context
 from simon.events import Event, append_event, get_event
 from simon.executive import ExecutiveDecision, decide_next
 from simon.file_patch import FilePatchRequest, bind_file_patch_step
@@ -64,6 +65,21 @@ class FilePatchRetryProposal:
     retry_of_action_id: str
     previous_status: str
     request: FilePatchRequest
+
+
+@dataclass(frozen=True, slots=True)
+class CognitionAnalysisRetryProposal:
+    event: Event
+    goal_id: str
+    plan_id: str
+    plan_revision: int
+    step_id: str
+    reason: str
+    verification: str
+    retry_of_action_id: str
+    previous_status: str
+    model: str
+    evidence_event_ids: tuple[str, ...]
 
 
 def propose_process_run(
@@ -303,6 +319,135 @@ def propose_file_patch_retry(
         retry_of_action_id=original.id,
         previous_status=original.status,
         request=request,
+    )
+
+
+def propose_cognition_analysis_retry(
+    database_path: Path,
+    *,
+    action_id: str,
+    model: str,
+    trace_id: str | None = None,
+) -> CognitionAnalysisRetryProposal:
+    """Persiste um retry cognition.analyze concreto sem autorizar nem chamar o modelo."""
+    normalized_model = model.strip()
+    if not normalized_model:
+        raise ValueError("modelo do retry cognition.analyze não pode ser vazio")
+
+    context = get_cognition_retry_context(database_path, action_id=action_id)
+    original = context.original_action
+    decision = decide_next(database_path, goal_id=original.goal_id)
+    _require_retry_authorization_gate(decision, operation="analysis.retry", original=original)
+
+    previous_event_id = _latest_operation_proposal_event_id(database_path, original.goal_id)
+    event = Event.create(
+        kind="executive.operation.proposed",
+        source="system",
+        payload={
+            "proposal_type": "analysis.retry",
+            "operation": "analysis.retry",
+            "reason_code": decision.reason_code,
+            "reason": decision.reason,
+            "goal_id": context.plan.goal_id,
+            "plan_id": context.plan.id,
+            "plan_revision": context.plan.revision,
+            "step_id": context.step.step_id,
+            "capability": "cognition.analyze",
+            "verification": context.verification,
+            "retry_of_action_id": original.id,
+            "previous_status": original.status,
+            "model": normalized_model,
+            "evidence_event_ids": list(context.evidence_event_ids),
+            "supersedes_proposal_event_id": previous_event_id,
+        },
+        trace_id=trace_id,
+        goal_id=context.plan.goal_id,
+    )
+    append_event(database_path, event)
+    return CognitionAnalysisRetryProposal(
+        event=event,
+        goal_id=context.plan.goal_id,
+        plan_id=context.plan.id,
+        plan_revision=context.plan.revision,
+        step_id=context.step.step_id,
+        reason=decision.reason,
+        verification=context.verification,
+        retry_of_action_id=original.id,
+        previous_status=original.status,
+        model=normalized_model,
+        evidence_event_ids=context.evidence_event_ids,
+    )
+
+
+def find_current_cognition_analysis_retry_proposal(
+    database_path: Path,
+    decision: ExecutiveDecision,
+) -> CognitionAnalysisRetryProposal | None:
+    if (
+        decision.outcome != "NEEDS_OPERATION_AUTHORIZATION"
+        or decision.operation != "analysis.retry"
+    ):
+        return None
+    original = _decision_retry_action(database_path, decision, kind="cognition.analyze")
+    if original is None:
+        return None
+    event = _latest_operation_proposal_event(database_path, original.goal_id)
+    if event is None:
+        return None
+    payload = event.payload
+    if not _retry_payload_matches(payload, decision, original, proposal_type="analysis.retry"):
+        return None
+    if payload.get("capability") != "cognition.analyze":
+        return None
+
+    raw_revision = payload.get("plan_revision")
+    raw_reason = payload.get("reason")
+    raw_verification = payload.get("verification")
+    raw_model = payload.get("model")
+    raw_evidence = payload.get("evidence_event_ids")
+    if (
+        not isinstance(raw_revision, int)
+        or not isinstance(raw_reason, str)
+        or not raw_reason.strip()
+        or not isinstance(raw_verification, str)
+        or not raw_verification.strip()
+        or not isinstance(raw_model, str)
+        or not raw_model.strip()
+        or not isinstance(raw_evidence, list)
+    ):
+        return None
+
+    normalized_evidence: list[str] = []
+    for event_id in raw_evidence:
+        if not isinstance(event_id, str) or not event_id.strip():
+            return None
+        normalized_evidence.append(event_id.strip())
+
+    try:
+        context = get_cognition_retry_context(database_path, action_id=original.id)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    evidence_event_ids = tuple(normalized_evidence)
+    if (
+        context.plan.id != original.plan_id
+        or context.plan.revision != raw_revision
+        or context.verification != raw_verification.strip()
+        or context.evidence_event_ids != evidence_event_ids
+    ):
+        return None
+
+    return CognitionAnalysisRetryProposal(
+        event=event,
+        goal_id=original.goal_id,
+        plan_id=original.plan_id,
+        plan_revision=raw_revision,
+        step_id=original.step_id,
+        reason=raw_reason.strip(),
+        verification=raw_verification.strip(),
+        retry_of_action_id=original.id,
+        previous_status=original.status,
+        model=raw_model.strip(),
+        evidence_event_ids=evidence_event_ids,
     )
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from simon.assessment_confirmation import confirm_action_assessment
+from simon.cognition_analysis import retry_cognition_analysis
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, decide_next
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
@@ -14,6 +15,7 @@ from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
 from simon.operation_proposal import (
+    find_current_cognition_analysis_retry_proposal,
     find_current_file_patch_proposal,
     find_current_file_patch_retry_proposal,
     find_current_process_retry_proposal,
@@ -32,6 +34,7 @@ UserTurnEffectType = Literal[
     "file.patch",
     "process.retry",
     "file.retry",
+    "analysis.retry",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -543,6 +546,51 @@ def _route_operation_authorization_turn(
             )
         effect_type = "file.retry"
         effect_id = file_retry_execution.action.id
+    elif decision.operation == "analysis.retry":
+        analysis_retry_proposal = find_current_cognition_analysis_retry_proposal(
+            database_path,
+            decision,
+        )
+        if analysis_retry_proposal is None:
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="operation_proposal_required",
+                current_decision=decision,
+            )
+        if provider is None:
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="analysis_retry_provider_required",
+                current_decision=decision,
+            )
+        proposal_goal_id = analysis_retry_proposal.goal_id
+        proposal_event_id = analysis_retry_proposal.event.id
+        try:
+            analysis_retry_execution = retry_cognition_analysis(
+                database_path,
+                provider,
+                model=analysis_retry_proposal.model,
+                action_id=analysis_retry_proposal.retry_of_action_id,
+                trace_id=turn_event.id,
+                expected_plan_revision=analysis_retry_proposal.plan_revision,
+                expected_evidence_event_ids=analysis_retry_proposal.evidence_event_ids,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="AUTHORIZE",
+                goal_id=proposal_goal_id,
+                error=str(exc),
+                reason_code="operation_authorization_routing_failed",
+                current_decision=decision,
+            )
+        effect_type = "analysis.retry"
+        effect_id = analysis_retry_execution.action.id
     else:
         return _unsupported_turn(
             database_path,
@@ -663,6 +711,7 @@ def _unsupported_turn(
             "AUTHORIZE_CURRENT_FILE_PATCH_PROPOSAL",
             "AUTHORIZE_CURRENT_PROCESS_RETRY_PROPOSAL",
             "AUTHORIZE_CURRENT_FILE_RETRY_PROPOSAL",
+            "AUTHORIZE_CURRENT_ANALYSIS_RETRY_PROPOSAL",
         ],
     }
     if current_decision is not None:

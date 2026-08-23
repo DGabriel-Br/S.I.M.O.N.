@@ -368,7 +368,7 @@ Quando o gate atual ainda é o mesmo `plan.run`, somente a proposta `process.run
 
 O mesmo contrato de proposta concreta passa a cobrir `file.patch`. `file-propose` recebe um `FilePatchRequest` com workspace, caminho relativo, trecho esperado e substituição e persiste `executive.operation.proposed` sem ler como autorização e sem modificar o filesystem. A proposta precisa continuar correspondente ao gate `plan.patch/file.patch`, ao mesmo Plan e revisão e ao mesmo step `CHANGE/unknown` antes de ser consumida. Um turno explícito como `sim`, `pode aplicar` ou `pode alterar` chama o executor `execute_next_file_patch()` existente com o `trace_id` do `user.turn.received`; portanto `file.patch.authorized` continua sendo a autoridade real de `source=user`.
 
-Sem proposta concreta, texto afirmativo continua sem efeito. Uma proposta mais nova substitui a anterior para aquele Goal, e propostas que já não correspondem ao Plan/step atuais não podem ser consumidas. Retries operacionais permanecem fora do gateway natural neste corte.
+Sem proposta concreta, texto afirmativo continua sem efeito. Uma proposta mais nova substitui a anterior para aquele Goal, e propostas que já não correspondem ao Plan/step atuais não podem ser consumidas. Retries só entram no gateway quando possuem uma proposta concreta correspondente ao gate atual.
 
 Turnos contextuais roteados registram `executive.user_turn.routed` com um snapshot do gate consumido, `authority_scope` específico e referência ao efeito persistido. As scopes atuais são `CURRENT_USER_INPUT_GATE_ONLY`, `CURRENT_CONFIRMATION_GATE_ONLY` e `CURRENT_OPERATION_PROPOSAL_ONLY`. Fora desses gates, texto livre continua sem efeito. Nenhuma tabela ou migration nova é necessária.
 
@@ -384,4 +384,19 @@ Um turno afirmativo posterior só pode consumir a proposta de retry mais recente
 
 A execução continua usando `retry_process_run()` ou `retry_file_patch()` com o ID de `user.turn.received` como `trace_id`. Portanto `action.retry.authorized` permanece o único Event autoritativo de `source=user`; `executive.operation.proposed` continua sendo apenas proposta.
 
-`analysis.retry` permanece fora deste bridge por enquanto. Como a nova tentativa cognitiva depende também de um `ModelProvider` e de um modelo explícito, seu contrato de proposta será tratado separadamente em vez de ampliar prematuramente a abstração dos retries operacionais.
+`analysis.retry` usa um contrato separado, descrito abaixo, porque além da Action anterior ele precisa congelar modelo e evidência epistemicamente atual.
+
+
+## Proposta concreta para retry cognitivo
+
+`analysis.retry` continua sendo um gate `NEEDS_OPERATION_AUTHORIZATION`, mas sua proposta precisa conter mais contexto que os retries WORLD. `analysis-retry-propose --model MODELO act_ID` reconstrói a tentativa `cognition.analyze` `FAILED` ou `INTERRUPTED`, valida que ela é a tentativa atual do step e persiste `executive.operation.proposed` com `proposal_type=analysis.retry`.
+
+A proposta congela `retry_of_action_id`, `previous_status`, Goal, Plan, revisão, step, critério de Verification, modelo e a sequência ordenada de `evidence_event_ids` atualmente obtida somente das tentativas anteriores cuja Verification mais recente continua `VERIFIED`. Nenhum provider é chamado, nenhuma nova Action é criada e `action.retry.authorized` ainda não existe nessa etapa.
+
+Um turno afirmativo só pode consumir a proposta mais recente se `decide_next()` continuar pedindo `analysis.retry` para a mesma Action. Antes da execução, o gateway reconstrói novamente o contexto cognitivo e exige a mesma revisão de Plan, o mesmo critério de Verification e exatamente os mesmos IDs de evidência, na mesma ordem. Mudança epistemológica posterior torna a proposta stale.
+
+A aprovação chama `retry_cognition_analysis()` com o modelo congelado na proposta e o `trace_id` de `user.turn.received`. O executor existente permanece responsável por criar `action.retry.authorized` com `source=user`, registrar o modelo e a evidência realmente consumida e criar a nova Action. Para reduzir uma janela entre revalidação e criação da Action, o executor também aceita a revisão e a sequência de evidência esperadas e recusa o retry se elas mudarem durante a autorização.
+
+Na CLI, `user-turn` constrói o provider local mesmo quando o turno não recebe `--model`; isso não chama o modelo por si só. Se o gate consumido for uma proposta `analysis.retry`, o modelo vem obrigatoriamente da proposta. O parâmetro `--model` do turno continua sendo usado apenas pelo condutor para operações cognitivas seguras posteriores. Sem provider na API direta, a proposta não é consumida.
+
+O SQLite permanece no schema 11.

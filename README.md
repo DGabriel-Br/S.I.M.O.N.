@@ -712,7 +712,7 @@ uv run simon file-propose gol_... --workspace C:\projeto --file script.py --old 
 
 `file-propose` persiste workspace, caminho relativo, trecho esperado e substituição proposta sem tocar no arquivo e sem criar Action. Enquanto a proposta ainda corresponder ao gate `plan.patch/file.patch` atual, um turno afirmativo explícito como `sim`, `pode aplicar` ou `pode alterar` pode autorizar somente aquela alteração. O executor existente continua sendo o responsável por criar `file.patch.authorized`, aplicar a substituição localizada e registrar o resultado com o `trace_id` do turno humano.
 
-Sem proposta concreta, um `sim` diante de `NEEDS_OPERATION_AUTHORIZATION` continua sem efeito. Retries operacionais permanecem fora desse roteamento natural neste corte. Depois de uma autorização contextual válida, o condutor retoma somente operações `PROCEED` seguras até o próximo gate.
+Sem proposta concreta, um `sim` diante de `NEEDS_OPERATION_AUTHORIZATION` continua sem efeito. Depois de uma autorização contextual válida, o condutor retoma somente operações `PROCEED` seguras até o próximo gate.
 
 O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
 
@@ -729,4 +729,10 @@ uv run simon process-retry-propose act_ID --cwd C:\projeto python -m pytest
 uv run simon file-retry-propose act_ID --workspace C:\projeto --file script.py --old "valor = 9" --new "valor = 2"
 ```
 
-`analysis.retry` continua usando sua fronteira explícita própria neste corte, pois também exige modelo e provider definidos.
+`analysis.retry` também possui proposta concreta, mas inclui contexto epistemológico e modelo:
+
+```powershell
+uv run simon analysis-retry-propose --model qwen3.5:4b-q4_K_M act_ID
+```
+
+A proposta congela a Action anterior, a revisão do Plan, o critério de Verification, o modelo e os `evidence_event_ids` atualmente verificados. Um `user-turn` afirmativo só autoriza a proposta mais recente ainda correspondente ao gate; se a evidência verificada mudar, a proposta deixa de ser válida. A autoridade real continua sendo `action.retry.authorized` com `source=user`. O modelo da tentativa vem da proposta, não de inferência do texto humano.

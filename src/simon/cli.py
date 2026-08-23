@@ -44,10 +44,12 @@ from simon.memories import Memory
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
 from simon.operation_proposal import (
+    CognitionAnalysisRetryProposal,
     FilePatchProposal,
     FilePatchRetryProposal,
     ProcessRetryProposal,
     ProcessRunProposal,
+    propose_cognition_analysis_retry,
     propose_file_patch,
     propose_file_patch_retry,
     propose_process_retry,
@@ -598,6 +600,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ollama_arguments(analysis_retry)
 
+    analysis_retry_propose = commands.add_parser(
+        "analysis-retry-propose",
+        help="propõe um retry cognition.analyze concreto sem chamar o modelo",
+    )
+    analysis_retry_propose.add_argument(
+        "--model",
+        required=True,
+        help="modelo exato que será usado se a proposta for autorizada",
+    )
+    analysis_retry_propose.add_argument(
+        "action_id",
+        help="Action cognition.analyze FAILED ou INTERRUPTED a ser proposta para retry",
+    )
+
     analysis_assess = commands.add_parser(
         "analysis-assess",
         help="avalia semanticamente uma Action cognition.analyze concluída",
@@ -901,6 +917,12 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.model,
             args.goal_id,
         )
+    if args.command == "analysis-retry-propose":
+        return _analysis_retry_propose(
+            database_path,
+            args.action_id,
+            args.model,
+        )
     if args.command == "analysis-retry":
         return _analysis_retry(
             database_path,
@@ -1009,7 +1031,7 @@ def _user_turn(
     model: str | None,
     max_transitions: int,
 ) -> int:
-    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds) if model else None
+    provider = OllamaProvider(base_url=base_url, timeout_seconds=timeout_seconds)
     try:
         receipt = handle_user_turn(
             database_path,
@@ -2283,6 +2305,43 @@ def _plan_analyze(
         print(f"Duração: {receipt.total_duration_ns / 1_000_000_000:.2f}s")
     print("Verification criada: não")
     return 0
+
+
+def _analysis_retry_propose(
+    database_path: Path,
+    action_id: str,
+    model: str,
+) -> int:
+    try:
+        proposal = propose_cognition_analysis_retry(
+            database_path,
+            action_id=action_id,
+            model=model,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Proposta analysis.retry: falha ({exc})")
+        return 1
+
+    _print_analysis_retry_proposal(proposal)
+    return 0
+
+
+def _print_analysis_retry_proposal(proposal: CognitionAnalysisRetryProposal) -> None:
+    print(f"Proposta operacional: {proposal.event.id}")
+    print("Tipo: analysis.retry")
+    print(f"Goal: {proposal.goal_id}")
+    print(f"Plan: {proposal.plan_id} rev{proposal.plan_revision}")
+    print(f"Step: {proposal.step_id}")
+    print(f"Action anterior: {proposal.retry_of_action_id} ({proposal.previous_status})")
+    print(f"Motivo: {proposal.reason}")
+    print(f"Verification esperada: {proposal.verification}")
+    print(f"Modelo: {proposal.model}")
+    print(f"Evidências verificadas: {len(proposal.evidence_event_ids)}")
+    for event_id in proposal.evidence_event_ids:
+        print(f"- {event_id}")
+    print("Nova tentativa realizada: não")
+    print("Autorização de retry registrada: não")
+    print('Próximo passo: responda ao gate atual com "sim" ou "autorizo".')
 
 
 def _analysis_retry(

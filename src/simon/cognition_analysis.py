@@ -76,6 +76,15 @@ class CognitionAnalysisReceipt:
     retry_of_action_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CognitionRetryContext:
+    original_action: Action
+    plan: Plan
+    step: StepReadiness
+    verification: str
+    evidence_event_ids: tuple[str, ...]
+
+
 def execute_next_cognition_analysis(
     database_path: Path,
     provider: ModelProvider,
@@ -106,15 +115,12 @@ def execute_next_cognition_analysis(
     )
 
 
-def retry_cognition_analysis(
+def get_cognition_retry_context(
     database_path: Path,
-    provider: ModelProvider,
     *,
-    model: str,
     action_id: str,
-    trace_id: str | None = None,
-) -> CognitionAnalysisReceipt:
-    """Autoriza nova tentativa cognitiva após falha ou interrupção operacional."""
+) -> CognitionRetryContext:
+    """Reconstrói o contexto epistemicamente atual de um retry cognition.analyze."""
     original = get_action(database_path, action_id)
     if original is None:
         raise ValueError(f"action não encontrada: {action_id}")
@@ -141,14 +147,59 @@ def retry_cognition_analysis(
         raise RuntimeError(f"step da tentativa não existe no Plan ativo: {original.step_id}")
     _validate_retry_readiness(step, original)
 
+    raw_step = _plan_step(readiness.plan, step.step_id)
+    verification = _required_text(raw_step, "verification")
+    evidence_event_ids = tuple(
+        event.id
+        for event in _verified_prior_evidence(
+            database_path,
+            plan=readiness.plan,
+            step_id=step.step_id,
+        )
+    )
+    return CognitionRetryContext(
+        original_action=original,
+        plan=readiness.plan,
+        step=step,
+        verification=verification,
+        evidence_event_ids=evidence_event_ids,
+    )
+
+
+def retry_cognition_analysis(
+    database_path: Path,
+    provider: ModelProvider,
+    *,
+    model: str,
+    action_id: str,
+    trace_id: str | None = None,
+    expected_plan_revision: int | None = None,
+    expected_evidence_event_ids: tuple[str, ...] | None = None,
+) -> CognitionAnalysisReceipt:
+    """Autoriza nova tentativa cognitiva após falha ou interrupção operacional."""
+    context = get_cognition_retry_context(database_path, action_id=action_id)
+    if expected_plan_revision is not None and context.plan.revision != expected_plan_revision:
+        raise ValueError(
+            "retry cognition.analyze recusado porque a revisão do Plan mudou desde a proposta: "
+            f"{expected_plan_revision} -> {context.plan.revision}"
+        )
+    if (
+        expected_evidence_event_ids is not None
+        and context.evidence_event_ids != expected_evidence_event_ids
+    ):
+        raise ValueError(
+            "retry cognition.analyze recusado porque a evidência verificada mudou desde a proposta"
+        )
+
     return _execute_cognition_analysis_attempt(
         database_path,
         provider,
         model=model,
-        plan=readiness.plan,
-        step=step,
+        plan=context.plan,
+        step=context.step,
         trace_id=trace_id,
-        retry_of_action=original,
+        retry_of_action=context.original_action,
+        expected_evidence_event_ids=context.evidence_event_ids,
     )
 
 
@@ -161,6 +212,7 @@ def _execute_cognition_analysis_attempt(
     step: StepReadiness,
     trace_id: str | None,
     retry_of_action: Action | None,
+    expected_evidence_event_ids: tuple[str, ...] | None = None,
 ) -> CognitionAnalysisReceipt:
     raw_step = _plan_step(plan, step.step_id)
     verification_intent = _required_text(raw_step, "verification")
@@ -170,6 +222,14 @@ def _execute_cognition_analysis_attempt(
         step_id=step.step_id,
     )
     evidence_event_ids = tuple(event.id for event in evidence_events)
+    if (
+        expected_evidence_event_ids is not None
+        and evidence_event_ids != expected_evidence_event_ids
+    ):
+        raise ValueError(
+            "retry cognition.analyze recusado porque a evidência verificada mudou "
+            "durante a autorização"
+        )
     analysis_trace_id = trace_id or f"trc_{uuid4().hex}"
 
     authorization_event = None

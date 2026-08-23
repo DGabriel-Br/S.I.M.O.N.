@@ -20,6 +20,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - proposta concreta de `process.run` persistida antes da autorização natural: `process-propose` registra executável, argv, cwd e timeout sem criar Action; um turno afirmativo posterior só pode autorizar a proposta mais recente que ainda corresponda ao gate atual.
 - proposta concreta de `file.patch` no mesmo contrato: `file-propose` registra workspace, arquivo relativo, trecho esperado e substituição sem modificar o filesystem; um turno afirmativo posterior só pode aplicar a proposta atual revalidada contra Goal, Plan, revisão e step.
 - propostas concretas de retry para `process.run` e `file.patch`: `process-retry-propose` e `file-retry-propose` congelam a Action anterior e os parâmetros da nova tentativa sem executá-la; um turno afirmativo só pode consumir a proposta ainda correspondente ao gate `retry_authorization_required` atual.
+- proposta concreta de retry para `cognition.analyze`: `analysis-retry-propose` congela Action anterior, modelo, critério de Verification e evidências verificadas atuais; a aprovação recusa a tentativa se Plan ou evidência mudarem antes do turno afirmativo.
 
 ## [0.1.0] - 2026-08-19
 
