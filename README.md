@@ -704,7 +704,15 @@ uv run simon process-propose gol_... --cwd C:\projeto python -m pytest
 
 `process-propose` persiste executável, argumentos, `cwd` e timeout em `executive.operation.proposed`, com `source=system`, sem criar Action e sem registrar autorização. Enquanto essa proposta ainda corresponder exatamente ao Goal, Plan e step do gate atual, um turno afirmativo explícito como `sim`, `autorizo` ou `pode executar` pode autorizar somente aquela proposta. O `process.run.authorized` continua sendo produzido pelo executor existente com `source=user` e `trace_id` do turno que aprovou a operação.
 
-Sem proposta concreta, um `sim` diante de `NEEDS_OPERATION_AUTHORIZATION` continua sem efeito. `file.patch` e retries operacionais também permanecem fora desse roteamento natural neste corte. Depois de uma autorização contextual válida, o condutor retoma somente operações `PROCEED` seguras até o próximo gate.
+O mesmo contrato agora cobre `file.patch`. A alteração precisa ser materializada antes com os parâmetros exatos:
+
+```powershell
+uv run simon file-propose gol_... --workspace C:\projeto --file script.py --old "valor = 1" --new "valor = 2"
+```
+
+`file-propose` persiste workspace, caminho relativo, trecho esperado e substituição proposta sem tocar no arquivo e sem criar Action. Enquanto a proposta ainda corresponder ao gate `plan.patch/file.patch` atual, um turno afirmativo explícito como `sim`, `pode aplicar` ou `pode alterar` pode autorizar somente aquela alteração. O executor existente continua sendo o responsável por criar `file.patch.authorized`, aplicar a substituição localizada e registrar o resultado com o `trace_id` do turno humano.
+
+Sem proposta concreta, um `sim` diante de `NEEDS_OPERATION_AUTHORIZATION` continua sem efeito. Retries operacionais permanecem fora desse roteamento natural neste corte. Depois de uma autorização contextual válida, o condutor retoma somente operações `PROCEED` seguras até o próximo gate.
 
 O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
 

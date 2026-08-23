@@ -43,7 +43,12 @@ from simon.goals import get_goal
 from simon.memories import Memory
 from simon.model_provider import ModelProvider, ModelProviderError, StructuredModelResult
 from simon.ollama_provider import OllamaProvider
-from simon.operation_proposal import ProcessRunProposal, propose_process_run
+from simon.operation_proposal import (
+    FilePatchProposal,
+    ProcessRunProposal,
+    propose_file_patch,
+    propose_process_run,
+)
 from simon.plan_completion import complete_verified_plan
 from simon.plan_intake import materialize_plan_proposal
 from simon.plan_proposal import (
@@ -434,6 +439,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="trecho UTF-8 substituto; use uma string vazia para remoção",
     )
 
+    file_propose = commands.add_parser(
+        "file-propose",
+        help="materializa uma proposta concreta de file.patch sem modificar o arquivo",
+    )
+    file_propose.add_argument(
+        "goal_id",
+        help="ID do Goal cujo CHANGE/unknown atual receberá uma proposta concreta",
+    )
+    file_propose.add_argument(
+        "--workspace",
+        required=True,
+        help="diretório raiz proposto para a modificação",
+    )
+    file_propose.add_argument(
+        "--file",
+        required=True,
+        dest="relative_path",
+        help="caminho relativo proposto dentro do workspace",
+    )
+    file_propose.add_argument(
+        "--old",
+        required=True,
+        dest="expected_text",
+        help="trecho UTF-8 que a proposta espera substituir exatamente uma vez",
+    )
+    file_propose.add_argument(
+        "--new",
+        required=True,
+        dest="replacement_text",
+        help="trecho UTF-8 substituto proposto; use string vazia para remoção",
+    )
+
     file_retry = commands.add_parser(
         "file-retry",
         help="autoriza nova tentativa file.patch após falha ou interrupção operacional",
@@ -748,6 +785,15 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         )
     if args.command == "plan-patch":
         return _plan_patch(
+            database_path,
+            args.goal_id,
+            args.workspace,
+            args.relative_path,
+            args.expected_text,
+            args.replacement_text,
+        )
+    if args.command == "file-propose":
+        return _file_propose(
             database_path,
             args.goal_id,
             args.workspace,
@@ -1906,6 +1952,54 @@ def _plan_patch(
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
 
+
+
+def _file_propose(
+    database_path: Path,
+    goal_id: str,
+    workspace: str,
+    relative_path: str,
+    expected_text: str,
+    replacement_text: str,
+) -> int:
+    try:
+        request = FilePatchRequest(
+            workspace=workspace,
+            relative_path=relative_path,
+            expected_text=expected_text,
+            replacement_text=replacement_text,
+        )
+        proposal = propose_file_patch(
+            database_path,
+            goal_id=goal_id,
+            request=request,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Proposta file.patch: falha ({exc})")
+        return 1
+
+    _print_file_patch_proposal(proposal)
+    return 0
+
+
+def _print_file_patch_proposal(proposal: FilePatchProposal) -> None:
+    print(f"Proposta operacional: {proposal.event.id}")
+    print("Tipo: file.patch")
+    print(f"Goal: {proposal.goal_id}")
+    print(f"Plan: {proposal.plan_id} rev{proposal.plan_revision}")
+    print(f"Step: {proposal.step_id}")
+    print(f"Motivo: {proposal.reason}")
+    print(f"Capability detail: {proposal.capability_detail}")
+    print(f"Verificação esperada: {proposal.verification}")
+    print(f"Workspace: {proposal.request.workspace}")
+    print(f"Arquivo: {proposal.request.relative_path}")
+    print("Trecho esperado:")
+    print(proposal.request.expected_text)
+    print("Substituição proposta:")
+    print(proposal.request.replacement_text)
+    print("Modificação realizada: não")
+    print("Autorização registrada: não")
+    print('Próximo passo: responda ao gate atual com "sim" ou "pode aplicar".')
 
 def _file_retry(
     database_path: Path,

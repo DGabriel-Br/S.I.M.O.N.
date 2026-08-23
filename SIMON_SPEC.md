@@ -5613,7 +5613,7 @@ Quando a decisão é `NEEDS_USER_INPUT` com `action.answer`, o turno não vazio 
 
 Quando a decisão é `NEEDS_USER_CONFIRMATION`, somente uma confirmação afirmativa pertencente ao conjunto determinístico suportado pode ser aplicada. `verification.confirm` usa exatamente o `verification_id` do assessment atual; `goal.complete` usa exatamente o assessment `goal.semantic` atual. Ambos os serviços existentes revalidam freshness e provenance antes de promover o estado.
 
-`NEEDS_OPERATION_AUTHORIZATION` só entra na linguagem natural quando existe uma proposta operacional concreta que corresponda ao gate atual. O primeiro caso suportado é `process.run`, detalhado na seção 33.14. Sem essa proposta, uma resposta afirmativa não cria Action. `file.patch` e retries operacionais continuam exigindo as fronteiras explícitas anteriores.
+`NEEDS_OPERATION_AUTHORIZATION` só entra na linguagem natural quando existe uma proposta operacional concreta que corresponda ao gate atual. `process.run` é detalhado na seção 33.14 e `file.patch` na seção 33.15. Sem proposta correspondente, uma resposta afirmativa não cria Action. Retries operacionais continuam exigindo as fronteiras explícitas anteriores.
 
 O Event de roteamento contextual inclui o snapshot do gate consumido, `effect_type`, `effect_id` e uma `authority_scope` limitada ao gate atual. O ModelProvider não classifica confirmações, não escolhe o alvo e não cria autorização. O SQLite permanece no schema 11.
 
@@ -5635,3 +5635,22 @@ Somente a proposta mais recente de `process.run` para o Goal pode ser considerad
 Se o usuário responder afirmativamente enquanto essa proposta continua atual, `user-turn` usa exatamente o `ProcessRunRequest` persistido e chama `execute_next_process_run()` com o ID de `user.turn.received` como `trace_id`. O executor mantém seu contrato antigo: cria `process.run.authorized` com `source=user`, cria a Action e executa sem shell implícito. O gateway não fabrica um segundo grant; ele apenas vincula a fala humana ao grant que o Core já sabe registrar.
 
 O Event `executive.user_turn.routed` registra `authority_scope=CURRENT_OPERATION_PROPOSAL_ONLY`, o `proposal_event_id` consumido e a Action resultante. Sem proposta, com texto não afirmativo, com proposta stale ou diante de outro tipo de autorização operacional, nenhuma Action externa é criada. O SQLite permanece no schema 11.
+
+
+### 33.15. Proposta concreta de autorização para file.patch
+
+O segundo efeito externo coberto pela autorização conversacional concreta é `file.patch`. A proposta continua não sendo consentimento e não modifica arquivo; ela apenas materializa o `FilePatchRequest` exato que o usuário poderá aprovar depois.
+
+`propose_file_patch()` exige uma `ExecutiveDecision` atual em `NEEDS_OPERATION_AUTHORIZATION`, operação `plan.patch` e capability `file.patch`. O request é validado por `FilePatchRequest` e ligado ao Plan ACTIVE por `bind_file_patch_step()`. O Event `executive.operation.proposed`, com `source=system`, registra Goal, Plan, revisão, step, `capability_detail`, critério de Verification, workspace, caminho relativo, trecho esperado e substituição proposta. Nenhuma Action, autorização ou escrita no filesystem acontece nessa etapa.
+
+A CLI expõe a proposta com:
+
+```powershell
+uv run simon file-propose gol_ID --workspace C:\projeto --file script.py --old "valor = 1" --new "valor = 2"
+```
+
+Somente a proposta operacional mais recente do Goal pode ser consumida. Para continuar válida, ela precisa corresponder ao mesmo gate `plan.patch/file.patch`, Goal, Plan, revisão e step atuais, e o request precisa continuar ligável ao `CHANGE/unknown` persistido. Uma proposta nova registra `supersedes_proposal_event_id`, tornando a anterior inelegível para autorização natural.
+
+Um turno afirmativo explícito como `sim`, `pode aplicar`, `pode alterar` ou `pode modificar` pode consumir a proposta atual. O gateway chama `execute_next_file_patch()` com o ID de `user.turn.received` como `trace_id`; o executor existente cria `file.patch.authorized` com `source=user`, aplica a substituição localizada e registra hashes e resultado como antes. A proposta não antecipa a validação do conteúdo real do arquivo: ausência, ambiguidade do trecho, path inválido em runtime ou outro erro operacional continuam sendo responsabilidade do executor e podem produzir uma Action `FAILED`.
+
+O Event `executive.user_turn.routed` usa `authority_scope=CURRENT_OPERATION_PROPOSAL_ONLY`, registra o `proposal_event_id` consumido e a Action `file.patch` resultante. Sem proposta, com texto não afirmativo ou com proposta stale, nenhuma alteração é realizada. Retries de `file.patch` continuam fora deste bridge natural. O SQLite permanece no schema 11.

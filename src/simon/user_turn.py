@@ -10,9 +10,13 @@ from simon.assessment_confirmation import confirm_action_assessment
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, decide_next
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
+from simon.file_patch import execute_next_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
-from simon.operation_proposal import find_current_process_run_proposal
+from simon.operation_proposal import (
+    find_current_file_patch_proposal,
+    find_current_process_run_proposal,
+)
 from simon.process_execution import execute_next_process_run
 from simon.user_ask import answer_user_ask
 
@@ -23,6 +27,7 @@ UserTurnEffectType = Literal[
     "verification.confirmed",
     "goal.completed",
     "process.run",
+    "file.patch",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -55,6 +60,9 @@ _AUTHORIZE_UTTERANCES = {
     "pode executar",
     "pode rodar",
     "sim pode executar",
+    "pode alterar",
+    "pode aplicar",
+    "pode modificar",
 }
 
 
@@ -406,7 +414,70 @@ def _route_operation_authorization_turn(
             reason_code="explicit_operation_authorization_required",
             current_decision=decision,
         )
-    if decision.operation != "plan.run" or decision.capability != "process.run":
+
+    if decision.operation == "plan.run" and decision.capability == "process.run":
+        process_proposal = find_current_process_run_proposal(database_path, decision)
+        if process_proposal is None:
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="operation_proposal_required",
+                current_decision=decision,
+            )
+        proposal_goal_id = process_proposal.goal_id
+        proposal_event_id = process_proposal.event.id
+        try:
+            process_execution = execute_next_process_run(
+                database_path,
+                goal_id=proposal_goal_id,
+                request=process_proposal.request,
+                trace_id=turn_event.id,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="AUTHORIZE",
+                goal_id=proposal_goal_id,
+                error=str(exc),
+                reason_code="operation_authorization_routing_failed",
+                current_decision=decision,
+            )
+        effect_type: UserTurnEffectType = "process.run"
+        effect_id = process_execution.action.id
+    elif decision.operation == "plan.patch" and decision.capability == "file.patch":
+        patch_proposal = find_current_file_patch_proposal(database_path, decision)
+        if patch_proposal is None:
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="operation_proposal_required",
+                current_decision=decision,
+            )
+        proposal_goal_id = patch_proposal.goal_id
+        proposal_event_id = patch_proposal.event.id
+        try:
+            patch_execution = execute_next_file_patch(
+                database_path,
+                goal_id=proposal_goal_id,
+                request=patch_proposal.request,
+                trace_id=turn_event.id,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="AUTHORIZE",
+                goal_id=proposal_goal_id,
+                error=str(exc),
+                reason_code="operation_authorization_routing_failed",
+                current_decision=decision,
+            )
+        effect_type = "file.patch"
+        effect_id = patch_execution.action.id
+    else:
         return _unsupported_turn(
             database_path,
             turn_event=turn_event,
@@ -415,36 +486,20 @@ def _route_operation_authorization_turn(
             current_decision=decision,
         )
 
-    proposal = find_current_process_run_proposal(database_path, decision)
-    if proposal is None:
-        return _unsupported_turn(
-            database_path,
-            turn_event=turn_event,
-            goal_id=goal_id,
-            reason_code="operation_proposal_required",
-            current_decision=decision,
-        )
-
     try:
-        execution = execute_next_process_run(
-            database_path,
-            goal_id=proposal.goal_id,
-            request=proposal.request,
-            trace_id=turn_event.id,
-        )
         executive_receipt = run_executive_until_gate(
             database_path,
-            goal_id=proposal.goal_id,
+            goal_id=proposal_goal_id,
             provider=provider,
             model=model,
             max_transitions=max_transitions,
         )
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (RuntimeError, TypeError, ValueError) as exc:
         return _failed_turn(
             database_path,
             turn_event=turn_event,
             intent="AUTHORIZE",
-            goal_id=proposal.goal_id,
+            goal_id=proposal_goal_id,
             error=str(exc),
             reason_code="operation_authorization_routing_failed",
             current_decision=decision,
@@ -456,11 +511,11 @@ def _route_operation_authorization_turn(
         intent="AUTHORIZE",
         executive_receipt=executive_receipt,
         authority_scope="CURRENT_OPERATION_PROPOSAL_ONLY",
-        goal_id=proposal.goal_id,
+        goal_id=proposal_goal_id,
         current_decision=decision,
-        effect_type="process.run",
-        effect_id=execution.action.id,
-        proposal_event_id=proposal.event.id,
+        effect_type=effect_type,
+        effect_id=effect_id,
+        proposal_event_id=proposal_event_id,
     )
     return UserTurnReceipt(
         status="ROUTED",
@@ -468,8 +523,8 @@ def _route_operation_authorization_turn(
         intent="AUTHORIZE",
         routing_event=routing_event,
         executive_receipt=executive_receipt,
-        effect_type="process.run",
-        effect_id=execution.action.id,
+        effect_type=effect_type,
+        effect_id=effect_id,
     )
 
 
