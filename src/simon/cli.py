@@ -13,7 +13,11 @@ from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.assessment_confirmation import confirm_action_assessment
 from simon.attention import AttentionSignals, assess_observation_attention
-from simon.claims import propose_claim_from_attention, set_current_claim
+from simon.claims import (
+    propose_claim_from_attention,
+    set_current_claim,
+    validate_proposed_claim,
+)
 from simon.cognition import (
     UserInputInterpretation,
     interpret_user_input,
@@ -269,6 +273,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--value-json",
         required=True,
         help="valor da Proposed Claim codificado como JSON",
+    )
+
+    claim_validate = commands.add_parser(
+        "claim-validate",
+        help=(
+            "valida deterministicamente uma Proposed Claim contra o Belief Store "
+            "sem aplicar efeito"
+        ),
+    )
+    claim_validate.add_argument(
+        "--proposal-event-id",
+        required=True,
+        help="Event world.claim.proposed que será validado",
     )
 
     model_check = commands.add_parser(
@@ -898,6 +915,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.predicate,
             args.value_json,
         )
+    if args.command == "claim-validate":
+        return _claim_validate(database_path, args.proposal_event_id)
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -1169,6 +1188,31 @@ def _claim_propose(
     print(f"Value: {json.dumps(proposal.value, ensure_ascii=False)}")
     print(f"Epistemic status: {proposal.epistemic_status}")
     print("Claim persistida no Belief Store: não")
+    print("World revision alterada: não")
+    return 0
+
+
+def _claim_validate(database_path: Path, proposed_claim_event_id: str) -> int:
+    try:
+        validation = validate_proposed_claim(
+            database_path,
+            proposed_claim_event_id=proposed_claim_event_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Claim validation: falha ({exc})")
+        return 1
+
+    print(f"Claim validation: {validation.event.id}")
+    print(f"Proposed Claim: {validation.proposed_claim_event_id}")
+    print(f"Outcome: {validation.outcome}")
+    print(f"Razões: {', '.join(validation.reasons)}")
+    if validation.active_claim_ids:
+        print(f"Claims ativas: {', '.join(validation.active_claim_ids)}")
+    if validation.matching_claim_ids:
+        print(f"Claims equivalentes: {', '.join(validation.matching_claim_ids)}")
+    if validation.conflicting_claim_ids:
+        print(f"Claims conflitantes: {', '.join(validation.conflicting_claim_ids)}")
+    print("Efeito aplicado ao Belief Store: não")
     print("World revision alterada: não")
     return 0
 

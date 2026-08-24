@@ -13,6 +13,8 @@ from simon.world import advance_world_revision_in_connection
 ACTIVE = "ACTIVE"
 TERMINAL_STATUSES = {"SUPERSEDED", "RETRACTED", "EXPIRED"}
 PROPOSED_CLAIM_EVENT_KIND = "world.claim.proposed"
+CLAIM_VALIDATION_EVENT_KIND = "world.claim.validation.completed"
+CLAIM_VALIDATION_OUTCOMES = {"READY", "DUPLICATE", "CONFLICT"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,17 @@ class ProposedClaim:
     value: object
     epistemic_status: str
     evidence_event_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimValidation:
+    event: Event
+    proposed_claim_event_id: str
+    outcome: str
+    active_claim_ids: tuple[str, ...]
+    matching_claim_ids: tuple[str, ...]
+    conflicting_claim_ids: tuple[str, ...]
+    reasons: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +199,113 @@ def get_proposed_claim(database_path: Path, event_id: str) -> ProposedClaim | No
         value=event.payload.get("value"),
         epistemic_status=epistemic_status,
         evidence_event_ids=tuple(raw_evidence_event_ids),
+    )
+
+
+def validate_proposed_claim(
+    database_path: Path,
+    *,
+    proposed_claim_event_id: str,
+) -> ClaimValidation:
+    """Classifica uma Proposed Claim contra o Belief Store sem aplicar efeito."""
+    proposal = get_proposed_claim(database_path, proposed_claim_event_id)
+    if proposal is None:
+        raise ValueError(f"proposed claim não encontrada: {proposed_claim_event_id}")
+    if proposal.event.payload.get("status") != "PROPOSED":
+        raise ValueError("proposed claim não está disponível para validação")
+    if proposal.event.payload.get("effect_applied") is not False:
+        raise ValueError("proposed claim já possui efeito aplicado")
+
+    active_claims = list_active_claims(
+        database_path,
+        subject_id=proposal.subject_id,
+        predicate=proposal.predicate,
+    )
+    matching_claim_ids = tuple(
+        claim.id
+        for claim in active_claims
+        if claim.value == proposal.value
+        and claim.epistemic_status == proposal.epistemic_status
+    )
+    conflicting_claim_ids = tuple(
+        claim.id
+        for claim in active_claims
+        if claim.id not in matching_claim_ids
+    )
+    active_claim_ids = tuple(claim.id for claim in active_claims)
+
+    if conflicting_claim_ids:
+        outcome = "CONFLICT"
+        reasons = ("active_claim_conflict",)
+    elif matching_claim_ids:
+        outcome = "DUPLICATE"
+        reasons = ("equivalent_active_claim",)
+    else:
+        outcome = "READY"
+        reasons = ("no_active_claim",)
+
+    event = Event.create(
+        kind=CLAIM_VALIDATION_EVENT_KIND,
+        source="world",
+        payload={
+            "proposed_claim_event_id": proposal.event.id,
+            "outcome": outcome,
+            "active_claim_ids": list(active_claim_ids),
+            "matching_claim_ids": list(matching_claim_ids),
+            "conflicting_claim_ids": list(conflicting_claim_ids),
+            "reasons": list(reasons),
+            "effect_applied": False,
+        },
+        trace_id=proposal.event.trace_id or proposal.event.id,
+        related_entity_ids=proposal.event.related_entity_ids,
+        goal_id=proposal.event.goal_id,
+    )
+    append_event(database_path, event)
+    return ClaimValidation(
+        event=event,
+        proposed_claim_event_id=proposal.event.id,
+        outcome=outcome,
+        active_claim_ids=active_claim_ids,
+        matching_claim_ids=matching_claim_ids,
+        conflicting_claim_ids=conflicting_claim_ids,
+        reasons=reasons,
+    )
+
+
+def get_claim_validation(database_path: Path, event_id: str) -> ClaimValidation | None:
+    event = get_event(database_path, event_id)
+    if event is None:
+        return None
+    if event.kind != CLAIM_VALIDATION_EVENT_KIND:
+        raise ValueError(f"event não é uma claim validation: {event_id} ({event.kind})")
+
+    proposed_claim_event_id = event.payload.get("proposed_claim_event_id")
+    outcome = event.payload.get("outcome")
+    raw_active_claim_ids = event.payload.get("active_claim_ids")
+    raw_matching_claim_ids = event.payload.get("matching_claim_ids")
+    raw_conflicting_claim_ids = event.payload.get("conflicting_claim_ids")
+    raw_reasons = event.payload.get("reasons")
+    if not isinstance(proposed_claim_event_id, str):
+        raise TypeError(f"proposed_claim_event_id inválido na validation: {event_id}")
+    if not isinstance(outcome, str) or outcome not in CLAIM_VALIDATION_OUTCOMES:
+        raise TypeError(f"outcome inválido na claim validation: {event_id}")
+
+    def _string_tuple(raw: object, field: str) -> tuple[str, ...]:
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise TypeError(f"{field} inválido na claim validation: {event_id}")
+        return tuple(raw)
+
+    return ClaimValidation(
+        event=event,
+        proposed_claim_event_id=proposed_claim_event_id,
+        outcome=outcome,
+        active_claim_ids=_string_tuple(raw_active_claim_ids, "active_claim_ids"),
+        matching_claim_ids=_string_tuple(raw_matching_claim_ids, "matching_claim_ids"),
+        conflicting_claim_ids=_string_tuple(
+            raw_conflicting_claim_ids,
+            "conflicting_claim_ids",
+        ),
+        reasons=_string_tuple(raw_reasons, "reasons"),
     )
 
 

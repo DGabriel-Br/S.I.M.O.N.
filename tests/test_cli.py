@@ -2304,3 +2304,121 @@ def test_claim_propose_cli_consumes_update_world_without_persisting_belief(
     assert payload["effect_applied"] is False
     assert belief is None
     assert after_revision == before_revision
+
+
+def test_claim_validate_cli_classifies_ready_without_mutating_world(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "filesystem",
+            "--kind",
+            "system.changed",
+            "--entity-id",
+            SIMON_ENTITY_ID,
+            "--world-change",
+            "estado",
+            "do",
+            "SIMON",
+            "mudou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        attention = connection.execute(
+            """
+            SELECT id
+            FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert attention is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-propose",
+            "--attention-event-id",
+            str(attention[0]),
+            "--subject-id",
+            SIMON_ENTITY_ID,
+            "--predicate",
+            "runtime.state",
+            "--value-json",
+            '{"state":"changed"}',
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        proposal = connection.execute(
+            """
+            SELECT id
+            FROM events
+            WHERE kind = 'world.claim.proposed'
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        before_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+    assert proposal is not None
+    assert before_revision is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-validate",
+            "--proposal-event-id",
+            str(proposal[0]),
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Claim validation: evt_" in output
+    assert f"Proposed Claim: {proposal[0]}" in output
+    assert "Outcome: READY" in output
+    assert "Razões: no_active_claim" in output
+    assert "Efeito aplicado ao Belief Store: não" in output
+    assert "World revision alterada: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        validation = connection.execute(
+            """
+            SELECT kind, source, payload_json
+            FROM events
+            WHERE kind = 'world.claim.validation.completed'
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        belief = connection.execute(
+            """
+            SELECT id
+            FROM claims
+            WHERE subject_id = ? AND predicate = 'runtime.state'
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchone()
+        after_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert validation is not None
+    assert validation[0:2] == ("world.claim.validation.completed", "world")
+    payload = json.loads(str(validation[2]))
+    assert payload["outcome"] == "READY"
+    assert payload["effect_applied"] is False
+    assert belief is None
+    assert after_revision == before_revision

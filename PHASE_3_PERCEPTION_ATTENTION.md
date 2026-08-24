@@ -235,3 +235,68 @@ O comando não insere linha em `claims`, não substitui Claim ativa, não resolv
 7. `world_revision` permanece inalterada;
 8. a CLI expõe a proposta sem aplicar o efeito;
 9. o schema SQLite permanece na versão 11.
+
+## Passo 75 - Proposed Claim -> validação contra Belief Store
+
+A Proposed Claim continua sem autoridade para alterar o World. Antes de qualquer aceitação futura, ela pode ser comparada deterministicamente com a visão atual do Belief Store:
+
+```text
+world.claim.proposed
+↓
+world.claim.validation.completed
+↓
+READY | DUPLICATE | CONFLICT
+↓
+Belief Store inalterado
+world_revision inalterada
+```
+
+A comparação usa somente Claims `ACTIVE` com o mesmo `subject_id + predicate`. O primeiro contrato não tenta interpretar domínio, confiança ou verdade semântica.
+
+### Outcomes
+
+`READY` significa que não existe Claim ativa naquele eixo. A proposta está livre de concorrência atual, mas ainda não foi aceita nem considerada verdadeira por policy de domínio.
+
+`DUPLICATE` significa que existe ao menos uma Claim ativa com o mesmo `value` e o mesmo `epistemic_status`, sem nenhuma Claim ativa divergente para o eixo. Nenhuma duplicata é criada.
+
+`CONFLICT` significa que existe ao menos uma Claim ativa diferente para o mesmo `subject + predicate`. Se Claims equivalentes e divergentes coexistirem, `CONFLICT` vence, pois ainda existe uma contradição real que precisa ser tratada.
+
+A avaliação é persistida como:
+
+```text
+world.claim.validation.completed
+```
+
+O payload preserva `proposed_claim_event_id`, outcome, Claims ativas observadas, Claims equivalentes, Claims conflitantes, razões determinísticas e `effect_applied=false`. O Event reutiliza trace, Goal e Entities da Proposed Claim.
+
+A CLI expõe o contrato explicitamente:
+
+```powershell
+uv run simon claim-validate --proposal-event-id evt_...
+```
+
+O comando não chama `set_current_claim()`, não cria Claim, não executa supersede/retract e não avança `world_revision`. Uma validação pode ser repetida posteriormente porque o Belief Store pode ter mudado desde a avaliação anterior.
+
+### Deliberadamente fora do Passo 75
+
+- aceitação de uma Proposed Claim `READY`;
+- resolução de `CONFLICT`;
+- escolha de vencedor por autoridade, recência ou confiança;
+- schema validation específica por predicate;
+- confidence score;
+- alteração automática de Claim `ACTIVE`;
+- aplicação de `ATTEND` ou `INTERRUPT`;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 75
+
+1. Proposed Claim sem concorrente ativo resulta em `READY`;
+2. Claim ativa equivalente resulta em `DUPLICATE`;
+3. Claim ativa diferente resulta em `CONFLICT`;
+4. conflito tem precedência quando equivalência e divergência coexistem;
+5. a validação sobrevive a nova conexão com o banco;
+6. nenhum outcome altera o Belief Store;
+7. nenhum outcome avança `world_revision`;
+8. a CLI expõe a validação sem aplicar efeito;
+9. o schema SQLite permanece na versão 11.
+

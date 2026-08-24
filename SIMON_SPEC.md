@@ -359,7 +359,13 @@ A implementação inicial começa por Observations explicitamente ingeridas, nã
 
 ### 8.8. Primeiro contrato de Proposed Claim
 
-Uma decisão `UPDATE_WORLD` pode alimentar uma Proposed Claim estruturada sem escrever no Belief Store. O contrato inicial exige subject já resolvido e relacionado à Observation, predicate explícito e value compatível com JSON. A proposta é persistida como `world.claim.proposed`, usa `DIRECT_OBSERVATION`, preserva Observation + Attention como evidência e mantém `effect_applied=false`. Validação de domínio, conflito, policy e aceitação permanecem etapas separadas antes de qualquer alteração de `claims` ou `world_revision`.
+Uma decisão `UPDATE_WORLD` pode alimentar uma Proposed Claim estruturada sem escrever no Belief Store. O contrato inicial exige subject já resolvido e relacionado à Observation, predicate explícito e value compatível com JSON. A proposta é persistida como `world.claim.proposed`, usa `DIRECT_OBSERVATION`, preserva Observation + Attention como evidência e mantém `effect_applied=false`. Validação de domínio, policy e aceitação permanecem etapas separadas antes de qualquer alteração de `claims` ou `world_revision`.
+
+### 8.9. Validação determinística de Proposed Claim
+
+Antes de qualquer materialização no Belief Store, uma Proposed Claim pode ser comparada com as Claims `ACTIVE` para o mesmo par `subject + predicate`. A avaliação produz `READY` quando não há concorrente ativa, `DUPLICATE` quando existe Claim equivalente com o mesmo value e epistemic status, e `CONFLICT` quando existe ao menos uma Claim ativa diferente. Conflito tem precedência sobre equivalência se o Belief Store já contiver ambas.
+
+O resultado é persistido como `world.claim.validation.completed`, preserva provenance da proposta e registra `effect_applied=false`. Essa validação não cria nem altera Claim e não avança `world_revision`. `READY` representa ausência de concorrência ativa no eixo consultado; não substitui schema de domínio, política de autoridade, avaliação semântica ou aceitação.
 
 ---
 

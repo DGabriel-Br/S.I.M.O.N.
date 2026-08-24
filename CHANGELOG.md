@@ -32,6 +32,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - Golden Scenario conversacional de fechamento da Fase 2: o ciclo parte de `DONE/no_open_goal`, recebe uma nova solicitação por `user-turn`, propõe e aceita o Goal, propõe e materializa o Plan, materializa e autoriza um `file.patch` em turnos separados, verifica o efeito, conclui Plan e Goal e reconstrói `DONE` em outro processo usando somente o SQLite.
 - primeiro contrato operacional de Perception/Attention: `observe` persiste `perception.observation.recorded`, classifica explicitamente a Observation em `IGNORE`, `RECORD`, `UPDATE_WORLD`, `ATTEND` ou `INTERRUPT` e registra `attention.assessed` sem aplicar efeito no World ou Executive.
 - primeiro consumidor de `UPDATE_WORLD`: `claim-propose` transforma uma Observation já ligada a Entity e seu `attention.assessed` em `world.claim.proposed`, preservando evidências e `DIRECT_OBSERVATION` sem inserir Claim, resolver conflito ou avançar `world_revision`.
+- validação determinística de Proposed Claims com `claim-validate`: o Belief Store atual é comparado por `subject + predicate` e a proposta recebe `READY`, `DUPLICATE` ou `CONFLICT` em `world.claim.validation.completed`, sem criar, superseder ou remover Claims e sem avançar `world_revision`.
 
 ## [0.1.0] - 2026-08-19
 

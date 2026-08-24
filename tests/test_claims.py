@@ -5,13 +5,16 @@ import pytest
 from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     Claim,
+    ProposedClaim,
     get_claim,
+    get_claim_validation,
     get_proposed_claim,
     insert_claim,
     list_active_claims,
     propose_claim_from_attention,
     set_current_claim,
     transition_claim,
+    validate_proposed_claim,
 )
 from simon.entities import Entity, insert_entity
 from simon.events import Event, append_event
@@ -240,4 +243,131 @@ def test_proposed_claim_rejects_value_outside_json_contract(tmp_path: Path) -> N
             subject_id=subject.id,
             predicate="content_state",
             value={"unsupported": object()},
+        )
+
+
+def _create_proposed_claim(tmp_path: Path) -> tuple[Path, Entity, ProposedClaim]:
+    database_path, subject, attention_event_id = _create_update_world_assessment(tmp_path)
+    proposal = propose_claim_from_attention(
+        database_path,
+        attention_event_id=attention_event_id,
+        subject_id=subject.id,
+        predicate="content_state",
+        value={"state": "changed"},
+    )
+    return database_path, subject, proposal
+
+
+def test_proposed_claim_validation_is_ready_without_active_claim(tmp_path: Path) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    before_revision = get_world_revision(database_path)
+
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+
+    assert validation.outcome == "READY"
+    assert validation.active_claim_ids == ()
+    assert validation.matching_claim_ids == ()
+    assert validation.conflicting_claim_ids == ()
+    assert validation.reasons == ("no_active_claim",)
+    assert validation.event.kind == "world.claim.validation.completed"
+    assert validation.event.source == "world"
+    assert validation.event.trace_id == proposal.event.trace_id
+    assert validation.event.related_entity_ids == (subject.id,)
+    assert validation.event.payload["effect_applied"] is False
+    assert get_claim_validation(database_path, validation.event.id) == validation
+    assert list_active_claims(
+        database_path,
+        subject_id=subject.id,
+        predicate="content_state",
+    ) == ()
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_proposed_claim_validation_detects_equivalent_active_claim(tmp_path: Path) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    active = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value=proposal.value,
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, active)
+    before_revision = get_world_revision(database_path)
+
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+
+    assert validation.outcome == "DUPLICATE"
+    assert validation.active_claim_ids == (active.id,)
+    assert validation.matching_claim_ids == (active.id,)
+    assert validation.conflicting_claim_ids == ()
+    assert validation.reasons == ("equivalent_active_claim",)
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_proposed_claim_validation_detects_conflicting_active_claim(tmp_path: Path) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    active = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "stable"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, active)
+    before_revision = get_world_revision(database_path)
+
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+
+    assert validation.outcome == "CONFLICT"
+    assert validation.active_claim_ids == (active.id,)
+    assert validation.matching_claim_ids == ()
+    assert validation.conflicting_claim_ids == (active.id,)
+    assert validation.reasons == ("active_claim_conflict",)
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_conflict_takes_precedence_when_equivalent_and_conflicting_claims_coexist(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    matching = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value=proposal.value,
+        epistemic_status=proposal.epistemic_status,
+    )
+    conflicting = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "stable"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, matching)
+    insert_claim(database_path, conflicting)
+
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+
+    assert validation.outcome == "CONFLICT"
+    assert validation.matching_claim_ids == (matching.id,)
+    assert validation.conflicting_claim_ids == (conflicting.id,)
+
+
+def test_claim_validation_requires_proposed_claim_event(tmp_path: Path) -> None:
+    database_path, _, attention_event_id = _create_update_world_assessment(tmp_path)
+
+    with pytest.raises(ValueError, match="não é uma proposed claim"):
+        validate_proposed_claim(
+            database_path,
+            proposed_claim_event_id=attention_event_id,
         )

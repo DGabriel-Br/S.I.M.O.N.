@@ -856,3 +856,11 @@ uv run simon claim-propose --attention-event-id evt_... --subject-id ent_... --p
 
 A chamada persiste somente `world.claim.proposed`. O `subject_id` precisa ser uma Entity já ligada à Observation de origem; a proposta usa `DIRECT_OBSERVATION`, preserva Observation + Attention como evidência e mantém `effect_applied=false`. Nenhuma linha é criada em `claims`, conflitos não são resolvidos e `world_revision` não avança.
 
+Antes de qualquer futura aceitação no Belief Store, a proposta pode ser comparada deterministicamente com as Claims atualmente `ACTIVE`:
+
+```powershell
+uv run simon claim-validate --proposal-event-id evt_...
+```
+
+A validação persiste `world.claim.validation.completed` e produz `READY` quando não existe Claim ativa para o mesmo `subject + predicate`, `DUPLICATE` quando já existe uma Claim equivalente com o mesmo valor e estado epistemológico, ou `CONFLICT` quando existe ao menos uma Claim ativa diferente. `CONFLICT` tem precedência quando coexistem Claims equivalentes e divergentes. O resultado continua com `effect_applied=false`: nenhuma Claim é criada, supersedida ou removida e `world_revision` não avança. `READY` significa somente que não existe concorrência ativa nesse eixo, não que a proposta seja verdadeira em sentido universal ou validada por domínio.
+
