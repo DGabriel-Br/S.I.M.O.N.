@@ -433,6 +433,14 @@ Quando o gate é `plan.patch/file.patch`, o turno usa `propose_file_patch()`. Qu
 
 Assim como no processo, uma fala que descreve a alteração e tenta aprová-la no mesmo texto não recebe duas autoridades. Depois da proposta, o Executive reconstrói `NEEDS_OPERATION_AUTHORIZATION` e exige um segundo turno afirmativo. A CLI do gate mostra a nova forma conversacional junto do comando técnico de materialização.
 
-`analysis.retry` permanece fora desse bridge porque seu input essencial é um modelo e contexto epistemológico congelado, não uma operação de filesystem foreground.
+## Materialização conversacional de analysis.retry
+
+O último gate operacional com proposta concreta também ganha uma gramática foreground determinística. Quando `decide_next()` pede `analysis.retry`, um turno como `Refaça a análise com o modelo qwen3.5:4b-q4_K_M` ou `Tente novamente a análise com o modelo qwen3.5:4b-q4_K_M` pode materializar a proposta sem chamar o ModelProvider e sem criar uma nova Action.
+
+O texto humano fornece somente o identificador explícito do modelo. O `action_id`, Goal, Plan, revisão, step, critério de Verification e `evidence_event_ids` continuam vindo do estado persistido reconstruído pelo gate e por `get_cognition_retry_context()`. Isso impede que a linguagem natural escolha silenciosamente qual tentativa ou qual evidência será reutilizada.
+
+A materialização usa `propose_cognition_analysis_retry()` com o `trace_id` de `user.turn.received`. O Event continua sendo `executive.operation.proposed` com `source=system`, e o Executive retorna ao mesmo `NEEDS_OPERATION_AUTHORIZATION`, agora em `READY_FOR_AUTHORIZATION`. Um segundo turno afirmativo permanece obrigatório para criar `action.retry.authorized` e chamar o provider com o modelo congelado.
+
+A gramática não aceita nomes de modelo com espaços ou instruções adicionais no mesmo turno. Frases que tentam materializar e autorizar simultaneamente não recebem duas autoridades. Casos fora dessa forma explícita continuam usando `analysis-retry-propose`. Com isso, todos os gates operacionais atuais possuem materialização conversacional sem reduzir suas fronteiras de autorização.
 
 O SQLite permanece no schema 11.

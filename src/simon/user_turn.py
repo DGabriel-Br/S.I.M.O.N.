@@ -15,9 +15,11 @@ from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
 from simon.operation_materialization import (
+    AnalysisRetryMaterialization,
     FilePatchCommandMaterialization,
     OperationMaterializationInputError,
     ProcessCommandMaterialization,
+    parse_analysis_retry_turn,
     parse_file_patch_turn,
     parse_process_command_turn,
 )
@@ -27,6 +29,7 @@ from simon.operation_proposal import (
     find_current_file_patch_retry_proposal,
     find_current_process_retry_proposal,
     find_current_process_run_proposal,
+    propose_cognition_analysis_retry,
     propose_file_patch,
     propose_file_patch_retry,
     propose_process_retry,
@@ -443,6 +446,7 @@ def _route_operation_materialization_turn(
 ) -> UserTurnReceipt | None:
     process_materialization: ProcessCommandMaterialization | None = None
     file_patch_materialization: FilePatchCommandMaterialization | None = None
+    analysis_retry_materialization: AnalysisRetryMaterialization | None = None
     try:
         if decision.operation in {"plan.run", "process.retry"}:
             process_materialization = parse_process_command_turn(
@@ -457,6 +461,10 @@ def _route_operation_materialization_turn(
                 working_directory=working_directory,
             )
             if file_patch_materialization is None:
+                return None
+        elif decision.operation == "analysis.retry":
+            analysis_retry_materialization = parse_analysis_retry_turn(text)
+            if analysis_retry_materialization is None:
                 return None
         else:
             return None
@@ -509,6 +517,16 @@ def _route_operation_materialization_turn(
                 trace_id=turn_event.id,
             )
             proposal_event_id = patch_retry_proposal.event.id
+        elif decision.operation == "analysis.retry":
+            assert analysis_retry_materialization is not None
+            action_id = _required_decision_value(decision.action_id, "action_id", decision)
+            analysis_retry_proposal = propose_cognition_analysis_retry(
+                database_path,
+                action_id=action_id,
+                model=analysis_retry_materialization.model,
+                trace_id=turn_event.id,
+            )
+            proposal_event_id = analysis_retry_proposal.event.id
         else:
             return None
 

@@ -17,6 +17,10 @@ from simon.events import Event, append_event, get_event
 from simon.executive import decide_next
 from simon.goals import Goal, insert_goal
 from simon.model_provider import ModelProviderError, StructuredModelResult
+from simon.operation_materialization import (
+    OperationMaterializationInputError,
+    parse_analysis_retry_turn,
+)
 from simon.operation_proposal import (
     find_current_cognition_analysis_retry_proposal,
     propose_cognition_analysis_retry,
@@ -422,3 +426,109 @@ def test_user_turn_cli_uses_model_frozen_in_analysis_retry_proposal(
     assert provider.models == ["proposal-model"]
     actions = list_actions_for_plan(database_path, plan_id)
     assert actions[-1].input_data["model"] == "proposal-model"
+
+
+def test_parser_materializes_explicit_analysis_retry_model() -> None:
+    materialization = parse_analysis_retry_turn(
+        "Refaça a análise com o modelo qwen3.5:4b-q4_K_M."
+    )
+
+    assert materialization is not None
+    assert materialization.model == "qwen3.5:4b-q4_K_M"
+
+
+def test_parser_rejects_invalid_analysis_retry_model_identifier() -> None:
+    with pytest.raises(OperationMaterializationInputError) as error:
+        parse_analysis_retry_turn("Refaça a análise com o modelo qwen$local")
+
+    assert error.value.reason_code == "invalid_analysis_retry_model"
+
+
+def test_user_turn_materializes_analysis_retry_without_authorizing_it(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id, _, evidence_id, failed_action_id = _failed_analysis_state(database_path)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Refaça a análise com o modelo proposal-model",
+        goal_id=goal.id,
+    )
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "MATERIALIZE"
+    assert receipt.effect_type == "operation.proposal"
+    assert receipt.effect_id is not None
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.status == "STOPPED"
+    assert receipt.executive_receipt.final_decision.operation == "analysis.retry"
+    assert len(list_actions_for_plan(database_path, plan_id)) == 2
+
+    proposal = find_current_cognition_analysis_retry_proposal(
+        database_path,
+        receipt.executive_receipt.final_decision,
+    )
+    assert proposal is not None
+    assert proposal.event.id == receipt.effect_id
+    assert proposal.event.trace_id == receipt.turn_event.id
+    assert proposal.retry_of_action_id == failed_action_id
+    assert proposal.model == "proposal-model"
+    assert proposal.evidence_event_ids == (evidence_id,)
+    assert receipt.routing_event.payload["authority_scope"] == (
+        "CURRENT_OPERATION_GATE_MATERIALIZATION_ONLY"
+    )
+
+
+def test_analysis_retry_materialization_does_not_double_as_authorization(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, plan_id, _, _, _ = _failed_analysis_state(database_path)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Refaça a análise com o modelo proposal-model e autorizo",
+        goal_id=goal.id,
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == (
+        "explicit_operation_authorization_required"
+    )
+    assert len(list_actions_for_plan(database_path, plan_id)) == 2
+    decision = decide_next(database_path, goal_id=goal.id)
+    assert find_current_cognition_analysis_retry_proposal(database_path, decision) is None
+
+
+def test_user_turn_cli_materializes_analysis_retry_and_presents_frozen_model(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    data_dir = tmp_path / "data"
+    database_path, _ = initialize_storage(data_dir)
+    goal, plan_id, _, evidence_id, _ = _failed_analysis_state(database_path)
+
+    exit_code = main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "user-turn",
+            "--goal-id",
+            goal.id,
+            "Refaça",
+            "a",
+            "análise",
+            "com",
+            "o",
+            "modelo",
+            "proposal-model",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "User turn: ROUTED" in output
+    assert "Intent: MATERIALIZE" in output
+    assert "Efeito do gate: operation.proposal" in output
+    assert "Estado do gate: READY_FOR_AUTHORIZATION" in output
+    assert "Tipo de proposta: analysis.retry" in output
+    assert "Modelo: proposal-model" in output
+    assert evidence_id in output
+    assert len(list_actions_for_plan(database_path, plan_id)) == 2

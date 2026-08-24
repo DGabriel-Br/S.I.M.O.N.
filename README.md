@@ -767,4 +767,12 @@ Os dois bridges são determinísticos e não usam ModelProvider. Em processos, `
 
 O turno retorna ao mesmo `NEEDS_OPERATION_AUTHORIZATION`, agora apresentado como `READY_FOR_AUTHORIZATION`. A autorização continua exigindo um segundo turno explícito, como `sim`, `pode executar` ou `pode aplicar`. Uma frase que tenta juntar materialização e autorização no mesmo texto não ganha as duas autoridades.
 
-A gramática de processos continua sem shell, pipelines, redirecionamentos ou argumentos entre aspas. A gramática de patch cobre uma única substituição textual, em uma linha, delimitada por crases. Casos mais complexos continuam usando os comandos técnicos de proposta. `analysis.retry` permanece com materialização técnica própria.
+`analysis.retry` também pode materializar sua proposta pelo turno foreground quando o modelo é nomeado explicitamente:
+
+```powershell
+uv run simon user-turn --goal-id gol_... "Refaça a análise com o modelo qwen3.5:4b-q4_K_M"
+```
+
+Esse bridge não chama o provider. O modelo informado é congelado junto da Action anterior, revisão do Plan, Verification e evidências atualmente válidas; a nova tentativa só existe depois de um segundo turno afirmativo. A Action alvo e os IDs de evidência continuam vindo do estado persistido, nunca do texto livre.
+
+A gramática de processos continua sem shell, pipelines, redirecionamentos ou argumentos entre aspas. A gramática de patch cobre uma única substituição textual, em uma linha, delimitada por crases. A gramática de retry cognitivo exige um identificador de modelo explícito sem espaços. Casos mais complexos continuam usando os comandos técnicos de proposta.

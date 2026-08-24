@@ -18,6 +18,12 @@ _FILE_PATCH_TURN_PATTERN = re.compile(
     r"(?:neste|nesse)\s+projeto[.!]?\s*$",
     re.IGNORECASE,
 )
+_ANALYSIS_RETRY_TURN_PATTERN = re.compile(
+    r"^\s*(?:refa[cç]a|repita|tente\s+novamente)\s+a\s+an[aá]lise\s+"
+    r"com\s+o\s+modelo\s+(?P<model>\S+?)[.!]?\s*$",
+    re.IGNORECASE,
+)
+_ANALYSIS_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$")
 _UNSUPPORTED_COMMAND_TOKENS = {"&&", "||", "|", ";", "<", ">", ">>", "&"}
 
 
@@ -33,6 +39,11 @@ class FilePatchCommandMaterialization:
     relative_path: str
     expected_text: str
     replacement_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisRetryMaterialization:
+    model: str
 
 
 class OperationMaterializationInputError(ValueError):
@@ -132,3 +143,19 @@ def parse_file_patch_turn(
         expected_text=expected_text,
         replacement_text=replacement_text,
     )
+
+
+def parse_analysis_retry_turn(text: str) -> AnalysisRetryMaterialization | None:
+    """Materializa somente o modelo explicitamente nomeado para o retry cognitivo atual."""
+    match = _ANALYSIS_RETRY_TURN_PATTERN.fullmatch(text)
+    if match is None:
+        return None
+
+    model = match.group("model").strip()
+    if not _ANALYSIS_MODEL_PATTERN.fullmatch(model):
+        raise OperationMaterializationInputError(
+            "invalid_analysis_retry_model",
+            "o modelo do retry deve ser um identificador explícito sem espaços",
+        )
+
+    return AnalysisRetryMaterialization(model=model)

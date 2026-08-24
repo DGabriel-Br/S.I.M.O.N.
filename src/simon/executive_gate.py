@@ -177,6 +177,10 @@ def describe_operation_gate(
                 proposal_type="analysis.retry",
                 required_inputs=("model",),
                 command=_analysis_retry_command(decision),
+                materialization_examples=(
+                    "Refaça a análise com o modelo <modelo>",
+                    "Tente novamente a análise com o modelo <modelo>",
+                ),
             )
         )
 

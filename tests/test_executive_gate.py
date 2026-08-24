@@ -230,6 +230,10 @@ def test_analysis_retry_gate_requires_only_model_before_proposal(tmp_path: Path)
     assert presentation.required_inputs == ("model",)
     assert presentation.materialization_command is not None
     assert action.id in presentation.materialization_command
+    assert presentation.materialization_examples == (
+        "Refaça a análise com o modelo <modelo>",
+        "Tente novamente a análise com o modelo <modelo>",
+    )
 
 
 def test_non_operation_decision_is_not_presented_as_authorization_gate(tmp_path: Path) -> None:
