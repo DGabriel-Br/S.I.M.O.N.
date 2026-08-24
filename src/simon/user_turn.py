@@ -14,6 +14,7 @@ from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until
 from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.goal_focus import select_goal_focus
+from simon.goals import list_open_goals
 from simon.model_provider import ModelProvider
 from simon.operation_materialization import (
     AnalysisRetryMaterialization,
@@ -159,6 +160,33 @@ def handle_user_turn(
     )
     append_event(database_path, turn_event)
 
+    focus_switch_title = _explicit_goal_focus_title(normalized_text)
+    if focus_switch_title is not None:
+        if goal_id is not None:
+            try:
+                explicit_decision = decide_next(database_path, goal_id=goal_id)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                return _failed_turn(
+                    database_path,
+                    turn_event=turn_event,
+                    intent=None,
+                    goal_id=goal_id,
+                    error=str(exc),
+                    reason_code="gate_lookup_failed",
+                )
+            return _unsupported_turn(
+                database_path,
+                turn_event=turn_event,
+                goal_id=goal_id,
+                reason_code="goal_focus_switch_conflicts_with_explicit_goal",
+                current_decision=explicit_decision,
+            )
+        return _route_explicit_goal_focus(
+            database_path,
+            turn_event=turn_event,
+            requested_title=focus_switch_title,
+        )
+
     intent = interpret_user_turn_intent(normalized_text)
     if intent == "CONTINUE":
         return _route_continue(
@@ -261,6 +289,57 @@ def interpret_user_turn_intent(text: str) -> UserTurnIntent | None:
     return None
 
 
+def _explicit_goal_focus_title(text: str) -> str | None:
+    normalized = _normalize_turn_text(text)
+    prefixes = (
+        "troque para o goal ",
+        "troque para o objetivo ",
+        "mude para o goal ",
+        "mude para o objetivo ",
+        "foque no goal ",
+        "foque no objetivo ",
+    )
+    for prefix in prefixes:
+        if normalized.startswith(prefix):
+            title = normalized.removeprefix(prefix).strip()
+            return title or None
+    return None
+
+
+def _route_explicit_goal_focus(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    requested_title: str,
+) -> UserTurnReceipt:
+    open_goals = list_open_goals(database_path)
+    matching_goals = tuple(
+        goal for goal in open_goals if _normalize_turn_text(goal.title) == requested_title
+    )
+
+    try:
+        current_decision = decide_next(database_path)
+    except (RuntimeError, TypeError, ValueError):
+        current_decision = None
+
+    if len(matching_goals) != 1:
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=current_decision.goal_id if current_decision is not None else None,
+            reason_code="goal_focus_switch_not_resolved",
+            current_decision=current_decision,
+        )
+
+    return _route_selected_goal(
+        database_path,
+        turn_event=turn_event,
+        selected_goal_id=matching_goals[0].id,
+        selection_text=str(turn_event.payload["text"]),
+        current_decision=current_decision,
+    )
+
+
 def _route_goal_selection(
     database_path: Path,
     *,
@@ -278,13 +357,30 @@ def _route_goal_selection(
             current_decision=decision,
         )
 
+    return _route_selected_goal(
+        database_path,
+        turn_event=turn_event,
+        selected_goal_id=selected_goal_id,
+        selection_text=text,
+        current_decision=decision,
+    )
+
+
+def _route_selected_goal(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    selected_goal_id: str,
+    selection_text: str,
+    current_decision: ExecutiveDecision | None,
+) -> UserTurnReceipt:
     try:
         selected_decision = decide_next(database_path, goal_id=selected_goal_id)
         focus = select_goal_focus(
             database_path,
             goal_id=selected_goal_id,
             trace_id=turn_event.id,
-            selection_text=text,
+            selection_text=selection_text,
         )
     except (RuntimeError, TypeError, ValueError) as exc:
         return _failed_turn(
@@ -294,7 +390,7 @@ def _route_goal_selection(
             goal_id=selected_goal_id,
             error=str(exc),
             reason_code="goal_selection_routing_failed",
-            current_decision=decision,
+            current_decision=current_decision,
         )
 
     executive_receipt = ExecutiveContinueReceipt(
@@ -309,7 +405,7 @@ def _route_goal_selection(
         executive_receipt=executive_receipt,
         authority_scope="FOREGROUND_GOAL_SELECTION_ONLY",
         goal_id=selected_goal_id,
-        current_decision=decision,
+        current_decision=current_decision,
         effect_type="goal.focus",
         effect_id=focus.event.id,
     )
@@ -1036,6 +1132,7 @@ def _unsupported_turn(
         "supported_intents": [
             "CONTINUE",
             "SELECT_CURRENT_GOAL",
+            "SWITCH_FOREGROUND_GOAL",
             "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",
             "MATERIALIZE_CURRENT_PROCESS_RETRY_PROPOSAL",
             "MATERIALIZE_CURRENT_FILE_PATCH_PROPOSAL",

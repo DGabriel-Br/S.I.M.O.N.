@@ -456,3 +456,14 @@ Uma escolha válida persiste um Event `executive.goal_focus.selected` com `sourc
 `reconstruct_resume_state()` reutiliza a seleção mais recente somente quando existem múltiplos Goals abertos e o Goal focado ainda possui status aberto. Um `goal_id` explicitamente fornecido pelo chamador sempre vence o foco persistido. Se o Goal focado for concluído, falhar ou for cancelado, a seleção deixa de ser aplicável e a regra normal de foco é reconstruída a partir do estado atual.
 
 Como o foco é derivado de Event persistido, `resume`, `executive-next`, `executive-step`, `executive-continue` e `user-turn` podem continuar no mesmo Goal depois de restart sem depender de memória do processo Python. Nenhuma tabela ou migration nova é necessária; o schema SQLite permanece na versão 11.
+
+## Troca explícita do foco foreground
+
+O foco persistente deixa de ser trocável apenas quando expira. Um `user-turn` com uma diretiva explícita como `Troque para o Goal Revisar documentação`, `Mude para o objetivo Investigar falha` ou `Foque no Goal Corrigir script` pode selecionar outro Goal aberto mesmo que o foco atual continue válido.
+
+A resolução continua determinística e exige correspondência exata, após normalização, com o título de exatamente um Goal aberto. O gateway não usa modelo, similaridade semântica nem heurística para escolher entre títulos ambíguos. A troca reaproveita `executive.goal_focus.selected`; um novo Event substitui o foco anterior por ordem de persistência, preservando toda a provenance sem criar estado mutável de sessão.
+
+A diretiva é verificada antes do gate contextual atual. Assim, uma frase de troca não pode ser consumida acidentalmente como resposta de `user.ask`, confirmação ou autorização da operação do Goal anterior. O turno de troca continua com `transitions_executed=0` e `authority_scope=FOREGROUND_GOAL_SELECTION_ONLY`.
+
+Um `goal_id` explícito fornecido pelo chamador mantém precedência sobre o foco conversacional. Se o mesmo turno contém uma diretiva de troca e um `goal_id`, o gateway recusa a combinação como conflitante em vez de trocar silenciosamente o contexto técnico solicitado. Nenhuma migration é necessária; o schema permanece 11.
+

@@ -5752,3 +5752,14 @@ Uma seleção válida cria `executive.goal_focus.selected` com `source=user` e `
 `reconstruct_resume_state()` pode reutilizar o foco persistido quando há múltiplos Goals abertos. A seleção só permanece aplicável enquanto o Goal apontado estiver em um status aberto. Um `goal_id` fornecido explicitamente pelo chamador sempre prevalece. Quando o foco expira, o sistema volta à regra normal: seleciona automaticamente apenas se houver um único Goal aberto; caso contrário, retorna novamente a `NEEDS_GOAL_SELECTION`.
 
 O foco é reconstruído de Events e não exige estado de sessão, nova tabela ou migration. Assim, o contexto foreground sobrevive a restart sem transformar FocusSession conceitual em uma arquitetura maior antes de existir necessidade real. O SQLite permanece no schema 11.
+
+### 33.23. Troca explícita do foco foreground
+
+Enquanto um foco persistido ainda estiver válido, o usuário pode substituí-lo por uma diretiva foreground explícita que nomeie exatamente um Goal aberto, como `Troque para o Goal <título>`, `Mude para o objetivo <título>` ou `Foque no Goal <título>`.
+
+Essa diretiva é uma seleção de contexto, não uma Action do Goal. Ela deve ser reconhecida antes de interpretar o texto segundo o gate atual, evitando que um pedido de troca seja consumido como resposta, confirmação ou autorização pertencente ao Goal anteriormente focado. A única mudança persistida é um novo `executive.goal_focus.selected`; o turno não executa transições do Executive.
+
+A resolução usa somente títulos completos de Goals em status aberto e exige unicidade. Não há matching semântico, escolha por modelo ou fallback para o candidato mais parecido. Um `goal_id` explicitamente fornecido pelo chamador continua sendo uma fronteira técnica mais forte: uma diretiva conversacional conflitante é recusada em vez de sobrescrever esse escopo.
+
+O mecanismo reutiliza a mesma provenance baseada em Events criada no foco inicial e não introduz FocusSession persistente, tabela nova ou migration. O schema SQLite permanece 11.
+

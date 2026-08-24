@@ -790,3 +790,13 @@ uv run simon user-turn "Escolho o Goal Revisar integração aérea"
 A escolha registra apenas o foco foreground em `executive.goal_focus.selected`. Nenhum Plan ou Action é criado nesse turno. Depois disso, chamadas como `user-turn "continue"`, `executive-next` e `executive-continue` reutilizam o foco persistido enquanto o Goal continuar aberto, inclusive após restart.
 
 Ordinais são relativos à ordem exibida pelo Executive. Um título só é aceito quando identifica exatamente um candidato; títulos duplicados permanecem ambíguos. Um `--goal-id` explícito continua tendo precedência e permite override técnico quando necessário.
+
+O foco também pode ser trocado explicitamente enquanto o Goal atual ainda estiver aberto:
+
+```powershell
+uv run simon user-turn "Troque para o Goal Revisar documentação"
+uv run simon user-turn "Mude para o objetivo Investigar falha"
+uv run simon user-turn "Foque no Goal Corrigir script"
+```
+
+A diretiva de troca é reconhecida antes do gate contextual atual para não ser confundida com resposta de `user.ask`, confirmação ou autorização. Ainda assim, ela só persiste uma nova seleção em `executive.goal_focus.selected`: nenhuma Action, Plan ou capability é executada no mesmo turno. O título precisa identificar exatamente um Goal aberto. Se o mesmo comando também fornecer `--goal-id`, o identificador técnico prevalece e a troca conversacional conflitante é recusada.

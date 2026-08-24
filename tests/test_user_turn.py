@@ -602,3 +602,103 @@ def test_goal_selection_accepts_numeric_reference_from_presented_order(tmp_path:
     assert receipt.intent == "SELECT"
     assert receipt.executive_receipt is not None
     assert receipt.executive_receipt.final_decision.goal_id == selected_id
+
+
+def test_explicit_goal_focus_switch_replaces_current_focus_without_executing_work(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    current = _goal(database_path, "Corrigir script")
+    target = _goal(database_path, "Revisar documentação")
+
+    selected = handle_user_turn(database_path, "Corrigir script")
+    assert selected.status == "ROUTED"
+    assert selected.executive_receipt is not None
+    assert selected.executive_receipt.final_decision.goal_id == current.id
+
+    receipt = handle_user_turn(
+        database_path,
+        "Troque para o Goal Revisar documentação",
+    )
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "SELECT"
+    assert receipt.effect_type == "goal.focus"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.goal_id == target.id
+    assert list_plans_for_goal(database_path, current.id) == ()
+    assert list_plans_for_goal(database_path, target.id) == ()
+
+    next_decision = decide_next(database_path)
+    assert next_decision.goal_id == target.id
+
+
+def test_explicit_goal_focus_switch_is_not_consumed_as_current_user_answer(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    current, action_id = _waiting_user_ask(database_path)
+    target = _goal(database_path, "Revisar documentação")
+
+    selected = handle_user_turn(database_path, "Obter evidência")
+    assert selected.status == "ROUTED"
+    assert decide_next(database_path).goal_id == current.id
+    assert decide_next(database_path).outcome == "NEEDS_USER_INPUT"
+
+    receipt = handle_user_turn(
+        database_path,
+        "Mude para o objetivo Revisar documentação",
+    )
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "SELECT"
+    assert receipt.effect_type == "goal.focus"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.goal_id == target.id
+
+    current_action = next(
+        action
+        for plan in list_plans_for_goal(database_path, current.id)
+        for action in list_actions_for_plan(database_path, plan.id)
+        if action.id == action_id
+    )
+    assert current_action.status == "WAITING"
+
+
+def test_explicit_goal_focus_switch_requires_unique_open_title(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    current = _goal(database_path, "Corrigir script")
+    _goal(database_path, "Revisar processo")
+    _goal(database_path, "Revisar processo")
+
+    selected = handle_user_turn(database_path, "Corrigir script")
+    assert selected.status == "ROUTED"
+
+    receipt = handle_user_turn(database_path, "Foque no Goal Revisar processo")
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "goal_focus_switch_not_resolved"
+    assert decide_next(database_path).goal_id == current.id
+
+
+def test_explicit_goal_id_wins_over_conflicting_conversational_focus_switch(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    current = _goal(database_path, "Corrigir script")
+    target = _goal(database_path, "Revisar documentação")
+
+    selected = handle_user_turn(database_path, "Corrigir script")
+    assert selected.status == "ROUTED"
+
+    receipt = handle_user_turn(
+        database_path,
+        "Troque para o Goal Revisar documentação",
+        goal_id=current.id,
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert (
+        receipt.routing_event.payload["reason_code"]
+        == "goal_focus_switch_conflicts_with_explicit_goal"
+    )
+    assert decide_next(database_path).goal_id == current.id
+    assert decide_next(database_path, goal_id=target.id).goal_id == target.id
