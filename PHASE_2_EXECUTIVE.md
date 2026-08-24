@@ -421,6 +421,18 @@ Quando o gate atual é `plan.run/process.run`, o turno materializa `executive.op
 
 A rota registra `intent=MATERIALIZE`, `authority_scope=CURRENT_OPERATION_GATE_MATERIALIZATION_ONLY` e `effect_type=operation.proposal`. Depois da materialização, o condutor apenas reconstrói o mesmo gate, agora com a proposta disponível para uma autorização futura. A mesma fala nunca materializa e autoriza ao mesmo tempo.
 
-A apresentação read-only do gate passa a expor exemplos dessa entrada conversacional para `process.run` e `process.retry`, preservando o comando técnico como fallback. `file.patch`, `file.retry` e `analysis.retry` continuam exigindo suas materializações explícitas atuais até existir uma gramática própria demonstrada por necessidade real.
+A apresentação read-only do gate passa a expor exemplos dessa entrada conversacional para `process.run` e `process.retry`, preservando o comando técnico como fallback.
+
+## Materialização conversacional de file.patch
+
+O segundo bridge operacional cobre `file.patch` e `file.retry` sem transformar linguagem natural em autorização. A gramática aceita somente uma substituição textual explícita, como ``No arquivo script.py, substitua `valor = 1` por `valor = 2` neste projeto``. Os trechos ficam delimitados por crases e o caminho informado permanece relativo ao workspace foreground.
+
+`neste projeto` é resolvido para o mesmo `working_directory` registrado no turno. A construção de `FilePatchRequest` reaproveita as proteções já existentes contra caminhos absolutos, `..` e mudanças sem efeito. A materialização não exige que o arquivo exista nem lê seu conteúdo, porque a revalidação real continua pertencendo à execução autorizada de `file.patch`.
+
+Quando o gate é `plan.patch/file.patch`, o turno usa `propose_file_patch()`. Quando é `file.retry`, o `action_id` continua vindo exclusivamente da `ExecutiveDecision` atual e a proposta usa `propose_file_patch_retry()`. O Event resultante mantém `source=system`, recebe o `trace_id` do turno humano e não cria uma nova Action.
+
+Assim como no processo, uma fala que descreve a alteração e tenta aprová-la no mesmo texto não recebe duas autoridades. Depois da proposta, o Executive reconstrói `NEEDS_OPERATION_AUTHORIZATION` e exige um segundo turno afirmativo. A CLI do gate mostra a nova forma conversacional junto do comando técnico de materialização.
+
+`analysis.retry` permanece fora desse bridge porque seu input essencial é um modelo e contexto epistemológico congelado, não uma operação de filesystem foreground.
 
 O SQLite permanece no schema 11.

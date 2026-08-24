@@ -4,10 +4,18 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from simon.file_patch import FilePatchRequest
 from simon.process_binding import ProcessRunRequest
 
 _PROCESS_TURN_PATTERN = re.compile(
     r"^\s*(?:rode|execute)\s+(?P<command>.+?)\s+(?:neste|nesse)\s+projeto[.!]?\s*$",
+    re.IGNORECASE,
+)
+_FILE_PATCH_TURN_PATTERN = re.compile(
+    r"^\s*no\s+arquivo\s+(?P<relative_path>.+?)\s*,?\s+substitua\s+"
+    r"`(?P<expected_text>[^`\r\n]+)`\s+por\s+"
+    r"`(?P<replacement_text>[^`\r\n]*)`\s+"
+    r"(?:neste|nesse)\s+projeto[.!]?\s*$",
     re.IGNORECASE,
 )
 _UNSUPPORTED_COMMAND_TOKENS = {"&&", "||", "|", ";", "<", ">", ">>", "&"}
@@ -17,6 +25,14 @@ _UNSUPPORTED_COMMAND_TOKENS = {"&&", "||", "|", ";", "<", ">", ">>", "&"}
 class ProcessCommandMaterialization:
     request: ProcessRunRequest
     command_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FilePatchCommandMaterialization:
+    request: FilePatchRequest
+    relative_path: str
+    expected_text: str
+    replacement_text: str
 
 
 class OperationMaterializationInputError(ValueError):
@@ -77,3 +93,42 @@ def parse_process_command_turn(
         timeout_seconds=timeout_seconds,
     )
     return ProcessCommandMaterialization(request=request, command_text=command_text)
+
+
+def parse_file_patch_turn(
+    text: str,
+    *,
+    working_directory: Path | None,
+) -> FilePatchCommandMaterialization | None:
+    """Materializa uma substituição textual explícita sem tocar no arquivo alvo."""
+    match = _FILE_PATCH_TURN_PATTERN.fullmatch(text)
+    if match is None:
+        return None
+    if working_directory is None:
+        raise OperationMaterializationInputError(
+            "foreground_working_directory_required",
+            "'neste projeto' exige um diretório foreground explícito",
+        )
+
+    relative_path = match.group("relative_path").strip()
+    expected_text = match.group("expected_text")
+    replacement_text = match.group("replacement_text")
+    try:
+        request = FilePatchRequest(
+            workspace=str(working_directory.resolve()),
+            relative_path=relative_path,
+            expected_text=expected_text,
+            replacement_text=replacement_text,
+        )
+    except ValueError as exc:
+        raise OperationMaterializationInputError(
+            "invalid_file_patch_request",
+            f"a alteração descrita não forma um file.patch válido: {exc}",
+        ) from exc
+
+    return FilePatchCommandMaterialization(
+        request=request,
+        relative_path=relative_path,
+        expected_text=expected_text,
+        replacement_text=replacement_text,
+    )

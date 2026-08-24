@@ -15,7 +15,10 @@ from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.model_provider import ModelProvider
 from simon.operation_materialization import (
+    FilePatchCommandMaterialization,
     OperationMaterializationInputError,
+    ProcessCommandMaterialization,
+    parse_file_patch_turn,
     parse_process_command_turn,
 )
 from simon.operation_proposal import (
@@ -24,6 +27,8 @@ from simon.operation_proposal import (
     find_current_file_patch_retry_proposal,
     find_current_process_retry_proposal,
     find_current_process_run_proposal,
+    propose_file_patch,
+    propose_file_patch_retry,
     propose_process_retry,
     propose_process_run,
 )
@@ -436,14 +441,25 @@ def _route_operation_materialization_turn(
     max_transitions: int,
     working_directory: Path | None,
 ) -> UserTurnReceipt | None:
-    if decision.operation not in {"plan.run", "process.retry"}:
-        return None
-
+    process_materialization: ProcessCommandMaterialization | None = None
+    file_patch_materialization: FilePatchCommandMaterialization | None = None
     try:
-        materialization = parse_process_command_turn(
-            text,
-            working_directory=working_directory,
-        )
+        if decision.operation in {"plan.run", "process.retry"}:
+            process_materialization = parse_process_command_turn(
+                text,
+                working_directory=working_directory,
+            )
+            if process_materialization is None:
+                return None
+        elif decision.operation in {"plan.patch", "file.retry"}:
+            file_patch_materialization = parse_file_patch_turn(
+                text,
+                working_directory=working_directory,
+            )
+            if file_patch_materialization is None:
+                return None
+        else:
+            return None
     except OperationMaterializationInputError as exc:
         return _unsupported_turn(
             database_path,
@@ -452,28 +468,47 @@ def _route_operation_materialization_turn(
             reason_code=exc.reason_code,
             current_decision=decision,
         )
-    if materialization is None:
-        return None
 
     goal_id = _required_decision_value(decision.goal_id, "goal_id", decision)
     try:
         if decision.operation == "plan.run" and decision.capability == "process.run":
+            assert process_materialization is not None
             proposal = propose_process_run(
                 database_path,
                 goal_id=goal_id,
-                request=materialization.request,
+                request=process_materialization.request,
                 trace_id=turn_event.id,
             )
             proposal_event_id = proposal.event.id
         elif decision.operation == "process.retry":
+            assert process_materialization is not None
             action_id = _required_decision_value(decision.action_id, "action_id", decision)
             retry_proposal = propose_process_retry(
                 database_path,
                 action_id=action_id,
-                request=materialization.request,
+                request=process_materialization.request,
                 trace_id=turn_event.id,
             )
             proposal_event_id = retry_proposal.event.id
+        elif decision.operation == "plan.patch" and decision.capability == "file.patch":
+            assert file_patch_materialization is not None
+            patch_proposal = propose_file_patch(
+                database_path,
+                goal_id=goal_id,
+                request=file_patch_materialization.request,
+                trace_id=turn_event.id,
+            )
+            proposal_event_id = patch_proposal.event.id
+        elif decision.operation == "file.retry":
+            assert file_patch_materialization is not None
+            action_id = _required_decision_value(decision.action_id, "action_id", decision)
+            patch_retry_proposal = propose_file_patch_retry(
+                database_path,
+                action_id=action_id,
+                request=file_patch_materialization.request,
+                trace_id=turn_event.id,
+            )
+            proposal_event_id = patch_retry_proposal.event.id
         else:
             return None
 
@@ -823,6 +858,8 @@ def _unsupported_turn(
             "CONTINUE",
             "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",
             "MATERIALIZE_CURRENT_PROCESS_RETRY_PROPOSAL",
+            "MATERIALIZE_CURRENT_FILE_PATCH_PROPOSAL",
+            "MATERIALIZE_CURRENT_FILE_RETRY_PROPOSAL",
             "ANSWER_AT_USER_INPUT_GATE",
             "CONFIRM_AT_GATE",
             "AUTHORIZE_CURRENT_PROCESS_PROPOSAL",

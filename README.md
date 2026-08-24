@@ -749,16 +749,22 @@ A apresentação possui três situações úteis. `PROPOSAL_REQUIRED` lista os p
 
 O diagnóstico cobre `process.run`, `file.patch`, `process.retry`, `file.retry` e `analysis.retry`. Ele não tenta inventar executável, `cwd`, conteúdo de patch ou modelo; quando esses dados ainda não foram fornecidos, apenas os declara como inputs necessários. `executive-next`, `executive-step`, `executive-continue` e `user-turn` também imprimem essa apresentação automaticamente quando sua decisão final exige autorização operacional.
 
-### Materialização conversacional de processos
+### Materialização conversacional de operações foreground
 
-Quando o gate atual pede `process.run` ou `process.retry`, `user-turn` já pode materializar a proposta sem exigir que o usuário escreva `process-propose` manualmente:
+Quando o gate atual pede `process.run` ou `process.retry`, `user-turn` pode materializar a proposta sem exigir que o usuário escreva `process-propose` manualmente:
 
 ```powershell
 uv run simon user-turn --goal-id gol_... "Rode uv run pytest neste projeto"
 ```
 
-O primeiro corte é determinístico. `Rode` ou `Execute` identifica a intenção de materializar, enquanto `neste projeto` resolve o working directory para o diretório foreground da CLI. O comando é convertido em executável + argumentos, o timeout usa o padrão de `ProcessRunRequest` e `executive.operation.proposed` recebe o `trace_id` do turno humano. Nenhuma Action é criada e nenhum processo é iniciado.
+`file.patch` e `file.retry` também possuem uma gramática pequena para substituições textuais localizadas:
 
-O turno retorna ao mesmo `NEEDS_OPERATION_AUTHORIZATION`, agora apresentado como `READY_FOR_AUTHORIZATION`. A autorização continua exigindo um segundo turno explícito, como `sim` ou `pode executar`. Uma frase que tenta juntar proposta e autorização no mesmo texto não ganha as duas autoridades.
+```powershell
+uv run simon user-turn --goal-id gol_... "No arquivo script.py, substitua `valor = 1` por `valor = 2` neste projeto"
+```
 
-Nesta etapa a gramática não aceita shell, pipelines, redirecionamentos ou argumentos entre aspas. Casos mais complexos continuam usando `process-propose` e `process-retry-propose`. `file.patch`, `file.retry` e `analysis.retry` permanecem com suas materializações técnicas próprias.
+Os dois bridges são determinísticos e não usam ModelProvider. Em processos, `neste projeto` resolve o working directory para o diretório foreground da CLI. Em patches, o mesmo diretório vira o workspace autorizado, enquanto o caminho do arquivo continua relativo e passa pelas validações já existentes de `FilePatchRequest`. O texto entre crases vira `expected_text` e `replacement_text` sem leitura ou escrita antecipada do arquivo.
+
+O turno retorna ao mesmo `NEEDS_OPERATION_AUTHORIZATION`, agora apresentado como `READY_FOR_AUTHORIZATION`. A autorização continua exigindo um segundo turno explícito, como `sim`, `pode executar` ou `pode aplicar`. Uma frase que tenta juntar materialização e autorização no mesmo texto não ganha as duas autoridades.
+
+A gramática de processos continua sem shell, pipelines, redirecionamentos ou argumentos entre aspas. A gramática de patch cobre uma única substituição textual, em uma linha, delimitada por crases. Casos mais complexos continuam usando os comandos técnicos de proposta. `analysis.retry` permanece com materialização técnica própria.

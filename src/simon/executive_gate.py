@@ -114,6 +114,12 @@ def describe_operation_gate(
                     "replacement_text",
                 ),
                 command=_file_patch_command(decision),
+                materialization_examples=(
+                    (
+                        "No arquivo <caminho>, substitua `<trecho atual>` por `<novo trecho>` "
+                        "neste projeto"
+                    ),
+                ),
             )
         )
 
@@ -149,6 +155,12 @@ def describe_operation_gate(
                     "replacement_text",
                 ),
                 command=_file_retry_command(decision),
+                materialization_examples=(
+                    (
+                        "No arquivo <caminho>, substitua `<trecho atual>` por `<novo trecho>` "
+                        "neste projeto"
+                    ),
+                ),
             )
         )
 

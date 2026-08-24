@@ -117,6 +117,19 @@ def test_process_gate_presents_current_proposal_ready_for_authorization(tmp_path
     assert values["Diretório"] == str(tmp_path)
 
 
+def test_file_patch_gate_explains_conversational_materialization(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path / "data")
+    goal, _ = _change_plan(database_path)
+
+    presentation = describe_current_operation_gate(database_path, goal_id=goal.id)
+
+    assert presentation.status == "PROPOSAL_REQUIRED"
+    assert presentation.proposal_type == "file.patch"
+    assert presentation.materialization_examples == (
+        "No arquivo <caminho>, substitua `<trecho atual>` por `<novo trecho>` neste projeto",
+    )
+
+
 def test_file_patch_gate_presents_exact_change_without_modifying_file(tmp_path: Path) -> None:
     database_path, _ = initialize_storage(tmp_path / "data")
     goal, _ = _change_plan(database_path)
