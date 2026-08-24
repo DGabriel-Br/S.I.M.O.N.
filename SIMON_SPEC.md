@@ -5724,3 +5724,31 @@ Uma materialização bem-sucedida registra `executive.user_turn.routed` com `int
 Após criar a proposta, o gateway pode reconstruir o Executive para apresentar `READY_FOR_AUTHORIZATION`, mas não pode consumir a autorização no mesmo turno. Materialização e autorização exigem dois turnos semanticamente separados. A apresentação read-only de `PROPOSAL_REQUIRED` pode mostrar exemplos da gramática conversacional suportada para `process.run` e `process.retry` sem remover os comandos técnicos de fallback.
 
 `file.patch`, `file.retry` e `analysis.retry` permanecem fora desta gramática até existir um contrato textual próprio que preserve seus parâmetros concretos sem ambiguidade. Nenhuma migration é necessária e o SQLite permanece no schema 11.
+
+### 33.20. Materialização conversacional de file.patch e file.retry
+
+A gramática foreground de operações pode materializar uma única substituição textual para `file.patch` e `file.retry` sem ler ou escrever o arquivo durante a interpretação. A forma inicial exige um caminho relativo, trecho atual e trecho substituto delimitados de maneira explícita, além da referência `neste projeto` para vincular o workspace ao diretório foreground informado pelo chamador.
+
+O parser produz somente um `FilePatchRequest`. Caminhos absolutos, travessia por `..` e entradas que não respeitam o contrato continuam sendo recusados pelas validações existentes. No retry, o `action_id` da tentativa anterior vem exclusivamente da `ExecutiveDecision`; nenhum identificador histórico é aceito a partir do texto humano.
+
+A materialização persiste `executive.operation.proposed` e retorna ao mesmo gate operacional. Alterar o arquivo exige um segundo turno afirmativo que consome somente a proposta ainda válida. Materialização e autorização não podem ser fundidas em um único turno. O schema permanece 11.
+
+### 33.21. Materialização conversacional de analysis.retry
+
+Quando o gate atual exige `analysis.retry`, o usuário pode fornecer somente o identificador explícito do modelo em uma gramática foreground limitada, por exemplo `Refaça a análise com o modelo qwen3.5:4b-q4_K_M`.
+
+O texto humano não seleciona Action, Plan, revisão, Verification ou evidências. Esses elementos continuam sendo reconstruídos do SQLite e congelados pela proposta concreta de retry. A materialização não chama `ModelProvider`, não cria nova Action e não constitui autorização. Um segundo turno afirmativo continua sendo necessário para produzir `action.retry.authorized` e executar a nova tentativa com o modelo persistido na proposta.
+
+Com esse bridge, todos os gates operacionais concretos atuais possuem uma forma conversacional de materialização sem ampliar a autoridade do turno. O schema permanece 11.
+
+### 33.22. Foco foreground persistente de Goal
+
+`NEEDS_GOAL_SELECTION` continua sendo um gate autoritativo: quando existem múltiplos Goals abertos e nenhum foco aplicável, o Executive não escolhe um deles por heurística, prioridade implícita ou modelo.
+
+O gateway pode resolver esse gate por uma escolha humana determinística baseada na lista concreta de `ExecutiveGoalCandidate`. O primeiro contrato aceita ordinais relativos à ordem apresentada e títulos completos que correspondam a exatamente um candidato. Ambiguidade não é resolvida probabilisticamente.
+
+Uma seleção válida cria `executive.goal_focus.selected` com `source=user` e `trace_id` do turno. O Event registra o Goal escolhido e serve somente como contexto foreground. O próprio turno de seleção não executa `PROCEED`, não materializa Plan, não cria Action e não concede autorização operacional.
+
+`reconstruct_resume_state()` pode reutilizar o foco persistido quando há múltiplos Goals abertos. A seleção só permanece aplicável enquanto o Goal apontado estiver em um status aberto. Um `goal_id` fornecido explicitamente pelo chamador sempre prevalece. Quando o foco expira, o sistema volta à regra normal: seleciona automaticamente apenas se houver um único Goal aberto; caso contrário, retorna novamente a `NEEDS_GOAL_SELECTION`.
+
+O foco é reconstruído de Events e não exige estado de sessão, nova tabela ou migration. Assim, o contexto foreground sobrevive a restart sem transformar FocusSession conceitual em uma arquitetura maior antes de existir necessidade real. O SQLite permanece no schema 11.

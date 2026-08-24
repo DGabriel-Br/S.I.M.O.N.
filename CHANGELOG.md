@@ -24,6 +24,8 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - apresentação read-only de gates operacionais com `executive-gate`, indicando se falta materializar uma proposta ou se já existe uma proposta concreta pronta para autorização; `executive-next`, `executive-step`, `executive-continue` e `user-turn` passam a exibir automaticamente esse contexto ao parar em autorização.
 - materialização conversacional determinística de propostas `process.run` e `process.retry` via `user-turn`, aceitando formas foreground como `Rode uv run pytest neste projeto`; a proposta é persistida e apresentada sem criar Action, executar processo ou consumir autorização no mesmo turno.
 - materialização conversacional determinística de `file.patch` e `file.retry` por substituição textual delimitada por crases; o workspace permanece preso ao diretório foreground, o caminho continua relativo e a alteração só ocorre após um segundo turno de autorização.
+- materialização conversacional determinística de `analysis.retry`, aceitando um modelo explicitamente nomeado sem permitir que o texto humano altere Action, Plan, revisão ou evidências reconstruídas do estado persistido;
+- seleção foreground persistente de Goal por `user-turn` quando existem múltiplos Goals abertos; ordinais ou título único registram `executive.goal_focus.selected` sem executar trabalho, e o foco é reutilizado após restart enquanto o Goal permanecer aberto.
 
 ## [0.1.0] - 2026-08-19
 

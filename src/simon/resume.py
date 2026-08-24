@@ -5,6 +5,7 @@ from pathlib import Path
 
 from simon.actions import Action, list_actions_for_plan
 from simon.experiences import Experience, get_latest_experience
+from simon.goal_focus import get_current_goal_focus
 from simon.goals import Goal, get_goal, list_open_goals
 from simon.memories import Memory, retrieve_memories
 from simon.plans import Plan, get_active_plan, list_plans_for_goal
@@ -66,6 +67,10 @@ def reconstruct_resume_state(
             raise ValueError(f"goal não encontrado: {goal_id}")
     elif len(open_goals) == 1:
         selected_goal = open_goals[0]
+    elif len(open_goals) > 1:
+        focus = get_current_goal_focus(database_path)
+        if focus is not None:
+            selected_goal = focus.goal
 
     latest_experience = get_latest_experience(database_path)
     selected = (

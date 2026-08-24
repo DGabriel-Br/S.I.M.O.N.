@@ -9,10 +9,11 @@ from typing import Literal
 from simon.assessment_confirmation import confirm_action_assessment
 from simon.cognition_analysis import retry_cognition_analysis
 from simon.events import Event, append_event
-from simon.executive import ExecutiveDecision, decide_next
+from simon.executive import ExecutiveDecision, ExecutiveGoalCandidate, decide_next
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
 from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
+from simon.goal_focus import select_goal_focus
 from simon.model_provider import ModelProvider
 from simon.operation_materialization import (
     AnalysisRetryMaterialization,
@@ -38,9 +39,10 @@ from simon.operation_proposal import (
 from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.user_ask import answer_user_ask
 
-UserTurnIntent = Literal["CONTINUE", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"]
+UserTurnIntent = Literal["CONTINUE", "SELECT", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"]
 UserTurnStatus = Literal["ROUTED", "UNSUPPORTED", "FAILED"]
 UserTurnEffectType = Literal[
+    "goal.focus",
     "user.response",
     "verification.confirmed",
     "goal.completed",
@@ -120,7 +122,7 @@ class UserTurnReceipt:
             raise ValueError("CONTINUE não pode declarar efeito de gate")
         if (
             self.status == "ROUTED"
-            and self.intent in {"ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"}
+            and self.intent in {"SELECT", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"}
             and self.effect_type is None
         ):
             raise ValueError(f"{self.intent} exige efeito de gate persistido")
@@ -178,6 +180,14 @@ def handle_user_turn(
             goal_id=goal_id,
             error=str(exc),
             reason_code="gate_lookup_failed",
+        )
+
+    if decision.outcome == "NEEDS_GOAL_SELECTION":
+        return _route_goal_selection(
+            database_path,
+            turn_event=turn_event,
+            decision=decision,
+            text=normalized_text,
         )
 
     if decision.outcome == "NEEDS_USER_INPUT" and decision.operation == "action.answer":
@@ -249,6 +259,157 @@ def interpret_user_turn_intent(text: str) -> UserTurnIntent | None:
     if normalized in _CONTINUE_UTTERANCES:
         return "CONTINUE"
     return None
+
+
+def _route_goal_selection(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    decision: ExecutiveDecision,
+    text: str,
+) -> UserTurnReceipt:
+    selected_goal_id = _resolve_goal_selection(text, decision.goal_candidates)
+    if selected_goal_id is None:
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=None,
+            reason_code="goal_selection_not_resolved",
+            current_decision=decision,
+        )
+
+    try:
+        selected_decision = decide_next(database_path, goal_id=selected_goal_id)
+        focus = select_goal_focus(
+            database_path,
+            goal_id=selected_goal_id,
+            trace_id=turn_event.id,
+            selection_text=text,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="SELECT",
+            goal_id=selected_goal_id,
+            error=str(exc),
+            reason_code="goal_selection_routing_failed",
+            current_decision=decision,
+        )
+
+    executive_receipt = ExecutiveContinueReceipt(
+        status="STOPPED",
+        initial_decision=selected_decision,
+        final_decision=selected_decision,
+    )
+    routing_event = _append_routed_event(
+        database_path,
+        turn_event=turn_event,
+        intent="SELECT",
+        executive_receipt=executive_receipt,
+        authority_scope="FOREGROUND_GOAL_SELECTION_ONLY",
+        goal_id=selected_goal_id,
+        current_decision=decision,
+        effect_type="goal.focus",
+        effect_id=focus.event.id,
+    )
+    return UserTurnReceipt(
+        status="ROUTED",
+        turn_event=turn_event,
+        intent="SELECT",
+        routing_event=routing_event,
+        executive_receipt=executive_receipt,
+        effect_type="goal.focus",
+        effect_id=focus.event.id,
+    )
+
+
+def _resolve_goal_selection(
+    text: str,
+    candidates: tuple[ExecutiveGoalCandidate, ...],
+) -> str | None:
+    if not candidates:
+        return None
+
+    normalized = _normalize_turn_text(text)
+    ordinal_index = _goal_selection_ordinal_index(normalized)
+    if ordinal_index is not None:
+        if 0 <= ordinal_index < len(candidates):
+            return candidates[ordinal_index].goal_id
+        return None
+
+    matching_goal_ids = {
+        candidate.goal_id
+        for candidate in candidates
+        if normalized in _goal_title_selection_phrases(candidate.title)
+    }
+    if len(matching_goal_ids) == 1:
+        return next(iter(matching_goal_ids))
+    return None
+
+
+def _goal_selection_ordinal_index(normalized: str) -> int | None:
+    ordinal_words = {
+        "primeiro": 0,
+        "segundo": 1,
+        "terceiro": 2,
+        "quarto": 3,
+        "quinto": 4,
+        "sexto": 5,
+        "setimo": 6,
+        "oitavo": 7,
+        "nono": 8,
+        "decimo": 9,
+    }
+    wrappers = (
+        "{}",
+        "o {}",
+        "goal {}",
+        "objetivo {}",
+        "escolho {}",
+        "escolho o {}",
+        "selecione {}",
+        "selecione o {}",
+        "quero {}",
+        "quero o {}",
+        "use {}",
+        "use o {}",
+    )
+    for word, index in ordinal_words.items():
+        if any(normalized == pattern.format(word) for pattern in wrappers):
+            return index
+
+    numeric_pattern = (
+        r"(?:(?:o|goal|objetivo|escolho(?: o)?|selecione(?: o)?|quero(?: o)?|use(?: o)?) )?"
+        r"(\d{1,3})(?:o)?"
+    )
+    numeric_match = re.fullmatch(numeric_pattern, normalized)
+    if numeric_match is None:
+        return None
+    return int(numeric_match.group(1)) - 1
+
+
+def _goal_title_selection_phrases(title: str) -> set[str]:
+    normalized_title = _normalize_turn_text(title)
+    return {
+        normalized_title,
+        f"goal {normalized_title}",
+        f"objetivo {normalized_title}",
+        f"o goal {normalized_title}",
+        f"o objetivo {normalized_title}",
+        f"escolho {normalized_title}",
+        f"escolho o goal {normalized_title}",
+        f"escolho o objetivo {normalized_title}",
+        f"selecione {normalized_title}",
+        f"selecione o goal {normalized_title}",
+        f"selecione o objetivo {normalized_title}",
+        f"quero {normalized_title}",
+        f"quero o goal {normalized_title}",
+        f"quero o objetivo {normalized_title}",
+        f"use {normalized_title}",
+        f"use o goal {normalized_title}",
+        f"use o objetivo {normalized_title}",
+    }
 
 
 def _route_continue(
@@ -874,6 +1035,7 @@ def _unsupported_turn(
         "reason_code": reason_code,
         "supported_intents": [
             "CONTINUE",
+            "SELECT_CURRENT_GOAL",
             "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",
             "MATERIALIZE_CURRENT_PROCESS_RETRY_PROPOSAL",
             "MATERIALIZE_CURRENT_FILE_PATCH_PROPOSAL",
@@ -953,6 +1115,14 @@ def _decision_gate_payload(decision: ExecutiveDecision) -> dict[str, object]:
         "action_id": decision.action_id,
         "verification_id": decision.verification_id,
         "capability": decision.capability,
+        "goal_candidates": [
+            {
+                "goal_id": candidate.goal_id,
+                "status": candidate.status,
+                "title": candidate.title,
+            }
+            for candidate in decision.goal_candidates
+        ],
     }
 
 

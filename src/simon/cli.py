@@ -1224,8 +1224,9 @@ def _print_executive_decision(decision: ExecutiveDecision) -> None:
 
     if decision.goal_candidates:
         print("Goals candidatos:")
-        for candidate in decision.goal_candidates:
-            print(f"- {candidate.goal_id}: {candidate.status} | {candidate.title}")
+        for index, candidate in enumerate(decision.goal_candidates, start=1):
+            print(f"{index}. {candidate.goal_id}: {candidate.status} | {candidate.title}")
+        print('Seleção conversacional: responda com o ordinal ou com o título único do Goal')
 
     if decision.blockers:
         print("Blockers preservados:")

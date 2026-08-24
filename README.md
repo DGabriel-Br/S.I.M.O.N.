@@ -776,3 +776,17 @@ uv run simon user-turn --goal-id gol_... "Refaça a análise com o modelo qwen3.
 Esse bridge não chama o provider. O modelo informado é congelado junto da Action anterior, revisão do Plan, Verification e evidências atualmente válidas; a nova tentativa só existe depois de um segundo turno afirmativo. A Action alvo e os IDs de evidência continuam vindo do estado persistido, nunca do texto livre.
 
 A gramática de processos continua sem shell, pipelines, redirecionamentos ou argumentos entre aspas. A gramática de patch cobre uma única substituição textual, em uma linha, delimitada por crases. A gramática de retry cognitivo exige um identificador de modelo explícito sem espaços. Casos mais complexos continuam usando os comandos técnicos de proposta.
+
+### Seleção de Goal pela conversa
+
+Quando houver vários Goals abertos e nenhum foco explícito, o Executive retorna `NEEDS_GOAL_SELECTION` e lista os candidatos em ordem. Não é necessário copiar o `goal_id` para escolher um deles:
+
+```powershell
+uv run simon user-turn "primeiro"
+uv run simon user-turn "o segundo"
+uv run simon user-turn "Escolho o Goal Revisar integração aérea"
+```
+
+A escolha registra apenas o foco foreground em `executive.goal_focus.selected`. Nenhum Plan ou Action é criado nesse turno. Depois disso, chamadas como `user-turn "continue"`, `executive-next` e `executive-continue` reutilizam o foco persistido enquanto o Goal continuar aberto, inclusive após restart.
+
+Ordinais são relativos à ordem exibida pelo Executive. Um título só é aceito quando identifica exatamente um candidato; títulos duplicados permanecem ambíguos. Um `--goal-id` explícito continua tendo precedência e permite override técnico quando necessário.

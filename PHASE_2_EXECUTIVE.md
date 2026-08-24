@@ -444,3 +444,15 @@ A materialização usa `propose_cognition_analysis_retry()` com o `trace_id` de 
 A gramática não aceita nomes de modelo com espaços ou instruções adicionais no mesmo turno. Frases que tentam materializar e autorizar simultaneamente não recebem duas autoridades. Casos fora dessa forma explícita continuam usando `analysis-retry-propose`. Com isso, todos os gates operacionais atuais possuem materialização conversacional sem reduzir suas fronteiras de autorização.
 
 O SQLite permanece no schema 11.
+
+## Seleção foreground persistente de Goal
+
+Quando mais de um Goal permanece aberto, `decide_next()` continua recusando escolher um foco arbitrariamente. Sem foco anterior, o resultado permanece `NEEDS_GOAL_SELECTION` e carrega a lista ordenada de candidatos com ID, status e título.
+
+O gateway `user-turn` passa a aceitar uma escolha determinística nesse gate. O primeiro corte reconhece ordinais como `primeiro`, `o segundo` e `goal 2`, além do título completo quando ele identifica exatamente um candidato. Formas explícitas como `Escolho o Goal Revisar integração aérea` também são aceitas. Títulos duplicados e ordinais fora da lista permanecem sem efeito.
+
+Uma escolha válida persiste um Event `executive.goal_focus.selected` com `source=user`, `trace_id` do `user.turn.received` e snapshot do Goal selecionado. Esse Event é apenas contexto foreground: o turno de seleção não cria Plan, Action ou Verification e não executa nenhuma capability. O `executive.user_turn.routed` correspondente declara `authority_scope=FOREGROUND_GOAL_SELECTION_ONLY`.
+
+`reconstruct_resume_state()` reutiliza a seleção mais recente somente quando existem múltiplos Goals abertos e o Goal focado ainda possui status aberto. Um `goal_id` explicitamente fornecido pelo chamador sempre vence o foco persistido. Se o Goal focado for concluído, falhar ou for cancelado, a seleção deixa de ser aplicável e a regra normal de foco é reconstruída a partir do estado atual.
+
+Como o foco é derivado de Event persistido, `resume`, `executive-next`, `executive-step`, `executive-continue` e `user-turn` podem continuar no mesmo Goal depois de restart sem depender de memória do processo Python. Nenhuma tabela ou migration nova é necessária; o schema SQLite permanece na versão 11.

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from simon.actions import list_actions_for_plan
 from simon.cli import main
 from simon.events import get_event
+from simon.executive import decide_next
 from simon.goal_verification import (
     GoalCriterionAssessment,
     GoalEvidenceAssessment,
@@ -474,3 +475,130 @@ def test_non_explicit_text_does_not_confirm_semantic_gate(tmp_path: Path) -> Non
     )
     assert results[-1].id == assessment_id
     assert results[-1].status == "ASSESSED"
+
+
+def test_goal_selection_by_ordinal_persists_focus_without_executing_work(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _goal(database_path, "Goal A")
+    _goal(database_path, "Goal B")
+    initial = decide_next(database_path)
+    selected_id = initial.goal_candidates[0].goal_id
+
+    receipt = handle_user_turn(database_path, "o primeiro")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "SELECT"
+    assert receipt.effect_type == "goal.focus"
+    assert receipt.effect_id is not None
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.goal_id == selected_id
+    assert receipt.routing_event.payload["authority_scope"] == "FOREGROUND_GOAL_SELECTION_ONLY"
+    assert list_plans_for_goal(database_path, selected_id) == ()
+
+
+def test_goal_selection_accepts_unique_title_without_goal_id(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    selected = _goal(database_path, "Revisar integração aérea")
+    _goal(database_path, "Conferir documentação")
+
+    receipt = handle_user_turn(database_path, "Escolho o Goal Revisar integração aérea")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "SELECT"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.final_decision.goal_id == selected.id
+
+
+def test_goal_selection_rejects_ambiguous_duplicate_title(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _goal(database_path, "Revisar processo")
+    _goal(database_path, "Revisar processo")
+
+    receipt = handle_user_turn(database_path, "Revisar processo")
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "goal_selection_not_resolved"
+    gate = receipt.routing_event.payload["gate"]
+    assert isinstance(gate, dict)
+    assert len(gate["goal_candidates"]) == 2
+
+
+def test_goal_selection_rejects_ordinal_outside_current_candidates(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _goal(database_path, "Goal A")
+    _goal(database_path, "Goal B")
+
+    receipt = handle_user_turn(database_path, "o terceiro")
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "goal_selection_not_resolved"
+
+
+def test_continue_without_goal_id_reuses_persisted_foreground_focus(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    first = _goal(database_path, "Goal A")
+    second = _goal(database_path, "Goal B")
+    initial = decide_next(database_path)
+    selected_id = initial.goal_candidates[0].goal_id
+    other_id = first.id if selected_id == second.id else second.id
+
+    selection = handle_user_turn(database_path, "primeiro")
+    assert selection.status == "ROUTED"
+
+    receipt = handle_user_turn(
+        database_path,
+        "continue",
+        provider=PlanningProvider(),
+        model="fake-model",
+    )
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "CONTINUE"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.final_decision.goal_id == selected_id
+    assert receipt.executive_receipt.final_decision.outcome == "NEEDS_USER_INPUT"
+    assert len(list_plans_for_goal(database_path, selected_id)) == 1
+    assert list_plans_for_goal(database_path, other_id) == ()
+
+
+def test_user_turn_cli_selects_goal_by_ordinal_without_executing_it(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _goal(database_path, "Goal A")
+    _goal(database_path, "Goal B")
+    selected_id = decide_next(database_path).goal_candidates[1].goal_id
+
+    exit_code = main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "user-turn",
+            "o",
+            "segundo",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "User turn: ROUTED" in output
+    assert "Intent: SELECT" in output
+    assert "Efeito do gate: goal.focus" in output
+    assert "Transições executadas: 0" in output
+    assert f"Goal: {selected_id}" in output
+
+
+def test_goal_selection_accepts_numeric_reference_from_presented_order(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _goal(database_path, "Goal A")
+    _goal(database_path, "Goal B")
+    selected_id = decide_next(database_path).goal_candidates[1].goal_id
+
+    receipt = handle_user_turn(database_path, "goal 2")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "SELECT"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.final_decision.goal_id == selected_id
