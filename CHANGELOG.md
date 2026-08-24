@@ -30,6 +30,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - proposta conversacional de novo Goal quando o Executive está ocioso: `user-turn --model ...` interpreta somente uma nova `REQUEST`, persiste `cognition.goal_proposal.completed` com provenance do turno e mantém a aceitação do Goal como ato separado.
 - resposta conversacional à proposta de Goal pendente: um segundo `user-turn` com `sim`/`aceito` persiste o Goal, enquanto `não`/`rejeito`/`descarto` registra `goal.proposal.rejected`; textos não reconhecidos não consomem a proposta nem iniciam outra solicitação.
 - Golden Scenario conversacional de fechamento da Fase 2: o ciclo parte de `DONE/no_open_goal`, recebe uma nova solicitação por `user-turn`, propõe e aceita o Goal, propõe e materializa o Plan, materializa e autoriza um `file.patch` em turnos separados, verifica o efeito, conclui Plan e Goal e reconstrói `DONE` em outro processo usando somente o SQLite.
+- primeiro contrato operacional de Perception/Attention: `observe` persiste `perception.observation.recorded`, classifica explicitamente a Observation em `IGNORE`, `RECORD`, `UPDATE_WORLD`, `ATTEND` ou `INTERRUPT` e registra `attention.assessed` sem aplicar efeito no World ou Executive.
 
 ## [0.1.0] - 2026-08-19
 

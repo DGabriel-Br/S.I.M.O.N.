@@ -74,6 +74,8 @@ O projeto já consegue:
 - registrar em cada Plan a revisão do World em que ele foi criado;
 - reconstruir após reinício Goal, Plan, Actions, Verification status, revisão do World, última Experience e Memories relevantes com `simon resume`;
 - executar em teste integrado um ciclo completo de Goal -> Plan -> Actions -> Verification -> restart -> mudança -> reexecução -> Goal COMPLETED -> Experience -> Memory -> novo restart.
+- registrar Observations explícitas com `observer`, tipo de sinal, provenance opcional de Goal/Entities e Event interno com `source=perception`;
+- classificar deterministicamente uma Observation em `IGNORE`, `RECORD`, `UPDATE_WORLD`, `ATTEND` ou `INTERRUPT` sem aplicar automaticamente o destino ao World ou ao Executive.
 
 O primeiro adapter de modelo local já existe:
 
@@ -639,9 +641,9 @@ A terceira lacuna estava no consumo cognitivo. `cognition.analyze` podia voltar 
 
 A auditoria também formaliza a fronteira desta versão: o v0.1 é single-runtime por diretório de dados; efeitos externos interrompidos continuam exigindo decisão explícita antes de retry; `world_revision` ainda informa mudança sem invalidar Plans automaticamente; e Memories continuam dependendo de promoção explícita. Esses pontos são limitações deliberadas, não bloqueadores descobertos nesta auditoria.
 
-## Próxima fase
+## Evolução após o núcleo estável
 
-A versão `0.1.0` encerra a fase de fundação do núcleo. A partir daqui, novas capacidades devem ser construídas sobre estes contratos sem reabrir invariantes já estabilizados por conveniência. Itens deliberadamente fora do v0.1 incluem Executive/Attention, seleção automática de Memory, invalidação automática de Plan por assumptions, roteamento entre modelos, visão, voz, interface gráfica e novas famílias de Tools.
+A versão `0.1.0` encerrou a fase de fundação do núcleo. O Executive mínimo da linha de desenvolvimento seguinte já possui Golden Scenario conversacional completo e passa a servir como base para novas responsabilidades. O primeiro corte estrutural após esse fechamento é Perception/Attention: observar um sinal, preservá-lo com provenance e classificá-lo sem confundir classificação com autoridade para agir. Seleção automática de Memory, invalidação automática de Plan por assumptions, roteamento entre modelos, visão, voz, interface gráfica e novas famílias de Tools continuam fora deste corte.
 
 ## Primeira interpretação cognitiva
 
@@ -829,3 +831,20 @@ uv run simon user-turn "Foque no Goal Corrigir script"
 ```
 
 A diretiva de troca é reconhecida antes do gate contextual atual para não ser confundida com resposta de `user.ask`, confirmação ou autorização. Ainda assim, ela só persiste uma nova seleção em `executive.goal_focus.selected`: nenhuma Action, Plan ou capability é executada no mesmo turno. O título precisa identificar exatamente um Goal aberto. Se o mesmo comando também fornecer `--goal-id`, o identificador técnico prevalece e a troca conversacional conflitante é recusada.
+
+## Primeiro corte de Perception e Attention
+
+Depois do fechamento do Executive mínimo, o S.I.M.O.N. passa a possuir uma borda explícita para sinais externos. O comando inicial é deliberadamente manual, servindo para validar o contrato antes de qualquer sensor contínuo:
+
+```powershell
+uv run simon observe --source filesystem --kind file.changed --world-change "target.txt foi alterado"
+```
+
+A chamada produz dois Events. `perception.observation.recorded` preserva a observação normalizada; `attention.assessed` registra a classificação determinística. Os destinos suportados são `IGNORE`, `RECORD`, `UPDATE_WORLD`, `ATTEND` e `INTERRUPT`.
+
+A ordem atual é simples: urgência ou risco resultam em `INTERRUPT`; relevância ao Goal ou subscription resulta em `ATTEND`; mudança candidata do World resulta em `UPDATE_WORLD`; ruído conhecido resulta em `IGNORE`; na ausência desses sinais, o destino é `RECORD`.
+
+Nenhum desses destinos é executado neste corte. `UPDATE_WORLD` não cria Claim, `ATTEND` não muda o foco e `INTERRUPT` não pausa Goal ou Action. A avaliação registra `effect_applied=false` justamente para tornar essa fronteira auditável.
+
+O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, interpretação cognitiva de observações e aplicação de efeitos permanecem fora deste passo.
+

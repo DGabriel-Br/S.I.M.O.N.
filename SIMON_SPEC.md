@@ -353,6 +353,10 @@ Associa observer, target, eventos/condições, motivo/Goal e expiração.
 
 Mic/câmera default off, tela e conteúdo profundo ligados a Goal/escopo, clipboard restrito, e persistência separada de observação.
 
+### 8.7. Primeiro contrato operacional
+
+A implementação inicial começa por Observations explicitamente ingeridas, não por sensores contínuos. `perception.observation.recorded` preserva o observer no payload, usa `source=perception` no Event e mantém tipo de sinal, resumo e provenance opcional de Goal/Entities sem criar Claim nem alterar o World. Entity Resolution automática, interpretação e Proposed Claims permanecem etapas posteriores.
+
 ---
 
 ## 9. Attention e Executive
@@ -427,6 +431,10 @@ Pode conter:
 ### 9.6. Attention inertia
 
 Pequenas mudanças de prioridade não devem causar thrashing constante.
+
+### 9.7. Primeiro classificador operacional
+
+O primeiro Attention Manager implementado é deliberadamente determinístico e não aplica efeitos. Sinais explícitos de urgência/risco classificam como `INTERRUPT`; relevância ao Goal/subscription como `ATTEND`; mudança candidata do World como `UPDATE_WORLD`; ruído conhecido como `IGNORE`; demais observações como `RECORD`. A avaliação é persistida em `attention.assessed` com `effect_applied=false`. Aplicação ao World, mudança de foco e interrupção real permanecem responsabilidades separadas.
 
 ---
 

@@ -2135,3 +2135,74 @@ def test_analysis_retry_cli_executes_explicit_new_attempt(
     assert f"Action anterior: {failed.id}" in output
     assert "Status: COMPLETED" in output
     assert "A análise foi concluída após nova tentativa." in output
+
+
+def test_observe_cli_records_signal_and_attention_assessment(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    result = main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "filesystem",
+            "--kind",
+            "file.changed",
+            "--world-change",
+            "target.txt",
+            "foi",
+            "alterado",
+        ]
+    )
+
+    assert result == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Observer: filesystem" in output
+    assert "Sinal: file.changed" in output
+    assert "Resumo: target.txt foi alterado" in output
+    assert "Attention: UPDATE_WORLD" in output
+    assert "Efeito aplicado ao World/Executive: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        rows = connection.execute(
+            """
+            SELECT kind, source, payload_json, trace_id
+            FROM events
+            WHERE kind IN ('perception.observation.recorded', 'attention.assessed')
+            ORDER BY occurred_at, rowid
+            """
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0][0:2] == ("perception.observation.recorded", "perception")
+    assert rows[1][0:2] == ("attention.assessed", "attention")
+    assert rows[0][3] == rows[1][3]
+    assessment_payload = json.loads(str(rows[1][2]))
+    assert assessment_payload["destination"] == "UPDATE_WORLD"
+    assert assessment_payload["effect_applied"] is False
+
+
+def test_observe_cli_defaults_to_record_without_escalation_signal(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "process-monitor",
+            "--kind",
+            "heartbeat",
+            "serviço",
+            "continua",
+            "ativo",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Attention: RECORD" in output
+    assert "Razões: no_escalation_signal" in output

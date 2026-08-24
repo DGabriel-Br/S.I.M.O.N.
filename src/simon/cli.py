@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.assessment_confirmation import confirm_action_assessment
+from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import set_current_claim
 from simon.cognition import (
     UserInputInterpretation,
@@ -60,6 +61,7 @@ from simon.operation_proposal import (
     propose_process_retry,
     propose_process_run,
 )
+from simon.perception import record_observation
 from simon.plan_completion import complete_verified_plan
 from simon.plan_intake import materialize_plan_proposal
 from simon.plan_proposal import (
@@ -194,6 +196,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="texto literal do turno humano, por exemplo: continue esse Goal",
     )
     _add_ollama_arguments(user_turn)
+
+    observe = commands.add_parser(
+        "observe",
+        help=(
+            "registra uma observação explícita e avalia deterministicamente "
+            "seu destino de Attention"
+        ),
+    )
+    observe.add_argument("--source", required=True, help="fonte ou sensor que produziu o sinal")
+    observe.add_argument(
+        "--kind",
+        required=True,
+        dest="signal_kind",
+        help="tipo normalizado do sinal",
+    )
+    observe.add_argument("--goal-id", help="Goal explicitamente relacionado à observação")
+    observe.add_argument(
+        "--entity-id",
+        action="append",
+        default=[],
+        help="Entity já resolvida relacionada à observação; pode ser repetido",
+    )
+    observe.add_argument("--urgent", action="store_true", help="sinaliza urgência explícita")
+    observe.add_argument("--risk", action="store_true", help="sinaliza risco explícito")
+    observe.add_argument(
+        "--goal-relevant",
+        action="store_true",
+        help="sinaliza relevância explícita ao Goal",
+    )
+    observe.add_argument(
+        "--subscribed",
+        action="store_true",
+        help="sinaliza correspondência a uma subscription explícita",
+    )
+    observe.add_argument(
+        "--world-change",
+        action="store_true",
+        help="sinaliza candidato a mudança do World; não altera Claims neste passo",
+    )
+    observe.add_argument(
+        "--known-noise",
+        action="store_true",
+        help="sinaliza ruído conhecido sem valor operacional",
+    )
+    observe.add_argument("summary", nargs="+", help="resumo normalizado da observação")
 
     model_check = commands.add_parser(
         "model-check",
@@ -799,6 +846,21 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.model,
             args.max_transitions,
         )
+    if args.command == "observe":
+        return _observe(
+            database_path,
+            args.source,
+            args.signal_kind,
+            " ".join(args.summary),
+            args.goal_id,
+            tuple(args.entity_id),
+            args.urgent,
+            args.risk,
+            args.goal_relevant,
+            args.subscribed,
+            args.world_change,
+            args.known_noise,
+        )
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -982,6 +1044,58 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
     print(f"S.I.M.O.N. {__version__}")
     print(f"Dados: {database_path.parent}")
     print(f"SQLite: pronto (schema {schema_version})")
+    return 0
+
+
+def _observe(
+    database_path: Path,
+    source: str,
+    signal_kind: str,
+    summary: str,
+    goal_id: str | None,
+    related_entity_ids: tuple[str, ...],
+    urgent: bool,
+    risk: bool,
+    goal_relevant: bool,
+    subscribed: bool,
+    world_change: bool,
+    known_noise: bool,
+) -> int:
+    trace_id = f"trace_{uuid4().hex}"
+    try:
+        observation = record_observation(
+            database_path,
+            observer=source,
+            signal_kind=signal_kind,
+            summary=summary,
+            trace_id=trace_id,
+            goal_id=goal_id,
+            related_entity_ids=related_entity_ids,
+        )
+        assessment = assess_observation_attention(
+            database_path,
+            observation_event_id=observation.event.id,
+            signals=AttentionSignals(
+                urgent=urgent,
+                risk=risk,
+                goal_relevant=goal_relevant,
+                subscribed=subscribed,
+                world_change=world_change,
+                known_noise=known_noise,
+            ),
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Observation: falha ({exc})")
+        return 1
+
+    print(f"Observation: {observation.event.id}")
+    print(f"Observer: {observation.observer}")
+    print(f"Sinal: {observation.signal_kind}")
+    print(f"Resumo: {observation.summary}")
+    print(f"Attention: {assessment.decision.destination}")
+    print(f"Razões: {', '.join(assessment.decision.reasons)}")
+    print(f"Assessment: {assessment.event.id}")
+    print("Efeito aplicado ao World/Executive: não")
     return 0
 
 
