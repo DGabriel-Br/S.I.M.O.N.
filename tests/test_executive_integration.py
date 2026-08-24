@@ -472,3 +472,261 @@ def test_executive_foreground_cycle_survives_restarts_and_respects_gates(
     assert goal_status == ("COMPLETED",)
     assert plan_status == ("COMPLETED",)
     assert startup_count is not None and startup_count[0] >= 4
+
+
+class ConversationalExecutiveCycleProvider:
+    def __init__(self, **kwargs: object) -> None:
+        pass
+
+    def list_models(self) -> tuple[str, ...]:
+        return ("integration-model",)
+
+    def generate_structured[OutputT: BaseModel](
+        self,
+        *,
+        model: str,
+        prompt: str,
+        response_model: type[OutputT],
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> StructuredModelResult[OutputT]:
+        del prompt, system, temperature
+
+        from simon.cognition import GoalProposal, UserInputInterpretation
+        from simon.planning import PlanIntentDraft, PlanIntentStep
+
+        if response_model is UserInputInterpretation:
+            output = UserInputInterpretation(
+                intent="REQUEST",
+                objective="Corrigir target.txt substituindo BROKEN por FIXED.",
+                entity_mentions=[],
+                ambiguities=[],
+            )
+        elif response_model is GoalProposal:
+            output = GoalProposal(
+                title="Corrigir target.txt",
+                desired_state="target.txt contém FIXED no lugar de BROKEN.",
+                success_criteria=["target.txt contém FIXED e não contém BROKEN."],
+                open_questions=[],
+            )
+        elif response_model is PlanIntentDraft:
+            output = PlanIntentDraft(
+                summary="Aplicar uma substituição textual localizada e verificar o resultado.",
+                steps=[
+                    PlanIntentStep(
+                        subject="Substituir BROKEN por FIXED em target.txt",
+                        role="CHANGE",
+                        verification="target.txt contém FIXED e não contém BROKEN.",
+                    )
+                ],
+                open_questions=[],
+            )
+        elif response_model is GoalEvidenceAssessment:
+            output = GoalEvidenceAssessment(
+                criteria=[
+                    GoalCriterionAssessment(
+                        criterion_index=1,
+                        verdict="SATISFIED",
+                        rationale="O file.patch verificado deixou target.txt com FIXED sem BROKEN.",
+                        supporting_step_ids=["step_01"],
+                    )
+                ],
+                missing_evidence=[],
+            )
+        else:
+            raise AssertionError(f"response_model inesperado: {response_model.__name__}")
+
+        assert isinstance(output, response_model)
+        return StructuredModelResult(model=model, output=output)
+
+
+def _run_user_turn_in_new_process(
+    data_dir: Path,
+    *,
+    cwd: Path,
+    text: str,
+    goal_id: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    project_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    source_path = str(project_root / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        source_path
+        if not existing_pythonpath
+        else os.pathsep.join((source_path, existing_pythonpath))
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "simon",
+        "--data-dir",
+        str(data_dir),
+        "user-turn",
+    ]
+    if goal_id is not None:
+        command.extend(("--goal-id", goal_id))
+    command.append(text)
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_conversational_executive_cycle_from_request_to_done_survives_restart(
+    tmp_path: Path,
+    monkeypatch: object,
+    capsys: object,
+) -> None:
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "simon.cli.OllamaProvider",
+        ConversationalExecutiveCycleProvider,
+    )
+
+    data_dir = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("BROKEN\n", encoding="utf-8")
+    database_path, _ = initialize_storage(data_dir)
+
+    # 1. A conversa inicia sem Goal e cria somente uma proposta.
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "user-turn",
+            "--model",
+            "integration-model",
+            "Corrija target.txt substituindo BROKEN por FIXED",
+        ]
+    ) == 0
+    proposed_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Intent: PROPOSE" in proposed_output
+    assert "Goal persistido: não" in proposed_output
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM goals").fetchone() == (0,)
+
+    # 2. Um segundo turno humano aceita exatamente a proposta pendente.
+    assert main(["--data-dir", str(data_dir), "user-turn", "sim"]) == 0
+    accepted_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Intent: ACCEPT" in accepted_output
+    assert "Goal persistido: sim" in accepted_output
+    goal_id = _single_value(database_path, "SELECT id FROM goals")
+
+    # 3. CONTINUE usa o modelo para propor o Plan, materializa a proposta e para no patch.
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "user-turn",
+            "--model",
+            "integration-model",
+            "continue",
+        ]
+    ) == 0
+    planned_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "plan.propose" in planned_output
+    assert "plan.materialize" in planned_output
+    assert "NEEDS_OPERATION_AUTHORIZATION" in planned_output
+    assert "Operação: plan.patch" in planned_output
+    plan_id = _single_value(
+        database_path,
+        "SELECT id FROM plans WHERE goal_id = ?",
+        (goal_id,),
+    )
+
+    # 4. O próprio turno materializa a alteração, mas ainda não a executa.
+    monkeypatch.chdir(workspace)  # type: ignore[attr-defined]
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "user-turn",
+            "No arquivo target.txt, substitua `BROKEN` por `FIXED` neste projeto",
+        ]
+    ) == 0
+    materialized_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Intent: MATERIALIZE" in materialized_output
+    assert "operation.proposal" in materialized_output
+    assert "READY_FOR_AUTHORIZATION" in materialized_output
+    assert target.read_text(encoding="utf-8") == "BROKEN\n"
+
+    # 5. Outro processo consome somente essa autorização, verifica e conclui o Plan.
+    authorized = _run_user_turn_in_new_process(
+        data_dir,
+        cwd=workspace,
+        text="pode aplicar",
+    )
+    assert authorized.returncode == 2, authorized.stderr
+    assert "Intent: AUTHORIZE" in authorized.stdout
+    assert "file.verify -> verification" in authorized.stdout
+    assert "plan.complete -> plan" in authorized.stdout
+    assert "Operação: goal.assess" in authorized.stdout
+    assert "Parada: informe --model" in authorized.stdout
+    assert target.read_text(encoding="utf-8") == "FIXED\n"
+
+    # 6. A conversa retoma o Goal, faz o assessment e para na confirmação humana.
+    assert main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "user-turn",
+            "--model",
+            "integration-model",
+            "continue",
+        ]
+    ) == 0
+    assessed_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "goal.assess -> verification" in assessed_output
+    assert "NEEDS_USER_CONFIRMATION" in assessed_output
+    assert "Operação: goal.complete" in assessed_output
+
+    # 7. A confirmação final conclui o Goal sem executar trabalho externo adicional.
+    assert main(["--data-dir", str(data_dir), "user-turn", "sim"]) == 0
+    completed_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Intent: CONFIRM" in completed_output
+    assert "Efeito do gate: goal.completed" in completed_output
+    assert "Executive continue: DONE" in completed_output
+
+    # 8. Mais um processo reconstrói o Goal concluído exclusivamente do SQLite.
+    final_restart = _run_user_turn_in_new_process(
+        data_dir,
+        cwd=workspace,
+        text="continue",
+        goal_id=goal_id,
+    )
+    assert final_restart.returncode == 0, final_restart.stderr
+    assert "Executive continue: DONE" in final_restart.stdout
+    assert "Razão: goal_completed" in final_restart.stdout
+
+    with sqlite3.connect(database_path) as connection:
+        goal_status = connection.execute(
+            "SELECT status FROM goals WHERE id = ?",
+            (goal_id,),
+        ).fetchone()
+        plan_status = connection.execute(
+            "SELECT status FROM plans WHERE id = ?",
+            (plan_id,),
+        ).fetchone()
+        startup_count = connection.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'system.started'",
+        ).fetchone()
+        accepted_count = connection.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'goal.proposal.accepted'",
+        ).fetchone()
+        authorization_count = connection.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'file.patch.authorized'",
+        ).fetchone()
+
+    assert goal_status == ("COMPLETED",)
+    assert plan_status == ("COMPLETED",)
+    assert startup_count is not None and startup_count[0] >= 3
+    assert accepted_count == (1,)
+    assert authorization_count == (1,)

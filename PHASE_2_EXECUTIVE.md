@@ -1,5 +1,7 @@
 # S.I.M.O.N. Fase 2: Executive mínimo
 
+**Status do corte:** Executive mínimo fechado por Golden Scenario conversacional integrado.
+
 ## Propósito
 
 A v0.1.0 estabilizou o Core persistente. A Fase 2 não substitui esse Core. Ela adiciona uma camada de condução capaz de decidir qual operação já existente deve acontecer a seguir, mantendo intactas as fronteiras de autoridade, provenance e Verification.
@@ -490,4 +492,41 @@ A rejeição reconhece formas explícitas como `não`, `rejeito`, `recuso` e `de
 Somente a proposta conversacional mais recente é tratada como pendente. Propostas antigas não respondidas não reaparecem depois que uma proposta mais nova já substituiu o contexto foreground. Uma resposta que não pertença à gramática de aceitação ou rejeição produz `goal_proposal_response_required` e deixa a proposta intacta.
 
 A implementação reutiliza Events e o contrato existente de `goal_intake`; não cria tabela, scheduler ou estado de sessão. O SQLite permanece no schema 11.
+
+## Golden Scenario conversacional e fechamento do Executive mínimo
+
+O ciclo foreground completo passa a ser validado também pela interface `user-turn`, sem preparar Goal ou Plan diretamente no teste. O cenário começa com banco inicializado e nenhum Goal aberto:
+
+```text
+DONE / no_open_goal
+→ user-turn com uma nova REQUEST
+→ cognition.goal_proposal.completed
+→ user-turn "sim"
+→ Goal USER/ACTIVE
+→ user-turn "continue" com modelo explícito
+→ plan.propose
+→ plan.materialize
+→ NEEDS_OPERATION_AUTHORIZATION para file.patch
+→ user-turn materializa a substituição concreta
+→ arquivo permanece intacto
+→ outro processo recebe "pode aplicar"
+→ file.patch.authorized
+→ file.verify
+→ plan.complete
+→ MODEL_REQUIRED em goal.assess
+→ user-turn "continue" com modelo explícito
+→ goal.assess
+→ NEEDS_USER_CONFIRMATION
+→ user-turn "sim"
+→ Goal COMPLETED
+→ outro processo reconstrói DONE / goal_completed
+```
+
+O teste usa um arquivo real no workspace para provar a separação `materializar → autorizar → executar → verificar`. A fala que descreve o patch cria apenas `executive.operation.proposed`; o conteúdo continua inalterado até o turno afirmativo posterior. A autorização acontece em um processo Python novo, que recebe somente o diretório de dados persistente e reconstrói o gate a partir do SQLite.
+
+A conclusão do Plan também acontece no processo reiniciado, mas `goal.assess` para em `MODEL_REQUIRED` porque nenhuma escolha de modelo é inferida. O modelo só volta a participar quando outro `user-turn --model ... continue` é fornecido explicitamente. A confirmação final do Goal continua sendo um turno humano separado.
+
+Essa prova cobre, em um único lifecycle, os invariantes centrais definidos para o Executive mínimo: retomada após restart, `PlanReadiness`, operações `PROCEED` seguras, autoridade humana separada, materialização operacional concreta, Verification, modelo explícito e encerramento em `DONE`. Nenhuma nova capability, tabela, migration ou estado de sessão foi necessário.
+
+Com esse cenário, os critérios de conclusão do Executive mínimo definidos no início desta Fase estão cobertos por testes integrados. Evoluções seguintes podem partir para novas responsabilidades do S.I.M.O.N., como Perception e Attention, sem transformar a Fase 2 em uma camada indefinida de conveniências de CLI. O SQLite permanece no schema 11.
 

@@ -716,6 +716,8 @@ Sem proposta concreta, um `sim` diante de `NEEDS_OPERATION_AUTHORIZATION` contin
 
 O primeiro Golden Scenario integrado do Executive já atravessa múltiplas chamadas e reinícios reais de processo. Autorizações de `process.run` e `file.patch` continuam externas ao runner; depois delas, processos novos retomam do SQLite e executam Verifications seguras. O ciclo segue por análises, assessments, confirmações humanas, conclusão do Plan e assessment do Goal até um processo novo reconstruir `DONE`. A validação não exigiu nova migration nem alteração dos contratos do Core.
 
+A Fase 2 também possui um Golden Scenario inteiramente dirigido pela borda conversacional. O teste começa em `DONE/no_open_goal`, usa `user-turn` para formular e aceitar um Goal, deixa `CONTINUE` propor e materializar o Plan, materializa um `file.patch` por linguagem natural, exige outro turno para autorizá-lo, retoma Verifications e conclusão segura, avalia o Goal com modelo explícito e recebe a confirmação final por `user-turn`. A autorização do patch e a reconstrução final de `DONE` acontecem em processos novos, provando que a continuidade não depende de objetos Python em memória. Nenhum código de produção adicional foi necessário para montar esse ciclo.
+
 Proposta e materialização de Plan também permanecem ciclos separados: `plan.propose` gera o Event de proposta e para; o próximo ciclo reconhece a proposta pendente como `plan.materialize`. Isso impede que uma única chamada esconda duas mudanças de estado.
 
 O contrato completo está em `PHASE_2_EXECUTIVE.md`. Scheduler, Attention scoring, paralelismo e novas capabilities continuam fora deste corte.
