@@ -139,7 +139,7 @@ A CLI registra a Observation, executa a avaliação determinística e mostra o d
 - timers e subscriptions persistentes;
 - captura de tela, áudio, câmera ou OCR;
 - interpretação cognitiva da Observation;
-- Proposed Claims;
+- validação e aceitação de Proposed Claims no Belief Store;
 - escrita automática no World;
 - mudança automática de foco;
 - pausa ou interrupção de Goal/Action;
@@ -164,3 +164,74 @@ O corte está concluído quando:
 7. nenhum destino é aplicado ao World ou ao Executive;
 8. a entrada `observe` atravessa a CLI sem criar capability implícita;
 9. o schema SQLite permanece inalterado.
+
+
+## Passo 74 - UPDATE_WORLD -> Proposed Claim
+
+O primeiro consumidor de `UPDATE_WORLD` continua sem autoridade para alterar o World. Ele transforma uma avaliação já persistida em um candidato estruturado e auditável:
+
+```text
+perception.observation.recorded
+↓
+attention.assessed(destination=UPDATE_WORLD)
+↓
+world.claim.proposed
+↓
+Belief Store inalterado
+world_revision inalterada
+```
+
+A proposta exige explicitamente:
+
+- `attention_event_id` de um `attention.assessed` cujo destino seja `UPDATE_WORLD`;
+- `subject_id` de uma Entity existente e já vinculada à Observation de origem;
+- `predicate` não vazio;
+- `value` compatível com o mesmo contrato JSON usado por Claims persistidas.
+
+O primeiro corte usa `DIRECT_OBSERVATION` como estado epistemológico fixo. Outros estados pertencem a entradas futuras, como Declaration, derivação ou inferência, e não são inferidos a partir de texto livre neste passo.
+
+A proposta é persistida somente como Event:
+
+```text
+world.claim.proposed
+```
+
+O payload preserva Observation, Attention assessment, subject, predicate, value, estado epistemológico, evidências e `effect_applied=false`. As evidências iniciais são a Observation e seu assessment de Attention.
+
+A vinculação do subject à Observation é obrigatória. Uma observação relacionada à Entity A não pode ser reutilizada para propor silenciosamente uma Claim sobre a Entity B. Entity Resolution continua sendo responsabilidade anterior à Proposed Claim.
+
+A CLI expõe uma entrada explícita para validar o contrato:
+
+```powershell
+uv run simon claim-propose `
+    --attention-event-id evt_... `
+    --subject-id ent_... `
+    --predicate runtime.state `
+    --value-json '{"state":"changed"}'
+```
+
+O comando não insere linha em `claims`, não substitui Claim ativa, não resolve conflitos e não avança `world_revision`.
+
+### Deliberadamente fora do Passo 74
+
+- aceitação automática da Proposed Claim;
+- policy de autoridade por observer/domínio;
+- schema validation específica por predicate;
+- conflict resolution;
+- supersede/retract automático;
+- Entity Resolution automática;
+- interpretação por LLM da Observation;
+- aplicação de `ATTEND` ou `INTERRUPT`;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 74
+
+1. somente `UPDATE_WORLD` pode alimentar o contrato;
+2. a Proposed Claim referencia Observation e Attention assessment como evidência;
+3. o subject precisa existir e estar ligado à Observation;
+4. valor não serializável no contrato JSON é recusado;
+5. `world.claim.proposed` sobrevive a nova conexão;
+6. nenhuma linha é criada em `claims`;
+7. `world_revision` permanece inalterada;
+8. a CLI expõe a proposta sem aplicar o efeito;
+9. o schema SQLite permanece na versão 11.

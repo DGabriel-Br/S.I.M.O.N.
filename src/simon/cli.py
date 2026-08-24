@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -12,7 +13,7 @@ from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.assessment_confirmation import confirm_action_assessment
 from simon.attention import AttentionSignals, assess_observation_attention
-from simon.claims import set_current_claim
+from simon.claims import propose_claim_from_attention, set_current_claim
 from simon.cognition import (
     UserInputInterpretation,
     interpret_user_input,
@@ -241,6 +242,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="sinaliza ruído conhecido sem valor operacional",
     )
     observe.add_argument("summary", nargs="+", help="resumo normalizado da observação")
+
+    claim_propose = commands.add_parser(
+        "claim-propose",
+        help=(
+            "transforma um UPDATE_WORLD já avaliado em uma Proposed Claim "
+            "sem alterar o Belief Store"
+        ),
+    )
+    claim_propose.add_argument(
+        "--attention-event-id",
+        required=True,
+        help="Event attention.assessed com destino UPDATE_WORLD",
+    )
+    claim_propose.add_argument(
+        "--subject-id",
+        required=True,
+        help="Entity já relacionada à Observation que será sujeito da Claim",
+    )
+    claim_propose.add_argument(
+        "--predicate",
+        required=True,
+        help="predicado normalizado da Proposed Claim",
+    )
+    claim_propose.add_argument(
+        "--value-json",
+        required=True,
+        help="valor da Proposed Claim codificado como JSON",
+    )
 
     model_check = commands.add_parser(
         "model-check",
@@ -861,6 +890,14 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.world_change,
             args.known_noise,
         )
+    if args.command == "claim-propose":
+        return _claim_propose(
+            database_path,
+            args.attention_event_id,
+            args.subject_id,
+            args.predicate,
+            args.value_json,
+        )
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -1096,6 +1133,43 @@ def _observe(
     print(f"Razões: {', '.join(assessment.decision.reasons)}")
     print(f"Assessment: {assessment.event.id}")
     print("Efeito aplicado ao World/Executive: não")
+    return 0
+
+
+def _claim_propose(
+    database_path: Path,
+    attention_event_id: str,
+    subject_id: str,
+    predicate: str,
+    value_json: str,
+) -> int:
+    try:
+        value = json.loads(value_json)
+    except json.JSONDecodeError as exc:
+        print(f"Proposed Claim: falha (value-json inválido: {exc.msg})")
+        return 1
+
+    try:
+        proposal = propose_claim_from_attention(
+            database_path,
+            attention_event_id=attention_event_id,
+            subject_id=subject_id,
+            predicate=predicate,
+            value=value,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Proposed Claim: falha ({exc})")
+        return 1
+
+    print(f"Proposed Claim: {proposal.event.id}")
+    print(f"Attention: {proposal.attention_event_id}")
+    print(f"Observation: {proposal.observation_event_id}")
+    print(f"Subject: {proposal.subject_id}")
+    print(f"Predicate: {proposal.predicate}")
+    print(f"Value: {json.dumps(proposal.value, ensure_ascii=False)}")
+    print(f"Epistemic status: {proposal.epistemic_status}")
+    print("Claim persistida no Belief Store: não")
+    print("World revision alterada: não")
     return 0
 
 

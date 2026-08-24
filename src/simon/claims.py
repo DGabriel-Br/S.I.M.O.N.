@@ -5,10 +5,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from simon.entities import get_entity
+from simon.events import Event, append_event, get_event
+from simon.perception import get_observation
 from simon.world import advance_world_revision_in_connection
 
 ACTIVE = "ACTIVE"
 TERMINAL_STATUSES = {"SUPERSEDED", "RETRACTED", "EXPIRED"}
+PROPOSED_CLAIM_EVENT_KIND = "world.claim.proposed"
+
+
+@dataclass(frozen=True, slots=True)
+class ProposedClaim:
+    event: Event
+    attention_event_id: str
+    observation_event_id: str
+    subject_id: str
+    predicate: str
+    value: object
+    epistemic_status: str
+    evidence_event_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +64,129 @@ class Claim:
             evidence_event_ids=evidence_event_ids,
             status=ACTIVE,
         )
+
+
+def propose_claim_from_attention(
+    database_path: Path,
+    *,
+    attention_event_id: str,
+    subject_id: str,
+    predicate: str,
+    value: object,
+) -> ProposedClaim:
+    """Cria uma Proposed Claim sem alterar o Belief Store nem a revisão do World."""
+    normalized_subject_id = subject_id.strip()
+    normalized_predicate = predicate.strip()
+    if not normalized_subject_id:
+        raise ValueError("proposed claim exige subject_id")
+    if not normalized_predicate:
+        raise ValueError("proposed claim exige predicate")
+    if get_entity(database_path, normalized_subject_id) is None:
+        raise ValueError(f"subject da proposed claim não encontrado: {normalized_subject_id}")
+
+    attention_event = get_event(database_path, attention_event_id)
+    if attention_event is None:
+        raise ValueError(f"attention assessment não encontrado: {attention_event_id}")
+    if attention_event.kind != "attention.assessed":
+        raise ValueError(
+            f"event não é um attention assessment: {attention_event_id} "
+            f"({attention_event.kind})"
+        )
+
+    destination = attention_event.payload.get("destination")
+    if destination != "UPDATE_WORLD":
+        raise ValueError(
+            "proposed claim exige attention assessment com destino UPDATE_WORLD"
+        )
+    effect_applied = attention_event.payload.get("effect_applied")
+    if effect_applied is not False:
+        raise ValueError("attention assessment não está disponível para proposed claim")
+
+    observation_event_id = attention_event.payload.get("observation_event_id")
+    if not isinstance(observation_event_id, str):
+        raise TypeError(f"observation_event_id inválido no assessment: {attention_event_id}")
+    observation = get_observation(database_path, observation_event_id)
+    if observation is None:
+        raise ValueError(f"observation não encontrada: {observation_event_id}")
+    if normalized_subject_id not in observation.event.related_entity_ids:
+        raise ValueError(
+            "subject da proposed claim precisa estar relacionado à observation de origem"
+        )
+
+    # O mesmo contrato JSON do Belief Store deve valer antes de uma proposta avançar.
+    json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    evidence_event_ids = (observation.event.id, attention_event.id)
+    epistemic_status = "DIRECT_OBSERVATION"
+    event = Event.create(
+        kind=PROPOSED_CLAIM_EVENT_KIND,
+        source="perception",
+        payload={
+            "attention_event_id": attention_event.id,
+            "observation_event_id": observation.event.id,
+            "subject_id": normalized_subject_id,
+            "predicate": normalized_predicate,
+            "value": value,
+            "epistemic_status": epistemic_status,
+            "evidence_event_ids": list(evidence_event_ids),
+            "status": "PROPOSED",
+            "effect_applied": False,
+        },
+        trace_id=attention_event.trace_id or observation.event.trace_id or observation.event.id,
+        related_entity_ids=observation.event.related_entity_ids,
+        goal_id=attention_event.goal_id,
+    )
+    append_event(database_path, event)
+    return ProposedClaim(
+        event=event,
+        attention_event_id=attention_event.id,
+        observation_event_id=observation.event.id,
+        subject_id=normalized_subject_id,
+        predicate=normalized_predicate,
+        value=value,
+        epistemic_status=epistemic_status,
+        evidence_event_ids=evidence_event_ids,
+    )
+
+
+def get_proposed_claim(database_path: Path, event_id: str) -> ProposedClaim | None:
+    event = get_event(database_path, event_id)
+    if event is None:
+        return None
+    if event.kind != PROPOSED_CLAIM_EVENT_KIND:
+        raise ValueError(f"event não é uma proposed claim: {event_id} ({event.kind})")
+
+    attention_event_id = event.payload.get("attention_event_id")
+    observation_event_id = event.payload.get("observation_event_id")
+    subject_id = event.payload.get("subject_id")
+    predicate = event.payload.get("predicate")
+    epistemic_status = event.payload.get("epistemic_status")
+    raw_evidence_event_ids = event.payload.get("evidence_event_ids")
+    if not isinstance(attention_event_id, str):
+        raise TypeError(f"attention_event_id inválido na proposed claim: {event_id}")
+    if not isinstance(observation_event_id, str):
+        raise TypeError(f"observation_event_id inválido na proposed claim: {event_id}")
+    if not isinstance(subject_id, str):
+        raise TypeError(f"subject_id inválido na proposed claim: {event_id}")
+    if not isinstance(predicate, str):
+        raise TypeError(f"predicate inválido na proposed claim: {event_id}")
+    if not isinstance(epistemic_status, str):
+        raise TypeError(f"epistemic_status inválido na proposed claim: {event_id}")
+    if not isinstance(raw_evidence_event_ids, list) or not all(
+        isinstance(item, str) for item in raw_evidence_event_ids
+    ):
+        raise TypeError(f"evidence_event_ids inválido na proposed claim: {event_id}")
+
+    return ProposedClaim(
+        event=event,
+        attention_event_id=attention_event_id,
+        observation_event_id=observation_event_id,
+        subject_id=subject_id,
+        predicate=predicate,
+        value=event.payload.get("value"),
+        epistemic_status=epistemic_status,
+        evidence_event_ids=tuple(raw_evidence_event_ids),
+    )
 
 
 def _claim_from_row(row: tuple[object, ...]) -> Claim:

@@ -848,3 +848,11 @@ Nenhum desses destinos é executado neste corte. `UPDATE_WORLD` não cria Claim,
 
 O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, interpretação cognitiva de observações e aplicação de efeitos permanecem fora deste passo.
 
+O primeiro consumidor de `UPDATE_WORLD` também está disponível, ainda sem autoridade de escrita no World. Depois de uma Observation já associada a uma Entity e classificada como `UPDATE_WORLD`, uma Proposed Claim pode ser estruturada explicitamente:
+
+```powershell
+uv run simon claim-propose --attention-event-id evt_... --subject-id ent_... --predicate runtime.state --value-json '{"state":"changed"}'
+```
+
+A chamada persiste somente `world.claim.proposed`. O `subject_id` precisa ser uma Entity já ligada à Observation de origem; a proposta usa `DIRECT_OBSERVATION`, preserva Observation + Attention como evidência e mantém `effect_applied=false`. Nenhuma linha é criada em `claims`, conflitos não são resolvidos e `world_revision` não avança.
+

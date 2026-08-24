@@ -355,7 +355,11 @@ Mic/câmera default off, tela e conteúdo profundo ligados a Goal/escopo, clipbo
 
 ### 8.7. Primeiro contrato operacional
 
-A implementação inicial começa por Observations explicitamente ingeridas, não por sensores contínuos. `perception.observation.recorded` preserva o observer no payload, usa `source=perception` no Event e mantém tipo de sinal, resumo e provenance opcional de Goal/Entities sem criar Claim nem alterar o World. Entity Resolution automática, interpretação e Proposed Claims permanecem etapas posteriores.
+A implementação inicial começa por Observations explicitamente ingeridas, não por sensores contínuos. `perception.observation.recorded` preserva o observer no payload, usa `source=perception` no Event e mantém tipo de sinal, resumo e provenance opcional de Goal/Entities sem criar Claim nem alterar o World. Entity Resolution automática e interpretação permanecem etapas posteriores.
+
+### 8.8. Primeiro contrato de Proposed Claim
+
+Uma decisão `UPDATE_WORLD` pode alimentar uma Proposed Claim estruturada sem escrever no Belief Store. O contrato inicial exige subject já resolvido e relacionado à Observation, predicate explícito e value compatível com JSON. A proposta é persistida como `world.claim.proposed`, usa `DIRECT_OBSERVATION`, preserva Observation + Attention como evidência e mantém `effect_applied=false`. Validação de domínio, conflito, policy e aceitação permanecem etapas separadas antes de qualquer alteração de `claims` ou `world_revision`.
 
 ---
 

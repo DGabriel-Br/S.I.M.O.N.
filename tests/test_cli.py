@@ -2206,3 +2206,101 @@ def test_observe_cli_defaults_to_record_without_escalation_signal(
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert "Attention: RECORD" in output
     assert "Razões: no_escalation_signal" in output
+
+
+def test_claim_propose_cli_consumes_update_world_without_persisting_belief(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "filesystem",
+            "--kind",
+            "system.changed",
+            "--entity-id",
+            SIMON_ENTITY_ID,
+            "--world-change",
+            "estado",
+            "do",
+            "SIMON",
+            "mudou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        row = connection.execute(
+            """
+            SELECT id
+            FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        before_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert row is not None
+    attention_event_id = str(row[0])
+    assert before_revision is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-propose",
+            "--attention-event-id",
+            attention_event_id,
+            "--subject-id",
+            SIMON_ENTITY_ID,
+            "--predicate",
+            "runtime.state",
+            "--value-json",
+            '{"state":"changed"}',
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Proposed Claim: evt_" in output
+    assert f"Attention: {attention_event_id}" in output
+    assert f"Subject: {SIMON_ENTITY_ID}" in output
+    assert "Predicate: runtime.state" in output
+    assert 'Value: {"state": "changed"}' in output
+    assert "Claim persistida no Belief Store: não" in output
+    assert "World revision alterada: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        proposal = connection.execute(
+            """
+            SELECT kind, source, payload_json
+            FROM events
+            WHERE kind = 'world.claim.proposed'
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        belief = connection.execute(
+            """
+            SELECT id
+            FROM claims
+            WHERE subject_id = ? AND predicate = 'runtime.state'
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchone()
+        after_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert proposal is not None
+    assert proposal[0:2] == ("world.claim.proposed", "perception")
+    payload = json.loads(str(proposal[2]))
+    assert payload["attention_event_id"] == attention_event_id
+    assert payload["effect_applied"] is False
+    assert belief is None
+    assert after_revision == before_revision

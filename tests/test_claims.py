@@ -1,16 +1,23 @@
 from pathlib import Path
 
+import pytest
+
+from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     Claim,
     get_claim,
+    get_proposed_claim,
     insert_claim,
     list_active_claims,
+    propose_claim_from_attention,
     set_current_claim,
     transition_claim,
 )
 from simon.entities import Entity, insert_entity
 from simon.events import Event, append_event
+from simon.perception import record_observation
 from simon.storage import initialize_storage
+from simon.world import get_world_revision
 
 
 def _create_subject_and_evidence(tmp_path: Path) -> tuple[Path, Entity, Event]:
@@ -121,3 +128,116 @@ def test_active_claim_can_be_retracted(tmp_path: Path) -> None:
     retracted = transition_claim(database_path, claim.id, "RETRACTED")
 
     assert retracted.status == "RETRACTED"
+
+
+def _create_update_world_assessment(
+    tmp_path: Path,
+    *,
+    include_subject: bool = True,
+) -> tuple[Path, Entity, str]:
+    database_path, _ = initialize_storage(tmp_path)
+    subject = Entity.create(kind="file", name="target.txt")
+    insert_entity(database_path, subject)
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="target.txt mudou",
+        trace_id="trace_claim_proposal",
+        related_entity_ids=(subject.id,) if include_subject else (),
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(world_change=True),
+    )
+    return database_path, subject, assessment.event.id
+
+
+def test_update_world_attention_can_propose_claim_without_mutating_world(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, attention_event_id = _create_update_world_assessment(tmp_path)
+    before_revision = get_world_revision(database_path)
+
+    proposal = propose_claim_from_attention(
+        database_path,
+        attention_event_id=attention_event_id,
+        subject_id=subject.id,
+        predicate="content_state",
+        value={"state": "changed"},
+    )
+
+    assert get_proposed_claim(database_path, proposal.event.id) == proposal
+    assert proposal.event.kind == "world.claim.proposed"
+    assert proposal.event.source == "perception"
+    assert proposal.event.trace_id == "trace_claim_proposal"
+    assert proposal.event.related_entity_ids == (subject.id,)
+    assert proposal.subject_id == subject.id
+    assert proposal.predicate == "content_state"
+    assert proposal.value == {"state": "changed"}
+    assert proposal.epistemic_status == "DIRECT_OBSERVATION"
+    assert proposal.evidence_event_ids[1] == attention_event_id
+    assert proposal.event.payload["effect_applied"] is False
+    assert list_active_claims(
+        database_path,
+        subject_id=subject.id,
+        predicate="content_state",
+    ) == ()
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_proposed_claim_requires_update_world_attention(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    subject = Entity.create(kind="file", name="target.txt")
+    insert_entity(database_path, subject)
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="target.txt mudou",
+        related_entity_ids=(subject.id,),
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(goal_relevant=True),
+    )
+
+    with pytest.raises(ValueError, match="destino UPDATE_WORLD"):
+        propose_claim_from_attention(
+            database_path,
+            attention_event_id=assessment.event.id,
+            subject_id=subject.id,
+            predicate="content_state",
+            value="changed",
+        )
+
+
+def test_proposed_claim_requires_subject_bound_to_observation(tmp_path: Path) -> None:
+    database_path, subject, attention_event_id = _create_update_world_assessment(
+        tmp_path,
+        include_subject=False,
+    )
+
+    with pytest.raises(ValueError, match="relacionado à observation"):
+        propose_claim_from_attention(
+            database_path,
+            attention_event_id=attention_event_id,
+            subject_id=subject.id,
+            predicate="content_state",
+            value="changed",
+        )
+
+
+def test_proposed_claim_rejects_value_outside_json_contract(tmp_path: Path) -> None:
+    database_path, subject, attention_event_id = _create_update_world_assessment(tmp_path)
+
+    with pytest.raises(TypeError):
+        propose_claim_from_attention(
+            database_path,
+            attention_event_id=attention_event_id,
+            subject_id=subject.id,
+            predicate="content_state",
+            value={"unsupported": object()},
+        )
