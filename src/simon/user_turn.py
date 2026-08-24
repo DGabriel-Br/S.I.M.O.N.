@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Literal
 
 from simon.assessment_confirmation import confirm_action_assessment
+from simon.cognition import interpret_user_input, propose_goal
 from simon.cognition_analysis import retry_cognition_analysis
+from simon.context import build_cognitive_context
 from simon.events import Event, append_event
 from simon.executive import ExecutiveDecision, ExecutiveGoalCandidate, decide_next
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
@@ -15,7 +17,7 @@ from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.goal_focus import select_goal_focus
 from simon.goals import list_open_goals
-from simon.model_provider import ModelProvider
+from simon.model_provider import ModelProvider, ModelProviderError
 from simon.operation_materialization import (
     AnalysisRetryMaterialization,
     FilePatchCommandMaterialization,
@@ -40,7 +42,15 @@ from simon.operation_proposal import (
 from simon.process_execution import execute_next_process_run, retry_process_run
 from simon.user_ask import answer_user_ask
 
-UserTurnIntent = Literal["CONTINUE", "SELECT", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"]
+UserTurnIntent = Literal[
+    "CONTINUE",
+    "SELECT",
+    "ANSWER",
+    "CONFIRM",
+    "AUTHORIZE",
+    "MATERIALIZE",
+    "PROPOSE",
+]
 UserTurnStatus = Literal["ROUTED", "UNSUPPORTED", "FAILED"]
 UserTurnEffectType = Literal[
     "goal.focus",
@@ -53,6 +63,7 @@ UserTurnEffectType = Literal[
     "file.retry",
     "analysis.retry",
     "operation.proposal",
+    "goal.proposal",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -123,7 +134,8 @@ class UserTurnReceipt:
             raise ValueError("CONTINUE não pode declarar efeito de gate")
         if (
             self.status == "ROUTED"
-            and self.intent in {"SELECT", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE"}
+            and self.intent
+            in {"SELECT", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE", "PROPOSE"}
             and self.effect_type is None
         ):
             raise ValueError(f"{self.intent} exige efeito de gate persistido")
@@ -264,6 +276,17 @@ def handle_user_turn(
         if materialized is not None:
             return materialized
         return _route_operation_authorization_turn(
+            database_path,
+            turn_event=turn_event,
+            decision=decision,
+            text=normalized_text,
+            provider=provider,
+            model=model,
+            max_transitions=max_transitions,
+        )
+
+    if decision.outcome == "DONE" and decision.reason_code == "no_open_goal":
+        return _route_new_goal_proposal(
             database_path,
             turn_event=turn_event,
             decision=decision,
@@ -687,6 +710,176 @@ def _route_confirmation(
         executive_receipt=executive_receipt,
         effect_type=effect_type,
         effect_id=effect_id,
+    )
+
+
+def _route_new_goal_proposal(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    decision: ExecutiveDecision,
+    text: str,
+    provider: ModelProvider | None,
+    model: str | None,
+    max_transitions: int,
+) -> UserTurnReceipt:
+    if provider is None or model is None or not model.strip():
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=None,
+            reason_code="goal_proposal_model_required",
+            current_decision=decision,
+        )
+
+    normalized_model = model.strip()
+    try:
+        context = build_cognitive_context(database_path, text=text)
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.context.built",
+                source="cognition",
+                payload={
+                    "goal_ids": [goal.id for goal in context.goals],
+                    "entity_ids": [entity.id for entity in context.entities],
+                    "claim_ids": [claim.id for claim in context.claims],
+                    "memory_ids": [memory.id for memory in context.memories],
+                },
+                trace_id=turn_event.id,
+            ),
+        )
+        interpretation_result = interpret_user_input(
+            provider,
+            model=normalized_model,
+            text=text,
+            context=context,
+        )
+    except (ModelProviderError, TypeError, ValueError) as exc:
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.interpretation.failed",
+                source="cognition",
+                payload={"model": normalized_model, "error": str(exc)},
+                trace_id=turn_event.id,
+            ),
+        )
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="PROPOSE",
+            goal_id=None,
+            error=str(exc),
+            reason_code="goal_interpretation_failed",
+            current_decision=decision,
+        )
+
+    interpretation = interpretation_result.output
+    append_event(
+        database_path,
+        Event.create(
+            kind="cognition.interpretation.completed",
+            source="cognition",
+            payload={
+                "model": interpretation_result.model,
+                "interpretation": interpretation.model_dump(mode="json"),
+                "prompt_eval_count": interpretation_result.prompt_eval_count,
+                "eval_count": interpretation_result.eval_count,
+                "total_duration_ns": interpretation_result.total_duration_ns,
+            },
+            trace_id=turn_event.id,
+        ),
+    )
+    if interpretation.intent != "REQUEST":
+        return _unsupported_turn(
+            database_path,
+            turn_event=turn_event,
+            goal_id=None,
+            reason_code="new_goal_request_required",
+            current_decision=decision,
+        )
+
+    try:
+        proposal_result = propose_goal(
+            provider,
+            model=normalized_model,
+            text=text,
+            interpretation=interpretation,
+            context=context,
+        )
+    except (ModelProviderError, TypeError, ValueError) as exc:
+        append_event(
+            database_path,
+            Event.create(
+                kind="cognition.goal_proposal.failed",
+                source="cognition",
+                payload={"model": normalized_model, "error": str(exc)},
+                trace_id=turn_event.id,
+            ),
+        )
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="PROPOSE",
+            goal_id=None,
+            error=str(exc),
+            reason_code="goal_proposal_failed",
+            current_decision=decision,
+        )
+
+    proposal_event = Event.create(
+        kind="cognition.goal_proposal.completed",
+        source="cognition",
+        payload={
+            "model": proposal_result.model,
+            "proposal": proposal_result.output.model_dump(mode="json"),
+            "prompt_eval_count": proposal_result.prompt_eval_count,
+            "eval_count": proposal_result.eval_count,
+            "total_duration_ns": proposal_result.total_duration_ns,
+        },
+        trace_id=turn_event.id,
+    )
+    append_event(database_path, proposal_event)
+
+    try:
+        executive_receipt = run_executive_until_gate(
+            database_path,
+            provider=provider,
+            model=normalized_model,
+            max_transitions=max_transitions,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="PROPOSE",
+            goal_id=None,
+            error=str(exc),
+            reason_code="goal_proposal_routing_failed",
+            current_decision=decision,
+        )
+
+    routing_event = _append_routed_event(
+        database_path,
+        turn_event=turn_event,
+        intent="PROPOSE",
+        executive_receipt=executive_receipt,
+        authority_scope="GOAL_PROPOSAL_ONLY",
+        goal_id=None,
+        current_decision=decision,
+        effect_type="goal.proposal",
+        effect_id=proposal_event.id,
+        proposal_event_id=proposal_event.id,
+    )
+    return UserTurnReceipt(
+        status="ROUTED",
+        turn_event=turn_event,
+        intent="PROPOSE",
+        routing_event=routing_event,
+        executive_receipt=executive_receipt,
+        effect_type="goal.proposal",
+        effect_id=proposal_event.id,
     )
 
 
@@ -1131,6 +1324,7 @@ def _unsupported_turn(
         "reason_code": reason_code,
         "supported_intents": [
             "CONTINUE",
+            "PROPOSE_NEW_GOAL_WHEN_IDLE",
             "SELECT_CURRENT_GOAL",
             "SWITCH_FOREGROUND_GOAL",
             "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",

@@ -5763,3 +5763,13 @@ A resolução usa somente títulos completos de Goals em status aberto e exige u
 
 O mecanismo reutiliza a mesma provenance baseada em Events criada no foco inicial e não introduz FocusSession persistente, tabela nova ou migration. O schema SQLite permanece 11.
 
+### 33.24. Proposta conversacional de novo Goal quando ocioso
+
+Quando não existe Goal aberto, `user-turn` pode usar um `ModelProvider` explicitamente configurado para transformar uma nova solicitação foreground em uma proposta de Goal sem aceitar essa proposta. O gate de entrada é estrito: a rota só é elegível quando `ExecutiveDecision` termina em `DONE` com `reason_code=no_open_goal`.
+
+O turno humano permanece registrado como `user.turn.received`. O contexto cognitivo, a interpretação estruturada e a proposta recebem esse Event como `trace_id`, evitando criar um segundo Event de entrada apenas para reutilizar o pipeline cognitivo. A interpretação precisa ser `REQUEST`; outros intents são preservados como entrada não roteada e não produzem `cognition.goal_proposal.completed`.
+
+Uma proposta válida gera somente `cognition.goal_proposal.completed` e `executive.user_turn.routed` com `intent=PROPOSE`, `authority_scope=GOAL_PROPOSAL_ONLY` e `effect_type=goal.proposal`. Nenhum registro em `goals`, Plan, Action, Verification ou capability é criado ou executado. A aceitação continua separada e exige o contrato existente de `goal-accept`.
+
+Se qualquer Goal estiver aberto, o gateway não usa essa rota. O estado foreground atual continua tendo precedência, impedindo que uma frase nova seja reinterpretada como criação paralela de Goal enquanto o Core espera resposta, confirmação ou autorização para trabalho já selecionado. O schema permanece 11.
+

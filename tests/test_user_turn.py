@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from simon.actions import list_actions_for_plan
 from simon.cli import main
+from simon.cognition import GoalProposal, UserInputInterpretation
 from simon.events import get_event
 from simon.executive import decide_next
 from simon.goal_verification import (
@@ -13,7 +14,7 @@ from simon.goal_verification import (
     GoalEvidenceAssessment,
     assess_goal_outcome,
 )
-from simon.goals import Goal, get_goal, insert_goal
+from simon.goals import Goal, get_goal, insert_goal, list_open_goals
 from simon.model_provider import StructuredModelResult
 from simon.planning import PlanIntentDraft, PlanIntentStep
 from simon.plans import create_plan, list_plans_for_goal
@@ -102,6 +103,53 @@ class GoalSatisfiedProvider:
         assert isinstance(output, response_model)
         return StructuredModelResult(model=model, output=output)
 
+
+
+class GoalIntakeProvider:
+    def __init__(self, *, intent: str = "REQUEST") -> None:
+        self.intent = intent
+
+    def list_models(self) -> tuple[str, ...]:
+        return ("fake-model",)
+
+    def generate_structured[OutputT: BaseModel](
+        self,
+        *,
+        model: str,
+        prompt: str,
+        response_model: type[OutputT],
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> StructuredModelResult[OutputT]:
+        if response_model is UserInputInterpretation:
+            output = UserInputInterpretation(
+                intent=self.intent,
+                objective=(
+                    "corrigir a falha do script" if self.intent == "REQUEST" else None
+                ),
+                entity_mentions=[],
+                ambiguities=[],
+            )
+        elif response_model is GoalProposal:
+            if self.intent != "REQUEST":
+                raise AssertionError("propose_goal não deveria ser chamado para outro intent")
+            output = GoalProposal(
+                title="Corrigir falha do script",
+                desired_state="O script executa sem reproduzir a falha relatada.",
+                success_criteria=["A falha original não é reproduzida."],
+                open_questions=[],
+            )
+        else:
+            raise AssertionError(f"response_model inesperado: {response_model}")
+
+        assert isinstance(output, response_model)
+        return StructuredModelResult(
+            model=model,
+            output=output,
+            prompt_eval_count=20,
+            eval_count=12,
+            total_duration_ns=1_500_000_000,
+        )
 
 def _goal(database_path: Path, title: str = "Investigar falha") -> Goal:
     goal = Goal.create(
@@ -702,3 +750,123 @@ def test_explicit_goal_id_wins_over_conflicting_conversational_focus_switch(tmp_
     )
     assert decide_next(database_path).goal_id == current.id
     assert decide_next(database_path, goal_id=target.id).goal_id == target.id
+
+
+def test_idle_request_materializes_goal_proposal_without_accepting_it(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "PROPOSE"
+    assert receipt.effect_type == "goal.proposal"
+    assert receipt.effect_id is not None
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.outcome == "DONE"
+    assert receipt.executive_receipt.final_decision.reason_code == "no_open_goal"
+    assert list_open_goals(database_path) == ()
+
+    proposal_event = get_event(database_path, receipt.effect_id)
+    assert proposal_event is not None
+    assert proposal_event.kind == "cognition.goal_proposal.completed"
+    assert proposal_event.source == "cognition"
+    assert proposal_event.trace_id == receipt.turn_event.id
+    raw_proposal = proposal_event.payload["proposal"]
+    assert isinstance(raw_proposal, dict)
+    assert raw_proposal["title"] == "Corrigir falha do script"
+    assert receipt.routing_event.payload["authority_scope"] == "GOAL_PROPOSAL_ONLY"
+    assert receipt.routing_event.payload["proposal_event_id"] == proposal_event.id
+
+
+def test_idle_request_requires_explicit_model_for_goal_proposal(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.intent is None
+    assert receipt.routing_event.payload["reason_code"] == "goal_proposal_model_required"
+    assert list_open_goals(database_path) == ()
+
+
+def test_idle_non_request_is_interpreted_but_does_not_create_goal_proposal(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Por que esse script está falhando?",
+        provider=GoalIntakeProvider(intent="QUESTION"),
+        model="fake-model",
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "new_goal_request_required"
+    assert list_open_goals(database_path) == ()
+
+
+def test_new_goal_request_does_not_bypass_existing_foreground_gate(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    plan_id = _process_plan(database_path, goal.id)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Crie um novo relatório",
+        goal_id=goal.id,
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert (
+        receipt.routing_event.payload["reason_code"]
+        == "explicit_operation_authorization_required"
+    )
+    assert list_actions_for_plan(database_path, plan_id) == ()
+    assert len(list_open_goals(database_path)) == 1
+
+
+def test_user_turn_cli_materializes_idle_goal_proposal(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    class FakeProvider(GoalIntakeProvider):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__()
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    exit_code = main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "user-turn",
+            "--model",
+            "fake-model",
+            "Corrija",
+            "a",
+            "falha",
+            "do",
+            "script",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "User turn: ROUTED" in output
+    assert "Intent: PROPOSE" in output
+    assert "Efeito do gate: goal.proposal evt_" in output
+    assert "Título: Corrigir falha do script" in output
+    assert "Goal persistido: não" in output
+    assert "Para aceitar: uv run simon goal-accept evt_" in output

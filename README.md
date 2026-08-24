@@ -694,7 +694,7 @@ A primeira borda de linguagem natural foreground também está disponível:
 uv run simon user-turn [--goal-id gol_...] [--model qwen3.5:4b-q4_K_M] "continue esse Goal"
 ```
 
-`user-turn` persiste o texto literal como `user.turn.received` com `source=user`. Fora de um gate contextual, o único intent de controle reconhecido continua sendo o estreito e determinístico `CONTINUE`. Quando o Executive está em `NEEDS_USER_INPUT`, o próprio texto do turno pode responder somente à `user.ask` `WAITING` identificada pela decisão atual. Quando está em `NEEDS_USER_CONFIRMATION`, apenas confirmações afirmativas explícitas como `sim` ou `confirmo` podem promover exatamente a Verification ou Goal referenciado pelo gate.
+`user-turn` persiste o texto literal como `user.turn.received` com `source=user`. O intent de controle `CONTINUE` continua estreito e determinístico. Quando o Executive está em `NEEDS_USER_INPUT`, o próprio texto do turno pode responder somente à `user.ask` `WAITING` identificada pela decisão atual. Quando está em `NEEDS_USER_CONFIRMATION`, apenas confirmações afirmativas explícitas como `sim` ou `confirmo` podem promover exatamente a Verification ou Goal referenciado pelo gate. Quando não existe nenhum Goal aberto, uma solicitação nova pode ser interpretada com `--model` e materializada apenas como proposta de Goal, sem persistir o Goal ou iniciar um Plan.
 
 O turno continua não sendo autorização operacional genérica. Para o primeiro caso operacional suportado, `process.run`, os parâmetros precisam ser materializados antes em uma proposta concreta:
 
@@ -776,6 +776,24 @@ uv run simon user-turn --goal-id gol_... "Refaça a análise com o modelo qwen3.
 Esse bridge não chama o provider. O modelo informado é congelado junto da Action anterior, revisão do Plan, Verification e evidências atualmente válidas; a nova tentativa só existe depois de um segundo turno afirmativo. A Action alvo e os IDs de evidência continuam vindo do estado persistido, nunca do texto livre.
 
 A gramática de processos continua sem shell, pipelines, redirecionamentos ou argumentos entre aspas. A gramática de patch cobre uma única substituição textual, em uma linha, delimitada por crases. A gramática de retry cognitivo exige um identificador de modelo explícito sem espaços. Casos mais complexos continuam usando os comandos técnicos de proposta.
+
+### Proposta de novo Goal pela conversa
+
+Quando o Executive está ocioso, com `DONE/no_open_goal`, uma solicitação foreground pode entrar pelo mesmo gateway em vez de exigir `goal-propose` manualmente:
+
+```powershell
+uv run simon user-turn --model qwen3.5:4b-q4_K_M "Corrija a falha do script"
+```
+
+O turno cria `user.turn.received`, constrói contexto persistido e usa o modelo apenas para classificar a mensagem e formular uma `GoalProposal`. Se a interpretação não for `REQUEST`, nenhum Goal é proposto. Se for `REQUEST`, o resultado é persistido em `cognition.goal_proposal.completed` com o `trace_id` do turno humano.
+
+Esse caminho não aceita a proposta automaticamente. Nenhum registro é inserido em `goals`, nenhum Plan é criado e o Executive continua em `DONE/no_open_goal`. A CLI mostra o ID da proposta e o comando técnico de aceitação:
+
+```powershell
+uv run simon goal-accept evt_...
+```
+
+A rota só é considerada quando não existe Goal aberto. Um texto recebido enquanto há um gate foreground ativo continua pertencendo a esse gate e não pode escapar para criar um novo objetivo.
 
 ### Seleção de Goal pela conversa
 

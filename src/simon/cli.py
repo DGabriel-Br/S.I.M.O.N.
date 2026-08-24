@@ -24,7 +24,7 @@ from simon.cognition_analysis import (
 from simon.cognition_analysis_verification import assess_cognition_analysis
 from simon.context import CognitiveContext, build_cognitive_context
 from simon.entities import SIMON_ENTITY_ID, get_or_create_entity
-from simon.events import Event, append_event
+from simon.events import Event, append_event, get_event
 from simon.executive import ExecutiveDecision, decide_next
 from simon.executive_gate import (
     OperationGatePresentation,
@@ -177,7 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     user_turn.add_argument(
         "--model",
-        help="modelo local usado somente por operações cognitivas seguras do Executive",
+        help=(
+            "modelo local usado por operações cognitivas seguras e proposta de novo Goal "
+            "quando ocioso"
+        ),
     )
     user_turn.add_argument(
         "--max-transitions",
@@ -1069,6 +1072,8 @@ def _user_turn(
         return 1
 
     _print_user_turn_receipt(receipt)
+    if receipt.effect_type == "goal.proposal" and receipt.effect_id is not None:
+        _print_goal_proposal_from_event(database_path, receipt.effect_id)
     if receipt.executive_receipt is not None:
         _print_operation_gate_if_applicable(
             database_path,
@@ -1084,6 +1089,42 @@ def _user_turn(
     ):
         return 2
     return 0
+
+
+def _print_goal_proposal_from_event(database_path: Path, event_id: str) -> None:
+    event = get_event(database_path, event_id)
+    if event is None or event.kind != "cognition.goal_proposal.completed":
+        raise RuntimeError(f"proposta de Goal não encontrada: {event_id}")
+
+    raw_proposal = event.payload.get("proposal")
+    if not isinstance(raw_proposal, dict):
+        raise TypeError(f"payload de proposta de Goal inválido: {event_id}")
+
+    title = raw_proposal.get("title")
+    desired_state = raw_proposal.get("desired_state")
+    criteria = raw_proposal.get("success_criteria")
+    open_questions = raw_proposal.get("open_questions")
+
+    print("Proposta de Goal:")
+    print(f"Título: {title if isinstance(title, str) else 'indisponível'}")
+    print(
+        "Estado desejado: "
+        f"{desired_state if isinstance(desired_state, str) else 'indisponível'}"
+    )
+    if isinstance(criteria, list) and criteria:
+        print("Critérios de sucesso:")
+        for criterion in criteria:
+            if isinstance(criterion, str):
+                print(f"- {criterion}")
+    if isinstance(open_questions, list) and open_questions:
+        print("Questões em aberto:")
+        for question in open_questions:
+            if isinstance(question, str):
+                print(f"- {question}")
+    else:
+        print("Questões em aberto: nenhuma")
+    print("Goal persistido: não")
+    print(f"Para aceitar: uv run simon goal-accept {event_id}")
 
 
 def _print_user_turn_receipt(receipt: UserTurnReceipt) -> None:

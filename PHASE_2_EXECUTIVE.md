@@ -467,3 +467,15 @@ A diretiva é verificada antes do gate contextual atual. Assim, uma frase de tro
 
 Um `goal_id` explícito fornecido pelo chamador mantém precedência sobre o foco conversacional. Se o mesmo turno contém uma diretiva de troca e um `goal_id`, o gateway recusa a combinação como conflitante em vez de trocar silenciosamente o contexto técnico solicitado. Nenhuma migration é necessária; o schema permanece 11.
 
+## Proposta conversacional de novo Goal quando ocioso
+
+O gateway `user-turn` passa a cobrir a entrada do lifecycle quando o Executive reconstrói `DONE/no_open_goal`. Nesse estado, um texto que não seja um comando de controle pode ser interpretado por `ModelProvider` somente se o chamador fornecer um modelo explícito.
+
+A rota preserva a separação entre entrada humana, interpretação e autoridade. `user.turn.received` continua sendo o único Event de entrada do turno. A partir dele, `cognition.context.built` e `cognition.interpretation.completed` recebem o mesmo `trace_id`. Apenas interpretações `REQUEST` são elegíveis para `propose_goal()`. Perguntas, informações, `UNKNOWN` e outros intents não geram Goal.
+
+Uma proposta válida é persistida como `cognition.goal_proposal.completed` com `source=cognition` e `trace_id` do turno. O routing correspondente usa `intent=PROPOSE`, `authority_scope=GOAL_PROPOSAL_ONLY` e `effect_type=goal.proposal`. O Goal não é aceito, nenhum Plan é criado e nenhuma transição do Executive é executada nesse turno.
+
+O bridge só existe em `DONE/no_open_goal`. Se houver Goal aberto ou qualquer gate foreground atual, o texto continua sendo avaliado pelas regras daquele gate. Portanto uma nova frase imperativa não pode contornar uma `user.ask`, confirmação ou autorização operacional em andamento para fabricar um Goal paralelo.
+
+A aceitação permanece um ato separado por `goal-accept <proposal_event_id>`. O modelo formula a proposta, mas não cria autoridade para persistir o Goal. Nenhuma migration é necessária e o SQLite permanece no schema 11.
+

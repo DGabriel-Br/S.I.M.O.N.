@@ -27,6 +27,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - materialização conversacional determinística de `analysis.retry`, aceitando um modelo explicitamente nomeado sem permitir que o texto humano altere Action, Plan, revisão ou evidências reconstruídas do estado persistido;
 - seleção foreground persistente de Goal por `user-turn` quando existem múltiplos Goals abertos; ordinais ou título único registram `executive.goal_focus.selected` sem executar trabalho, e o foco é reutilizado após restart enquanto o Goal permanecer aberto.
 - troca explícita do foco foreground por conversa, com formas como `Troque para o Goal <título>` e `Foque no objetivo <título>`; a diretiva é resolvida somente contra títulos únicos de Goals abertos, não atravessa o gate atual e não sobrepõe um `--goal-id` técnico conflitante.
+- proposta conversacional de novo Goal quando o Executive está ocioso: `user-turn --model ...` interpreta somente uma nova `REQUEST`, persiste `cognition.goal_proposal.completed` com provenance do turno e mantém a aceitação do Goal como ato separado.
 
 ## [0.1.0] - 2026-08-19
 
