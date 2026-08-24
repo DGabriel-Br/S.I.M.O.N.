@@ -479,3 +479,15 @@ O bridge só existe em `DONE/no_open_goal`. Se houver Goal aberto ou qualquer ga
 
 A aceitação permanece um ato separado por `goal-accept <proposal_event_id>`. O modelo formula a proposta, mas não cria autoridade para persistir o Goal. Nenhuma migration é necessária e o SQLite permanece no schema 11.
 
+## Resposta conversacional à proposta de Goal
+
+Uma `cognition.goal_proposal.completed` criada por `user-turn` passa a representar um compromisso foreground pendente até receber uma resposta humana explícita. Enquanto essa proposta estiver pendente e não existir Goal aberto, o gateway não interpreta outro texto como nova solicitação. Isso evita que uma segunda frase abandone silenciosamente a proposta anterior e gere outro objetivo em paralelo.
+
+A aceitação reconhece somente uma gramática afirmativa pequena, como `sim`, `aceito`, `confirmo` e `pode aceitar`. O turno chama `accept_goal_proposal()` com o ID da proposta já persistida e o `trace_id` do novo `user.turn.received`. O efeito é `goal.accepted`, mas o receipt executa zero transições do Executive: criar o Goal não concede autorização implícita para planejar ou agir. A decisão final apenas mostra que o novo Goal ACTIVE agora precisa de `plan.propose`.
+
+A rejeição reconhece formas explícitas como `não`, `rejeito`, `recuso` e `descarto`. Ela persiste `goal.proposal.rejected` com `source=user`, referência à proposta e provenance do turno, sem criar Goal. Uma proposta rejeitada não pode ser aceita posteriormente pelo comando técnico `goal-accept`; rejeição e aceitação são estados terminais mutuamente exclusivos para a mesma proposta.
+
+Somente a proposta conversacional mais recente é tratada como pendente. Propostas antigas não respondidas não reaparecem depois que uma proposta mais nova já substituiu o contexto foreground. Uma resposta que não pertença à gramática de aceitação ou rejeição produz `goal_proposal_response_required` e deixa a proposta intacta.
+
+A implementação reutiliza Events e o contrato existente de `goal_intake`; não cria tabela, scheduler ou estado de sessão. O SQLite permanece no schema 11.
+

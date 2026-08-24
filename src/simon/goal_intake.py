@@ -9,13 +9,19 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from simon.cognition import GoalProposal
-from simon.events import Event
+from simon.events import Event, get_event
 from simon.goals import Goal, get_goal
 
 
 @dataclass(frozen=True, slots=True)
 class GoalAcceptance:
     goal: Goal
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GoalRejection:
+    event: Event
     created: bool
 
 
@@ -38,6 +44,10 @@ def accept_goal_proposal(
 
         existing_goal_id = _find_existing_acceptance(connection, normalized_event_id)
         if existing_goal_id is None:
+            if _find_existing_rejection(connection, normalized_event_id) is not None:
+                raise ValueError(
+                    f"proposta de Goal já foi rejeitada: {normalized_event_id}"
+                )
             proposal, proposal_trace_id, proposal_model = _load_proposal(
                 connection,
                 normalized_event_id,
@@ -80,6 +90,94 @@ def accept_goal_proposal(
     return GoalAcceptance(goal=created_goal, created=True)
 
 
+def reject_goal_proposal(
+    database_path: Path,
+    proposal_event_id: str,
+    *,
+    trace_id: str | None = None,
+) -> GoalRejection:
+    normalized_event_id = proposal_event_id.strip()
+    if not normalized_event_id:
+        raise ValueError("ID do Event de proposta não pode ser vazio")
+
+    rejection_trace_id = trace_id or f"trc_{uuid4().hex}"
+    existing_rejection_id: str | None = None
+    rejection_event: Event | None = None
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        if _find_existing_acceptance(connection, normalized_event_id) is not None:
+            raise ValueError(
+                f"proposta de Goal já foi aceita: {normalized_event_id}"
+            )
+
+        existing_rejection_id = _find_existing_rejection(connection, normalized_event_id)
+        if existing_rejection_id is None:
+            _, proposal_trace_id, proposal_model = _load_proposal(
+                connection,
+                normalized_event_id,
+            )
+            rejection_event = Event.create(
+                kind="goal.proposal.rejected",
+                source="user",
+                payload={
+                    "proposal_event_id": normalized_event_id,
+                    "proposal_trace_id": proposal_trace_id,
+                    "proposal_model": proposal_model,
+                },
+                trace_id=rejection_trace_id,
+            )
+            _insert_event(connection, rejection_event)
+
+    if existing_rejection_id is not None:
+        existing_event = get_event(database_path, existing_rejection_id)
+        if existing_event is None:
+            raise RuntimeError(
+                "rejeição existente referencia um Event que não está mais disponível: "
+                f"{existing_rejection_id}"
+            )
+        return GoalRejection(event=existing_event, created=False)
+
+    if rejection_event is None:
+        raise RuntimeError("rejeição de Goal terminou sem criar ou recuperar um Event")
+    return GoalRejection(event=rejection_event, created=True)
+
+
+def find_latest_pending_conversational_goal_proposal(
+    database_path: Path,
+) -> Event | None:
+    """Retorna somente a proposta conversacional mais recente, se ainda não respondida."""
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT proposal.id
+            FROM events AS proposal
+            INNER JOIN events AS turn
+                ON turn.id = proposal.trace_id
+               AND turn.kind = 'user.turn.received'
+            WHERE proposal.kind = 'cognition.goal_proposal.completed'
+            ORDER BY proposal.occurred_at DESC, proposal.id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+
+        proposal_event_id = str(row[0])
+        if _find_existing_acceptance(connection, proposal_event_id) is not None:
+            return None
+        if _find_existing_rejection(connection, proposal_event_id) is not None:
+            return None
+
+    event = get_event(database_path, proposal_event_id)
+    if event is None:
+        raise RuntimeError(
+            f"proposta conversacional não está mais disponível: {proposal_event_id}"
+        )
+    return event
+
+
 def _find_existing_acceptance(
     connection: sqlite3.Connection,
     proposal_event_id: str,
@@ -98,6 +196,26 @@ def _find_existing_acceptance(
         payload = json.loads(str(payload_json))
         if isinstance(payload, dict) and payload.get("proposal_event_id") == proposal_event_id:
             return str(goal_id)
+    return None
+
+
+def _find_existing_rejection(
+    connection: sqlite3.Connection,
+    proposal_event_id: str,
+) -> str | None:
+    rows = connection.execute(
+        """
+        SELECT id, payload_json
+        FROM events
+        WHERE kind = 'goal.proposal.rejected'
+        ORDER BY occurred_at, id
+        """
+    ).fetchall()
+
+    for event_id, payload_json in rows:
+        payload = json.loads(str(payload_json))
+        if isinstance(payload, dict) and payload.get("proposal_event_id") == proposal_event_id:
+            return str(event_id)
     return None
 
 

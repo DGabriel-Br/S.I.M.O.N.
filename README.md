@@ -787,13 +787,22 @@ uv run simon user-turn --model qwen3.5:4b-q4_K_M "Corrija a falha do script"
 
 O turno cria `user.turn.received`, constrói contexto persistido e usa o modelo apenas para classificar a mensagem e formular uma `GoalProposal`. Se a interpretação não for `REQUEST`, nenhum Goal é proposto. Se for `REQUEST`, o resultado é persistido em `cognition.goal_proposal.completed` com o `trace_id` do turno humano.
 
-Esse caminho não aceita a proposta automaticamente. Nenhum registro é inserido em `goals`, nenhum Plan é criado e o Executive continua em `DONE/no_open_goal`. A CLI mostra o ID da proposta e o comando técnico de aceitação:
+Esse caminho não aceita a proposta automaticamente. Nenhum registro é inserido em `goals`, nenhum Plan é criado e o Executive continua em `DONE/no_open_goal`. A CLI mostra o ID da proposta e mantém o comando técnico de aceitação como alternativa:
 
 ```powershell
 uv run simon goal-accept evt_...
 ```
 
-A rota só é considerada quando não existe Goal aberto. Um texto recebido enquanto há um gate foreground ativo continua pertencendo a esse gate e não pode escapar para criar um novo objetivo.
+Na conversa normal, a proposta passa a ser o próximo gate foreground. A resposta precisa vir em outro turno:
+
+```powershell
+uv run simon user-turn "sim"
+uv run simon user-turn "não"
+```
+
+`sim`, `aceito` e equivalentes explícitos persistem exatamente o Goal proposto, mas não iniciam o planejamento no mesmo turno. `não`, `rejeito`, `recuso` e `descarto` registram `goal.proposal.rejected` e não criam Goal. Uma proposta rejeitada não pode ser aceita depois. Se o usuário responder com outro texto enquanto a proposta estiver pendente, o gateway não cria um novo Goal: retorna `goal_proposal_response_required` e preserva a proposta atual.
+
+A rota de criação só é considerada quando não existe Goal aberto nem proposta conversacional pendente. Um texto recebido enquanto há outro gate foreground ativo continua pertencendo a esse gate e não pode escapar para criar um novo objetivo.
 
 ### Seleção de Goal pela conversa
 

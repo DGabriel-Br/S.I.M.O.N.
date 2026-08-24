@@ -28,6 +28,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - seleção foreground persistente de Goal por `user-turn` quando existem múltiplos Goals abertos; ordinais ou título único registram `executive.goal_focus.selected` sem executar trabalho, e o foco é reutilizado após restart enquanto o Goal permanecer aberto.
 - troca explícita do foco foreground por conversa, com formas como `Troque para o Goal <título>` e `Foque no objetivo <título>`; a diretiva é resolvida somente contra títulos únicos de Goals abertos, não atravessa o gate atual e não sobrepõe um `--goal-id` técnico conflitante.
 - proposta conversacional de novo Goal quando o Executive está ocioso: `user-turn --model ...` interpreta somente uma nova `REQUEST`, persiste `cognition.goal_proposal.completed` com provenance do turno e mantém a aceitação do Goal como ato separado.
+- resposta conversacional à proposta de Goal pendente: um segundo `user-turn` com `sim`/`aceito` persiste o Goal, enquanto `não`/`rejeito`/`descarto` registra `goal.proposal.rejected`; textos não reconhecidos não consomem a proposta nem iniciam outra solicitação.
 
 ## [0.1.0] - 2026-08-19
 

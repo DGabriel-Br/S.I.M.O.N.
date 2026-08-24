@@ -16,6 +16,11 @@ from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until
 from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
 from simon.goal_focus import select_goal_focus
+from simon.goal_intake import (
+    accept_goal_proposal,
+    find_latest_pending_conversational_goal_proposal,
+    reject_goal_proposal,
+)
 from simon.goals import list_open_goals
 from simon.model_provider import ModelProvider, ModelProviderError
 from simon.operation_materialization import (
@@ -50,6 +55,8 @@ UserTurnIntent = Literal[
     "AUTHORIZE",
     "MATERIALIZE",
     "PROPOSE",
+    "ACCEPT",
+    "REJECT",
 ]
 UserTurnStatus = Literal["ROUTED", "UNSUPPORTED", "FAILED"]
 UserTurnEffectType = Literal[
@@ -64,6 +71,8 @@ UserTurnEffectType = Literal[
     "analysis.retry",
     "operation.proposal",
     "goal.proposal",
+    "goal.accepted",
+    "goal.rejected",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -88,6 +97,24 @@ _CONFIRM_UTTERANCES = {
     "confirmado",
     "sim confirmo",
     "pode confirmar",
+}
+
+_GOAL_ACCEPT_UTTERANCES = {
+    "sim",
+    "aceito",
+    "confirmo",
+    "sim aceito",
+    "pode aceitar",
+}
+
+_GOAL_REJECT_UTTERANCES = {
+    "nao",
+    "rejeito",
+    "recuso",
+    "descarto",
+    "nao aceito",
+    "pode rejeitar",
+    "pode descartar",
 }
 
 _AUTHORIZE_UTTERANCES = {
@@ -135,7 +162,16 @@ class UserTurnReceipt:
         if (
             self.status == "ROUTED"
             and self.intent
-            in {"SELECT", "ANSWER", "CONFIRM", "AUTHORIZE", "MATERIALIZE", "PROPOSE"}
+            in {
+                "SELECT",
+                "ANSWER",
+                "CONFIRM",
+                "AUTHORIZE",
+                "MATERIALIZE",
+                "PROPOSE",
+                "ACCEPT",
+                "REJECT",
+            }
             and self.effect_type is None
         ):
             raise ValueError(f"{self.intent} exige efeito de gate persistido")
@@ -201,6 +237,32 @@ def handle_user_turn(
 
     intent = interpret_user_turn_intent(normalized_text)
     if intent == "CONTINUE":
+        try:
+            continue_decision = decide_next(database_path, goal_id=goal_id)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="CONTINUE",
+                goal_id=goal_id,
+                error=str(exc),
+                reason_code="continue_routing_failed",
+            )
+        if (
+            continue_decision.outcome == "DONE"
+            and continue_decision.reason_code == "no_open_goal"
+        ):
+            pending_goal_proposal = find_latest_pending_conversational_goal_proposal(
+                database_path
+            )
+            if pending_goal_proposal is not None:
+                return _route_pending_goal_proposal_response(
+                    database_path,
+                    turn_event=turn_event,
+                    decision=continue_decision,
+                    proposal_event=pending_goal_proposal,
+                    text=normalized_text,
+                )
         return _route_continue(
             database_path,
             turn_event=turn_event,
@@ -286,6 +348,17 @@ def handle_user_turn(
         )
 
     if decision.outcome == "DONE" and decision.reason_code == "no_open_goal":
+        pending_goal_proposal = find_latest_pending_conversational_goal_proposal(
+            database_path
+        )
+        if pending_goal_proposal is not None:
+            return _route_pending_goal_proposal_response(
+                database_path,
+                turn_event=turn_event,
+                decision=decision,
+                proposal_event=pending_goal_proposal,
+                text=normalized_text,
+            )
         return _route_new_goal_proposal(
             database_path,
             turn_event=turn_event,
@@ -712,6 +785,114 @@ def _route_confirmation(
         effect_id=effect_id,
     )
 
+
+def _route_pending_goal_proposal_response(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    decision: ExecutiveDecision,
+    proposal_event: Event,
+    text: str,
+) -> UserTurnReceipt:
+    normalized = _normalize_turn_text(text)
+    if normalized in _GOAL_ACCEPT_UTTERANCES:
+        try:
+            acceptance = accept_goal_proposal(
+                database_path,
+                proposal_event.id,
+                trace_id=turn_event.id,
+            )
+            final_decision = decide_next(database_path, goal_id=acceptance.goal.id)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="ACCEPT",
+                goal_id=None,
+                error=str(exc),
+                reason_code="goal_proposal_acceptance_failed",
+                current_decision=decision,
+            )
+
+        executive_receipt = ExecutiveContinueReceipt(
+            status="STOPPED",
+            initial_decision=decision,
+            final_decision=final_decision,
+        )
+        routing_event = _append_routed_event(
+            database_path,
+            turn_event=turn_event,
+            intent="ACCEPT",
+            executive_receipt=executive_receipt,
+            authority_scope="CURRENT_GOAL_PROPOSAL_ACCEPTANCE_ONLY",
+            goal_id=acceptance.goal.id,
+            current_decision=decision,
+            effect_type="goal.accepted",
+            effect_id=acceptance.goal.id,
+            proposal_event_id=proposal_event.id,
+        )
+        return UserTurnReceipt(
+            status="ROUTED",
+            turn_event=turn_event,
+            intent="ACCEPT",
+            routing_event=routing_event,
+            executive_receipt=executive_receipt,
+            effect_type="goal.accepted",
+            effect_id=acceptance.goal.id,
+        )
+
+    if normalized in _GOAL_REJECT_UTTERANCES:
+        try:
+            rejection = reject_goal_proposal(
+                database_path,
+                proposal_event.id,
+                trace_id=turn_event.id,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _failed_turn(
+                database_path,
+                turn_event=turn_event,
+                intent="REJECT",
+                goal_id=None,
+                error=str(exc),
+                reason_code="goal_proposal_rejection_failed",
+                current_decision=decision,
+            )
+
+        executive_receipt = ExecutiveContinueReceipt(
+            status="STOPPED",
+            initial_decision=decision,
+            final_decision=decision,
+        )
+        routing_event = _append_routed_event(
+            database_path,
+            turn_event=turn_event,
+            intent="REJECT",
+            executive_receipt=executive_receipt,
+            authority_scope="CURRENT_GOAL_PROPOSAL_REJECTION_ONLY",
+            goal_id=None,
+            current_decision=decision,
+            effect_type="goal.rejected",
+            effect_id=rejection.event.id,
+            proposal_event_id=proposal_event.id,
+        )
+        return UserTurnReceipt(
+            status="ROUTED",
+            turn_event=turn_event,
+            intent="REJECT",
+            routing_event=routing_event,
+            executive_receipt=executive_receipt,
+            effect_type="goal.rejected",
+            effect_id=rejection.event.id,
+        )
+
+    return _unsupported_turn(
+        database_path,
+        turn_event=turn_event,
+        goal_id=None,
+        reason_code="goal_proposal_response_required",
+        current_decision=decision,
+    )
 
 def _route_new_goal_proposal(
     database_path: Path,
@@ -1325,6 +1506,8 @@ def _unsupported_turn(
         "supported_intents": [
             "CONTINUE",
             "PROPOSE_NEW_GOAL_WHEN_IDLE",
+            "ACCEPT_PENDING_GOAL_PROPOSAL",
+            "REJECT_PENDING_GOAL_PROPOSAL",
             "SELECT_CURRENT_GOAL",
             "SWITCH_FOREGROUND_GOAL",
             "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",

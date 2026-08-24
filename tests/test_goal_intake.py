@@ -104,3 +104,81 @@ def test_accept_goal_proposal_rejects_wrong_event_kind(tmp_path: Path) -> None:
         assert "não representa uma proposta" in str(exc)
     else:
         raise AssertionError("Event que não é proposta deveria ser rejeitado")
+
+
+def _create_conversational_proposal_event(database_path: Path) -> Event:
+    turn = Event.create(
+        kind="user.turn.received",
+        source="user",
+        payload={"text": "Corrija a falha do script"},
+    )
+    append_event(database_path, turn)
+    proposal = GoalProposal(
+        title="Corrigir falha no script",
+        desired_state="O script executa sem reproduzir a falha relatada.",
+        success_criteria=["A falha original não é reproduzida."],
+        open_questions=[],
+    )
+    event = Event.create(
+        kind="cognition.goal_proposal.completed",
+        source="cognition",
+        payload={
+            "model": "fake-model",
+            "proposal": proposal.model_dump(mode="json"),
+        },
+        trace_id=turn.id,
+    )
+    append_event(database_path, event)
+    return event
+
+
+def test_pending_conversational_goal_proposal_disappears_after_rejection(
+    tmp_path: Path,
+) -> None:
+    from simon.goal_intake import (
+        find_latest_pending_conversational_goal_proposal,
+        reject_goal_proposal,
+    )
+
+    database_path, _ = initialize_storage(tmp_path)
+    proposal_event = _create_conversational_proposal_event(database_path)
+
+    assert find_latest_pending_conversational_goal_proposal(database_path) == proposal_event
+
+    rejection = reject_goal_proposal(
+        database_path,
+        proposal_event.id,
+        trace_id="trc_rejection",
+    )
+
+    assert rejection.created is True
+    assert rejection.event.kind == "goal.proposal.rejected"
+    assert rejection.event.source == "user"
+    assert rejection.event.trace_id == "trc_rejection"
+    assert rejection.event.payload["proposal_event_id"] == proposal_event.id
+    assert find_latest_pending_conversational_goal_proposal(database_path) is None
+
+
+def test_rejected_goal_proposal_cannot_be_accepted_later(tmp_path: Path) -> None:
+    from simon.goal_intake import reject_goal_proposal
+
+    database_path, _ = initialize_storage(tmp_path)
+    proposal_event = _create_conversational_proposal_event(database_path)
+    reject_goal_proposal(database_path, proposal_event.id)
+
+    try:
+        accept_goal_proposal(database_path, proposal_event.id)
+    except ValueError as exc:
+        assert "já foi rejeitada" in str(exc)
+    else:
+        raise AssertionError("proposta rejeitada não deveria poder ser aceita")
+
+
+def test_only_latest_conversational_goal_proposal_can_remain_pending(tmp_path: Path) -> None:
+    from simon.goal_intake import find_latest_pending_conversational_goal_proposal
+
+    database_path, _ = initialize_storage(tmp_path)
+    _create_conversational_proposal_event(database_path)
+    latest = _create_conversational_proposal_event(database_path)
+
+    assert find_latest_pending_conversational_goal_proposal(database_path) == latest

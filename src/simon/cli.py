@@ -1016,7 +1016,6 @@ def _executive_step(
     return 0
 
 
-
 def _executive_continue(
     database_path: Path,
     goal_id: str | None,
@@ -1074,6 +1073,11 @@ def _user_turn(
     _print_user_turn_receipt(receipt)
     if receipt.effect_type == "goal.proposal" and receipt.effect_id is not None:
         _print_goal_proposal_from_event(database_path, receipt.effect_id)
+    elif receipt.effect_type == "goal.accepted":
+        print("Goal persistido: sim")
+    elif receipt.effect_type == "goal.rejected":
+        print("Goal persistido: não")
+        print("Proposta descartada: sim")
     if receipt.executive_receipt is not None:
         _print_operation_gate_if_applicable(
             database_path,
@@ -1124,6 +1128,7 @@ def _print_goal_proposal_from_event(database_path: Path, event_id: str) -> None:
     else:
         print("Questões em aberto: nenhuma")
     print("Goal persistido: não")
+    print('Para responder pela conversa: "sim" para aceitar ou "não" para rejeitar')
     print(f"Para aceitar: uv run simon goal-accept {event_id}")
 
 
@@ -1947,7 +1952,6 @@ def _plan_next(database_path: Path, goal_id: str) -> int:
     return 0
 
 
-
 def _plan_complete(database_path: Path, goal_id: str) -> int:
     trace_id = f"trc_{uuid4().hex}"
     try:
@@ -2042,7 +2046,6 @@ def _plan_run(
         print("stderr: vazio")
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
-
 
 
 def _process_propose(
@@ -2227,7 +2230,6 @@ def _plan_patch(
         print(f"SHA-256 atual: {receipt.after_sha256}")
     print("Verification criada: não")
     return 0 if receipt.action.status == "COMPLETED" else 1
-
 
 
 def _file_propose(

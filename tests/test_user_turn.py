@@ -104,7 +104,6 @@ class GoalSatisfiedProvider:
         return StructuredModelResult(model=model, output=output)
 
 
-
 class GoalIntakeProvider:
     def __init__(self, *, intent: str = "REQUEST") -> None:
         self.intent = intent
@@ -351,7 +350,6 @@ def test_user_turn_cli_stops_at_operation_authorization(tmp_path: Path, capsys: 
     assert "Transições executadas: 0" in output
     assert "NEEDS_OPERATION_AUTHORIZATION" in output
     assert "Operação: plan.run" in output
-
 
 
 def test_turn_intent_does_not_treat_contextual_reply_as_global_intent() -> None:
@@ -870,3 +868,178 @@ def test_user_turn_cli_materializes_idle_goal_proposal(
     assert "Título: Corrigir falha do script" in output
     assert "Goal persistido: não" in output
     assert "Para aceitar: uv run simon goal-accept evt_" in output
+
+
+def test_pending_goal_proposal_is_accepted_by_second_user_turn(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    proposed = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+    assert proposed.effect_id is not None
+
+    receipt = handle_user_turn(database_path, "sim")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "ACCEPT"
+    assert receipt.effect_type == "goal.accepted"
+    assert receipt.effect_id is not None
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.outcome == "PROCEED"
+    assert receipt.executive_receipt.final_decision.operation == "plan.propose"
+    assert receipt.routing_event.payload["authority_scope"] == (
+        "CURRENT_GOAL_PROPOSAL_ACCEPTANCE_ONLY"
+    )
+    assert receipt.routing_event.payload["proposal_event_id"] == proposed.effect_id
+
+    open_goals = list_open_goals(database_path)
+    assert len(open_goals) == 1
+    assert open_goals[0].id == receipt.effect_id
+    assert open_goals[0].title == "Corrigir falha do script"
+
+
+def test_pending_goal_proposal_is_rejected_without_creating_goal(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    proposed = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+    assert proposed.effect_id is not None
+
+    receipt = handle_user_turn(database_path, "não")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "REJECT"
+    assert receipt.effect_type == "goal.rejected"
+    assert receipt.effect_id is not None
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.outcome == "DONE"
+    assert receipt.executive_receipt.final_decision.reason_code == "no_open_goal"
+    assert list_open_goals(database_path) == ()
+
+    rejection_event = get_event(database_path, receipt.effect_id)
+    assert rejection_event is not None
+    assert rejection_event.kind == "goal.proposal.rejected"
+    assert rejection_event.source == "user"
+    assert rejection_event.trace_id == receipt.turn_event.id
+    assert rejection_event.payload["proposal_event_id"] == proposed.effect_id
+
+
+def test_pending_goal_proposal_blocks_unrelated_new_request(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    proposed = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+    assert proposed.effect_id is not None
+
+    receipt = handle_user_turn(
+        database_path,
+        "Crie um relatório novo",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "goal_proposal_response_required"
+    assert list_open_goals(database_path) == ()
+
+    from simon.goal_intake import find_latest_pending_conversational_goal_proposal
+
+    pending = find_latest_pending_conversational_goal_proposal(database_path)
+    assert pending is not None
+    assert pending.id == proposed.effect_id
+
+
+def test_rejected_goal_proposal_allows_new_idle_request(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    first = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+    assert first.effect_id is not None
+    rejected = handle_user_turn(database_path, "descarto")
+    assert rejected.intent == "REJECT"
+
+    second = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+
+    assert second.status == "ROUTED"
+    assert second.intent == "PROPOSE"
+    assert second.effect_type == "goal.proposal"
+    assert second.effect_id is not None
+    assert second.effect_id != first.effect_id
+
+
+def test_user_turn_cli_accepts_pending_goal_proposal(
+    tmp_path: Path,
+    capsys: object,
+    monkeypatch: object,
+) -> None:
+    class FakeProvider(GoalIntakeProvider):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__()
+
+    monkeypatch.setattr("simon.cli.OllamaProvider", FakeProvider)  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "user-turn",
+            "--model",
+            "fake-model",
+            "Corrija",
+            "a",
+            "falha",
+            "do",
+            "script",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    assert main(["--data-dir", str(tmp_path), "user-turn", "sim"]) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+
+    assert "User turn: ROUTED" in output
+    assert "Intent: ACCEPT" in output
+    assert "Efeito do gate: goal.accepted gol_" in output
+    assert "Transições executadas: 0" in output
+    assert "Goal persistido: sim" in output
+
+
+def test_pending_goal_proposal_blocks_continue_until_answered(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    proposed = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+    assert proposed.effect_id is not None
+
+    receipt = handle_user_turn(database_path, "continue")
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "goal_proposal_response_required"
+    assert list_open_goals(database_path) == ()
+
+    from simon.goal_intake import find_latest_pending_conversational_goal_proposal
+
+    pending = find_latest_pending_conversational_goal_proposal(database_path)
+    assert pending is not None
+    assert pending.id == proposed.effect_id

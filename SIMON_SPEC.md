@@ -5773,3 +5773,15 @@ Uma proposta válida gera somente `cognition.goal_proposal.completed` e `executi
 
 Se qualquer Goal estiver aberto, o gateway não usa essa rota. O estado foreground atual continua tendo precedência, impedindo que uma frase nova seja reinterpretada como criação paralela de Goal enquanto o Core espera resposta, confirmação ou autorização para trabalho já selecionado. O schema permanece 11.
 
+### 33.25. Aceitação e rejeição conversacional da proposta de Goal
+
+Uma proposta de Goal criada pelo caminho conversacional não deve desaparecer implicitamente nem ser substituída por qualquer texto subsequente. Enquanto a proposta conversacional mais recente não tiver sido respondida e não existir Goal aberto, ela funciona como o gate foreground atual.
+
+Um segundo turno afirmativo explícito pode aceitar somente essa proposta. A aceitação reutiliza `accept_goal_proposal()`, persiste `goal.proposal.accepted` com `source=user` e cria exatamente um Goal `USER/ACTIVE`. O turno de aceitação não executa nenhuma operação `PROCEED`; planejamento continua sendo um ciclo posterior do Executive.
+
+Um segundo turno negativo explícito pode rejeitar somente essa proposta. A rejeição cria `goal.proposal.rejected` com `source=user`, referência ao Event proposto e `trace_id` do turno que recusou. Nenhum Goal é criado. Uma proposta rejeitada torna-se terminal e não pode ser aceita posteriormente.
+
+Texto que não corresponde à gramática pequena de aceitação ou rejeição não consome a proposta e não é reinterpretado como nova solicitação. Somente a proposta conversacional mais recente participa desse gate, impedindo que propostas antigas não respondidas reapareçam depois que o foreground já avançou para outra proposta.
+
+O contrato mantém proposta, aceitação/rejeição e planejamento em ciclos distintos, preservando provenance e autoridade humana sem nova tabela ou migration. O schema SQLite permanece 11.
+
