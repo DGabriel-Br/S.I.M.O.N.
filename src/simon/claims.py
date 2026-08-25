@@ -14,6 +14,7 @@ ACTIVE = "ACTIVE"
 TERMINAL_STATUSES = {"SUPERSEDED", "RETRACTED", "EXPIRED"}
 PROPOSED_CLAIM_EVENT_KIND = "world.claim.proposed"
 CLAIM_VALIDATION_EVENT_KIND = "world.claim.validation.completed"
+CLAIM_ACCEPTED_EVENT_KIND = "world.claim.accepted"
 CLAIM_VALIDATION_OUTCOMES = {"READY", "DUPLICATE", "CONFLICT"}
 
 
@@ -38,6 +39,13 @@ class ClaimValidation:
     matching_claim_ids: tuple[str, ...]
     conflicting_claim_ids: tuple[str, ...]
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimAcceptance:
+    claim: Claim
+    event: Event
+    created: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +314,253 @@ def get_claim_validation(database_path: Path, event_id: str) -> ClaimValidation 
             "conflicting_claim_ids",
         ),
         reasons=_string_tuple(raw_reasons, "reasons"),
+    )
+
+
+def accept_ready_proposed_claim(
+    database_path: Path,
+    *,
+    validation_event_id: str,
+) -> ClaimAcceptance:
+    """Aceita uma Proposed Claim READY com autoridade humana explícita."""
+    normalized_validation_event_id = validation_event_id.strip()
+    if not normalized_validation_event_id:
+        raise ValueError("claim acceptance exige validation_event_id")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        validation_row = connection.execute(
+            """
+            SELECT payload_json, trace_id, related_entity_ids_json, goal_id, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (normalized_validation_event_id, CLAIM_VALIDATION_EVENT_KIND),
+        ).fetchone()
+        if validation_row is None:
+            raise ValueError(
+                "claim acceptance exige world.claim.validation.completed existente: "
+                f"{normalized_validation_event_id}"
+            )
+        if str(validation_row[4]) != "world":
+            raise ValueError("claim validation não possui autoridade de origem esperada")
+
+        validation_payload = json.loads(str(validation_row[0]))
+        if not isinstance(validation_payload, dict):
+            raise TypeError("payload da claim validation possui tipo inválido")
+        proposed_claim_event_id = validation_payload.get("proposed_claim_event_id")
+        outcome = validation_payload.get("outcome")
+        if not isinstance(proposed_claim_event_id, str):
+            raise TypeError("claim validation não possui proposed_claim_event_id válido")
+        if outcome != "READY":
+            raise ValueError(
+                "claim acceptance exige validation READY; "
+                f"outcome atual: {outcome}"
+            )
+        if validation_payload.get("effect_applied") is not False:
+            raise ValueError("claim validation já possui efeito aplicado")
+
+        existing = _find_existing_claim_acceptance_in_connection(
+            connection,
+            proposed_claim_event_id=proposed_claim_event_id,
+        )
+        if existing is not None:
+            claim_id, acceptance_event = existing
+            claim_row = connection.execute(
+                _claim_select() + " WHERE id = ?",
+                (claim_id,),
+            ).fetchone()
+            if claim_row is None:
+                raise RuntimeError(
+                    "aceitação existente referencia Claim indisponível: "
+                    f"{claim_id}"
+                )
+            return ClaimAcceptance(
+                claim=_claim_from_row(claim_row),
+                event=acceptance_event,
+                created=False,
+            )
+
+        proposal_row = connection.execute(
+            """
+            SELECT payload_json, trace_id, related_entity_ids_json, goal_id, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (proposed_claim_event_id, PROPOSED_CLAIM_EVENT_KIND),
+        ).fetchone()
+        if proposal_row is None:
+            raise ValueError(f"proposed claim não encontrada: {proposed_claim_event_id}")
+        if str(proposal_row[4]) != "perception":
+            raise ValueError(
+                "claim acceptance deste passo exige proposta originada em perception"
+            )
+
+        proposal_payload = json.loads(str(proposal_row[0]))
+        if not isinstance(proposal_payload, dict):
+            raise TypeError("payload da proposed claim possui tipo inválido")
+        subject_id = proposal_payload.get("subject_id")
+        predicate = proposal_payload.get("predicate")
+        epistemic_status = proposal_payload.get("epistemic_status")
+        raw_evidence_event_ids = proposal_payload.get("evidence_event_ids")
+        if not isinstance(subject_id, str) or not subject_id.strip():
+            raise TypeError("proposed claim não possui subject_id válido")
+        if not isinstance(predicate, str) or not predicate.strip():
+            raise TypeError("proposed claim não possui predicate válido")
+        if epistemic_status != "DIRECT_OBSERVATION":
+            raise ValueError(
+                "claim acceptance deste passo exige epistemic_status DIRECT_OBSERVATION"
+            )
+        if not isinstance(raw_evidence_event_ids, list) or not all(
+            isinstance(item, str) for item in raw_evidence_event_ids
+        ):
+            raise TypeError("proposed claim não possui evidence_event_ids válidos")
+        if proposal_payload.get("status") != "PROPOSED":
+            raise ValueError("proposed claim não está disponível para aceitação")
+        if proposal_payload.get("effect_applied") is not False:
+            raise ValueError("proposed claim já possui efeito aplicado")
+
+        # READY é um snapshot. A aceitação precisa provar novamente que o eixo
+        # continua vazio dentro da mesma transação que criará a Claim.
+        current_active = connection.execute(
+            _claim_select()
+            + " WHERE subject_id = ? AND predicate = ? AND status = 'ACTIVE' "
+            "ORDER BY learned_at, id",
+            (subject_id, predicate),
+        ).fetchall()
+        if current_active:
+            raise ValueError(
+                "Belief Store mudou após validation READY; "
+                "execute claim-validate novamente"
+            )
+
+        related_entity_ids = _string_tuple_from_json(
+            proposal_row[2],
+            field="related_entity_ids",
+        )
+        goal_id = str(proposal_row[3]) if proposal_row[3] is not None else None
+        trace_id = (
+            str(validation_row[1])
+            if validation_row[1] is not None
+            else str(proposal_row[1])
+            if proposal_row[1] is not None
+            else proposed_claim_event_id
+        )
+
+        claim_id = f"clm_{uuid4().hex}"
+        acceptance_event = Event.create(
+            kind=CLAIM_ACCEPTED_EVENT_KIND,
+            source="user",
+            payload={
+                "proposed_claim_event_id": proposed_claim_event_id,
+                "validation_event_id": normalized_validation_event_id,
+                "claim_id": claim_id,
+                "authority": "USER_CONFIRMATION",
+                "effect_applied": True,
+            },
+            trace_id=trace_id,
+            related_entity_ids=related_entity_ids,
+            goal_id=goal_id,
+        )
+        evidence_event_ids = tuple(
+            dict.fromkeys(
+                (
+                    *raw_evidence_event_ids,
+                    normalized_validation_event_id,
+                    acceptance_event.id,
+                )
+            )
+        )
+        claim = Claim(
+            id=claim_id,
+            subject_id=subject_id,
+            predicate=predicate,
+            value=proposal_payload.get("value"),
+            epistemic_status=epistemic_status,
+            valid_from=None,
+            valid_until=None,
+            learned_at=datetime.now(UTC),
+            evidence_event_ids=evidence_event_ids,
+            status=ACTIVE,
+        )
+
+        _insert_event_in_connection(connection, acceptance_event)
+        _insert_claim_in_connection(connection, claim)
+        advance_world_revision_in_connection(connection)
+
+    return ClaimAcceptance(claim=claim, event=acceptance_event, created=True)
+
+
+def _find_existing_claim_acceptance_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    proposed_claim_event_id: str,
+) -> tuple[str, Event] | None:
+    rows = connection.execute(
+        """
+        SELECT
+            id, occurred_at, source, payload_json, trace_id,
+            related_entity_ids_json, goal_id, experience_id
+        FROM events
+        WHERE kind = ?
+        ORDER BY occurred_at, id
+        """,
+        (CLAIM_ACCEPTED_EVENT_KIND,),
+    ).fetchall()
+    for row in rows:
+        payload = json.loads(str(row[3]))
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("proposed_claim_event_id") != proposed_claim_event_id:
+            continue
+        claim_id = payload.get("claim_id")
+        if not isinstance(claim_id, str):
+            raise TypeError("world.claim.accepted persistido sem claim_id válido")
+        event = Event(
+            id=str(row[0]),
+            kind=CLAIM_ACCEPTED_EVENT_KIND,
+            occurred_at=datetime.fromisoformat(str(row[1])),
+            source=str(row[2]),
+            payload=payload,
+            trace_id=str(row[4]) if row[4] is not None else None,
+            related_entity_ids=_string_tuple_from_json(
+                row[5],
+                field="related_entity_ids",
+            ),
+            goal_id=str(row[6]) if row[6] is not None else None,
+            experience_id=str(row[7]) if row[7] is not None else None,
+        )
+        return claim_id, event
+    return None
+
+
+def _string_tuple_from_json(raw: object, *, field: str) -> tuple[str, ...]:
+    decoded = json.loads(str(raw))
+    if not isinstance(decoded, list) or not all(isinstance(item, str) for item in decoded):
+        raise TypeError(f"{field} persistido possui tipo inválido")
+    return tuple(decoded)
+
+
+def _insert_event_in_connection(connection: sqlite3.Connection, event: Event) -> None:
+    connection.execute(
+        """
+        INSERT INTO events (
+            id, kind, occurred_at, source, payload_json, trace_id,
+            related_entity_ids_json, goal_id, experience_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event.id,
+            event.kind,
+            event.occurred_at.isoformat(),
+            event.source,
+            json.dumps(event.payload, ensure_ascii=False, separators=(",", ":")),
+            event.trace_id,
+            json.dumps(event.related_entity_ids, separators=(",", ":")),
+            event.goal_id,
+            event.experience_id,
+        ),
     )
 
 

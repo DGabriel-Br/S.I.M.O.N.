@@ -367,6 +367,14 @@ Antes de qualquer materialização no Belief Store, uma Proposed Claim pode ser 
 
 O resultado é persistido como `world.claim.validation.completed`, preserva provenance da proposta e registra `effect_applied=false`. Essa validação não cria nem altera Claim e não avança `world_revision`. `READY` representa ausência de concorrência ativa no eixo consultado; não substitui schema de domínio, política de autoridade, avaliação semântica ou aceitação.
 
+### 8.10. Primeira autoridade de aceitação no Belief Store
+
+O primeiro caminho de escrita é limitado a Proposed Claims de `DIRECT_OBSERVATION` originadas em Perception e já validadas como `READY`. A autorização é humana e produz `world.claim.accepted` com `source=user` e `authority=USER_CONFIRMATION`. `DUPLICATE`, `CONFLICT` e outros estados epistemológicos não possuem aceitação neste contrato.
+
+Como `READY` representa um snapshot, a confirmação reconsulta o eixo `subject + predicate` dentro da mesma transação `BEGIN IMMEDIATE` que persiste a Claim. Se o Belief Store mudou desde a validação, a operação falha e exige nova avaliação. A aceitação não usa `set_current_claim()` e nunca executa supersede implícito.
+
+Quando aceita, a nova Claim `ACTIVE` preserva como evidência Observation, Attention assessment, validation e confirmação humana. O Event de aceitação, a Claim e o incremento único de `world_revision` pertencem à mesma transação. A repetição da mesma aceitação é idempotente e não avança o World novamente.
+
 ---
 
 ## 9. Attention e Executive

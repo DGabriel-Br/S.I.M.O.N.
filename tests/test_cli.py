@@ -2422,3 +2422,137 @@ def test_claim_validate_cli_classifies_ready_without_mutating_world(
     assert payload["effect_applied"] is False
     assert belief is None
     assert after_revision == before_revision
+
+
+def test_claim_accept_ready_cli_requires_human_confirmation_before_world_change(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "filesystem",
+            "--kind",
+            "system.changed",
+            "--entity-id",
+            SIMON_ENTITY_ID,
+            "--world-change",
+            "estado",
+            "do",
+            "SIMON",
+            "mudou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        attention = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert attention is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-propose",
+            "--attention-event-id",
+            str(attention[0]),
+            "--subject-id",
+            SIMON_ENTITY_ID,
+            "--predicate",
+            "runtime.state",
+            "--value-json",
+            '{"state":"changed"}',
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        proposal = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'world.claim.proposed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert proposal is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-validate",
+            "--proposal-event-id",
+            str(proposal[0]),
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        validation = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'world.claim.validation.completed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        before_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+    assert validation is not None
+    assert before_revision is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-accept-ready",
+            "--validation-event-id",
+            str(validation[0]),
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Claim acceptance: evt_" in output
+    assert f"Validation: {validation[0]}" in output
+    assert "Claim: clm_" in output
+    assert "Autoridade: USER_CONFIRMATION" in output
+    assert "Claim persistida no Belief Store: sim" in output
+    assert "World revision alterada: sim" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        claim = connection.execute(
+            """
+            SELECT status, epistemic_status, value_json
+            FROM claims
+            WHERE subject_id = ? AND predicate = 'runtime.state'
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchone()
+        acceptance = connection.execute(
+            """
+            SELECT source, payload_json
+            FROM events
+            WHERE kind = 'world.claim.accepted'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        after_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert claim == ("ACTIVE", "DIRECT_OBSERVATION", '{"state":"changed"}')
+    assert acceptance is not None
+    assert acceptance[0] == "user"
+    acceptance_payload = json.loads(str(acceptance[1]))
+    assert acceptance_payload["validation_event_id"] == str(validation[0])
+    assert acceptance_payload["authority"] == "USER_CONFIRMATION"
+    assert after_revision == (int(before_revision[0]) + 1,)

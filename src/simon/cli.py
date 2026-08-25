@@ -14,6 +14,7 @@ from simon.actions import interrupt_running_actions
 from simon.assessment_confirmation import confirm_action_assessment
 from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
+    accept_ready_proposed_claim,
     propose_claim_from_attention,
     set_current_claim,
     validate_proposed_claim,
@@ -286,6 +287,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--proposal-event-id",
         required=True,
         help="Event world.claim.proposed que será validado",
+    )
+
+    claim_accept_ready = commands.add_parser(
+        "claim-accept-ready",
+        help=(
+            "confirma humanamente uma Proposed Claim validada como READY, "
+            "rechecando o Belief Store antes de ativá-la"
+        ),
+    )
+    claim_accept_ready.add_argument(
+        "--validation-event-id",
+        required=True,
+        help="Event world.claim.validation.completed com outcome READY",
     )
 
     model_check = commands.add_parser(
@@ -917,6 +931,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         )
     if args.command == "claim-validate":
         return _claim_validate(database_path, args.proposal_event_id)
+    if args.command == "claim-accept-ready":
+        return _claim_accept_ready(database_path, args.validation_event_id)
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -1214,6 +1230,33 @@ def _claim_validate(database_path: Path, proposed_claim_event_id: str) -> int:
         print(f"Claims conflitantes: {', '.join(validation.conflicting_claim_ids)}")
     print("Efeito aplicado ao Belief Store: não")
     print("World revision alterada: não")
+    return 0
+
+
+def _claim_accept_ready(database_path: Path, validation_event_id: str) -> int:
+    try:
+        receipt = accept_ready_proposed_claim(
+            database_path,
+            validation_event_id=validation_event_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Claim acceptance: falha ({exc})")
+        return 1
+
+    print(f"Claim acceptance: {receipt.event.id}")
+    print(f"Validation: {validation_event_id}")
+    print(f"Claim: {receipt.claim.id}")
+    print(f"Subject: {receipt.claim.subject_id}")
+    print(f"Predicate: {receipt.claim.predicate}")
+    print(f"Value: {json.dumps(receipt.claim.value, ensure_ascii=False)}")
+    print(f"Epistemic status: {receipt.claim.epistemic_status}")
+    print("Autoridade: USER_CONFIRMATION")
+    print("Claim persistida no Belief Store: sim")
+    print("World revision alterada: sim" if receipt.created else "World revision alterada: não")
+    if receipt.created:
+        print("Aceitação criada: sim")
+    else:
+        print("Aceitação criada: não (a proposta já havia sido aceita)")
     return 0
 
 

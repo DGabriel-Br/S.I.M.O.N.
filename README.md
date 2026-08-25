@@ -864,3 +864,11 @@ uv run simon claim-validate --proposal-event-id evt_...
 
 A validação persiste `world.claim.validation.completed` e produz `READY` quando não existe Claim ativa para o mesmo `subject + predicate`, `DUPLICATE` quando já existe uma Claim equivalente com o mesmo valor e estado epistemológico, ou `CONFLICT` quando existe ao menos uma Claim ativa diferente. `CONFLICT` tem precedência quando coexistem Claims equivalentes e divergentes. O resultado continua com `effect_applied=false`: nenhuma Claim é criada, supersedida ou removida e `world_revision` não avança. `READY` significa somente que não existe concorrência ativa nesse eixo, não que a proposta seja verdadeira em sentido universal ou validada por domínio.
 
+Uma `READY` de `DIRECT_OBSERVATION` pode então atravessar a primeira fronteira de escrita somente por confirmação humana explícita:
+
+```powershell
+uv run simon claim-accept-ready --validation-event-id evt_...
+```
+
+O comando persiste `world.claim.accepted` com `source=user` e `authority=USER_CONFIRMATION`, cria a Claim `ACTIVE` e avança `world_revision` uma vez. Antes da escrita, o mesmo `subject + predicate` é consultado novamente dentro de `BEGIN IMMEDIATE`; se qualquer Claim ativa surgiu depois da validação `READY`, a aceitação é recusada e exige nova validação. O contrato não usa `set_current_claim()`, portanto não supersede Claims existentes. Repetir a mesma confirmação é idempotente e não altera novamente o World. `DUPLICATE`, `CONFLICT` e estados epistemológicos diferentes de `DIRECT_OBSERVATION` continuam sem caminho de aceitação neste corte.
+

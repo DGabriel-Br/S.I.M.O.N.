@@ -6,6 +6,7 @@ from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     Claim,
     ProposedClaim,
+    accept_ready_proposed_claim,
     get_claim,
     get_claim_validation,
     get_proposed_claim,
@@ -17,7 +18,7 @@ from simon.claims import (
     validate_proposed_claim,
 )
 from simon.entities import Entity, insert_entity
-from simon.events import Event, append_event
+from simon.events import Event, append_event, get_event
 from simon.perception import record_observation
 from simon.storage import initialize_storage
 from simon.world import get_world_revision
@@ -370,4 +371,155 @@ def test_claim_validation_requires_proposed_claim_event(tmp_path: Path) -> None:
         validate_proposed_claim(
             database_path,
             proposed_claim_event_id=attention_event_id,
+        )
+
+
+def test_ready_proposed_claim_can_be_accepted_only_by_explicit_user_authority(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    before_revision = get_world_revision(database_path)
+
+    receipt = accept_ready_proposed_claim(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+
+    assert receipt.created is True
+    assert receipt.claim.status == "ACTIVE"
+    assert receipt.claim.subject_id == subject.id
+    assert receipt.claim.predicate == proposal.predicate
+    assert receipt.claim.value == proposal.value
+    assert receipt.claim.epistemic_status == "DIRECT_OBSERVATION"
+    assert receipt.event.kind == "world.claim.accepted"
+    assert receipt.event.source == "user"
+    assert receipt.event.payload["authority"] == "USER_CONFIRMATION"
+    assert receipt.event.payload["claim_id"] == receipt.claim.id
+    assert validation.event.id in receipt.claim.evidence_event_ids
+    assert receipt.event.id in receipt.claim.evidence_event_ids
+    assert get_claim(database_path, receipt.claim.id) == receipt.claim
+    assert get_event(database_path, receipt.event.id) == receipt.event
+    assert list_active_claims(
+        database_path,
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+    ) == (receipt.claim,)
+    assert get_world_revision(database_path) == before_revision + 1
+
+
+def test_ready_claim_acceptance_is_idempotent_for_same_proposal(tmp_path: Path) -> None:
+    database_path, _, proposal = _create_proposed_claim(tmp_path)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+
+    first = accept_ready_proposed_claim(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+    after_first_revision = get_world_revision(database_path)
+    repeated = accept_ready_proposed_claim(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+
+    assert first.created is True
+    assert repeated.created is False
+    assert repeated.claim == first.claim
+    assert repeated.event == first.event
+    assert get_world_revision(database_path) == after_first_revision
+
+
+@pytest.mark.parametrize("active_value", [{"state": "changed"}, {"state": "stable"}])
+def test_claim_acceptance_rejects_non_ready_validation(
+    tmp_path: Path,
+    active_value: object,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    active = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value=active_value,
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, active)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    before_revision = get_world_revision(database_path)
+
+    with pytest.raises(ValueError, match="validation READY"):
+        accept_ready_proposed_claim(
+            database_path,
+            validation_event_id=validation.event.id,
+        )
+
+    assert get_world_revision(database_path) == before_revision
+    assert list_active_claims(
+        database_path,
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+    ) == (active,)
+
+
+def test_ready_claim_acceptance_rechecks_belief_store_atomically(tmp_path: Path) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    late_claim = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "late"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, late_claim)
+    before_revision = get_world_revision(database_path)
+
+    with pytest.raises(ValueError, match="Belief Store mudou"):
+        accept_ready_proposed_claim(
+            database_path,
+            validation_event_id=validation.event.id,
+        )
+
+    assert get_world_revision(database_path) == before_revision
+    assert list_active_claims(
+        database_path,
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+    ) == (late_claim,)
+
+
+def test_claim_acceptance_does_not_generalize_beyond_direct_observation(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    forged = Event.create(
+        kind="world.claim.proposed",
+        source="perception",
+        payload={
+            **proposal.event.payload,
+            "epistemic_status": "INFERRED",
+        },
+        trace_id=proposal.event.trace_id,
+        related_entity_ids=(subject.id,),
+    )
+    append_event(database_path, forged)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=forged.id,
+    )
+    assert validation.outcome == "READY"
+
+    with pytest.raises(ValueError, match="DIRECT_OBSERVATION"):
+        accept_ready_proposed_claim(
+            database_path,
+            validation_event_id=validation.event.id,
         )

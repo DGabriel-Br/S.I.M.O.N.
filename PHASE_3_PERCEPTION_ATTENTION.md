@@ -300,3 +300,61 @@ O comando não chama `set_current_claim()`, não cria Claim, não executa supers
 8. a CLI expõe a validação sem aplicar efeito;
 9. o schema SQLite permanece na versão 11.
 
+## Passo 76 - READY -> Claim ACTIVE por confirmação humana
+
+O primeiro caminho autorizado para materializar uma Proposed Claim no Belief Store é deliberadamente estreito:
+
+```text
+world.claim.proposed
+↓
+world.claim.validation.completed(outcome=READY)
+↓
+confirmação humana explícita
+↓
+world.claim.accepted
+↓
+Claim ACTIVE
+↓
+world_revision + 1
+```
+
+A aceitação deste passo só admite Proposed Claims originadas em `perception` com `epistemic_status=DIRECT_OBSERVATION`. `DUPLICATE` e `CONFLICT` não podem atravessar essa fronteira. Outros estados epistemológicos também permanecem fora do contrato até possuírem policy própria.
+
+A autoridade é humana e fica explícita em `world.claim.accepted` com `source=user` e `authority=USER_CONFIRMATION`. Observer, Attention, World, Cognition e ModelProvider não recebem permissão para ativar Claims por conta própria.
+
+A validação `READY` é tratada como snapshot, não como autorização eterna. A aceitação abre `BEGIN IMMEDIATE` e consulta novamente as Claims `ACTIVE` para o mesmo `subject + predicate` dentro da mesma transação que criará a nova Claim. Se qualquer Claim tiver surgido após a validação, a operação falha e exige novo `claim-validate`. Isso evita aceitar uma decisão obsoleta entre validação e escrita.
+
+A aceitação não usa `set_current_claim()`. Portanto, o contrato é incapaz de executar supersede implícito. O eixo precisa continuar vazio no instante da confirmação.
+
+A Claim aceita herda `subject`, `predicate`, `value` e `DIRECT_OBSERVATION` da Proposed Claim. Suas evidências incluem Observation, Attention assessment, validation e o Event de confirmação humana. A operação é atômica: `world.claim.accepted`, a linha em `claims` e o avanço de `world_revision` são persistidos na mesma transação.
+
+A repetição da mesma aceitação é idempotente. A Claim e o Event já existentes são retornados sem nova linha e sem novo incremento de `world_revision`.
+
+A CLI expõe somente essa borda restrita:
+
+```powershell
+uv run simon claim-accept-ready --validation-event-id evt_...
+```
+
+### Deliberadamente fora do Passo 76
+
+- aceitação de `DUPLICATE`;
+- resolução ou supersede de `CONFLICT`;
+- autoridade automática por observer, sensor, domínio ou modelo;
+- aceitação de `INFERRED`, `HYPOTHESIS`, `USER_REPORT` ou outros estados epistemológicos;
+- confidence score;
+- schema de domínio por predicate;
+- aplicação de `ATTEND` ou `INTERRUPT`;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 76
+
+1. somente validation `READY` pode ser confirmada;
+2. somente Proposed Claim `DIRECT_OBSERVATION` originada em Perception atravessa o contrato;
+3. a confirmação registra autoridade humana explícita;
+4. o Belief Store é rechecado na mesma transação da escrita;
+5. uma mudança ocorrida após `READY` bloqueia a aceitação;
+6. nenhuma Claim existente é supersedida;
+7. a Claim aceita preserva toda a cadeia de evidência;
+8. a repetição é idempotente e não avança novamente `world_revision`;
+9. o schema SQLite permanece na versão 11.
