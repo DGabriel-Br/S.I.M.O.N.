@@ -15,6 +15,7 @@ from simon.assessment_confirmation import confirm_action_assessment
 from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     accept_ready_proposed_claim,
+    propose_claim_conflict_resolution,
     propose_claim_from_attention,
     set_current_claim,
     validate_proposed_claim,
@@ -300,6 +301,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--validation-event-id",
         required=True,
         help="Event world.claim.validation.completed com outcome READY",
+    )
+
+    claim_conflict_propose = commands.add_parser(
+        "claim-conflict-propose",
+        help=(
+            "registra a escolha humana de vencedor para uma validation CONFLICT "
+            "sem superseder nenhuma Claim"
+        ),
+    )
+    claim_conflict_propose.add_argument(
+        "--validation-event-id",
+        required=True,
+        help="Event world.claim.validation.completed com outcome CONFLICT",
+    )
+    claim_conflict_propose.add_argument(
+        "--winner-id",
+        required=True,
+        help=(
+            "ID da world.claim.proposed ou de uma Claim ACTIVE listada na validation "
+            "que deve ser proposta como vencedora"
+        ),
     )
 
     model_check = commands.add_parser(
@@ -933,6 +955,12 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         return _claim_validate(database_path, args.proposal_event_id)
     if args.command == "claim-accept-ready":
         return _claim_accept_ready(database_path, args.validation_event_id)
+    if args.command == "claim-conflict-propose":
+        return _claim_conflict_propose(
+            database_path,
+            args.validation_event_id,
+            args.winner_id,
+        )
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -1257,6 +1285,33 @@ def _claim_accept_ready(database_path: Path, validation_event_id: str) -> int:
         print("Aceitação criada: sim")
     else:
         print("Aceitação criada: não (a proposta já havia sido aceita)")
+    return 0
+
+
+def _claim_conflict_propose(
+    database_path: Path,
+    validation_event_id: str,
+    winner_id: str,
+) -> int:
+    try:
+        resolution = propose_claim_conflict_resolution(
+            database_path,
+            validation_event_id=validation_event_id,
+            winner_id=winner_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Conflict resolution proposal: falha ({exc})")
+        return 1
+
+    print(f"Conflict resolution proposal: {resolution.event.id}")
+    print(f"Validation: {resolution.validation_event_id}")
+    print(f"Proposed Claim: {resolution.proposed_claim_event_id}")
+    print(f"Winner kind: {resolution.winner_kind}")
+    print(f"Winner: {resolution.winner_id}")
+    print("Autoridade: USER_DECISION")
+    print("Supersede aplicado: não")
+    print("Belief Store alterado: não")
+    print("World revision alterada: não")
     return 0
 
 

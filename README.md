@@ -872,3 +872,11 @@ uv run simon claim-accept-ready --validation-event-id evt_...
 
 O comando persiste `world.claim.accepted` com `source=user` e `authority=USER_CONFIRMATION`, cria a Claim `ACTIVE` e avança `world_revision` uma vez. Antes da escrita, o mesmo `subject + predicate` é consultado novamente dentro de `BEGIN IMMEDIATE`; se qualquer Claim ativa surgiu depois da validação `READY`, a aceitação é recusada e exige nova validação. O contrato não usa `set_current_claim()`, portanto não supersede Claims existentes. Repetir a mesma confirmação é idempotente e não altera novamente o World. `DUPLICATE`, `CONFLICT` e estados epistemológicos diferentes de `DIRECT_OBSERVATION` continuam sem caminho de aceitação neste corte.
 
+Uma validation `CONFLICT` também pode agora receber uma **proposta de resolução**, ainda sem qualquer efeito no Belief Store:
+
+```powershell
+uv run simon claim-conflict-propose --validation-event-id evt_... --winner-id evt_...
+```
+
+O `winner-id` precisa apontar para a própria `world.claim.proposed` ou para uma Claim `ACTIVE` listada no snapshot da validation. A escolha gera `world.claim.conflict.resolution.proposed` com `source=user`, `authority=USER_DECISION` e `effect_applied=false`. Antes de registrar a decisão, o conjunto de Claims `ACTIVE` é rechecado dentro de `BEGIN IMMEDIATE`; se mudou desde a validation, uma nova execução de `claim-validate` é obrigatória. O passo não executa `SUPERSEDED`, não cria nova Claim `ACTIVE` e não avança `world_revision`.
+

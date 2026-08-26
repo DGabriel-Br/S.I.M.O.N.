@@ -2556,3 +2556,144 @@ def test_claim_accept_ready_cli_requires_human_confirmation_before_world_change(
     assert acceptance_payload["validation_event_id"] == str(validation[0])
     assert acceptance_payload["authority"] == "USER_CONFIRMATION"
     assert after_revision == (int(before_revision[0]) + 1,)
+
+
+def test_claim_conflict_propose_cli_records_user_choice_without_supersede(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "storage-monitor",
+            "--kind",
+            "storage.schema.changed",
+            "--entity-id",
+            SIMON_ENTITY_ID,
+            "--world-change",
+            "schema",
+            "observado",
+            "como",
+            "12",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        attention = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert attention is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-propose",
+            "--attention-event-id",
+            str(attention[0]),
+            "--subject-id",
+            SIMON_ENTITY_ID,
+            "--predicate",
+            "storage.schema_version",
+            "--value-json",
+            "12",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        proposal = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'world.claim.proposed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert proposal is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-validate",
+            "--proposal-event-id",
+            str(proposal[0]),
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        validation = connection.execute(
+            """
+            SELECT id, payload_json FROM events
+            WHERE kind = 'world.claim.validation.completed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        before_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+    assert validation is not None
+    assert before_revision is not None
+    assert json.loads(str(validation[1]))["outcome"] == "CONFLICT"
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-conflict-propose",
+            "--validation-event-id",
+            str(validation[0]),
+            "--winner-id",
+            str(proposal[0]),
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Conflict resolution proposal: evt_" in output
+    assert f"Validation: {validation[0]}" in output
+    assert f"Proposed Claim: {proposal[0]}" in output
+    assert "Winner kind: PROPOSED_CLAIM" in output
+    assert f"Winner: {proposal[0]}" in output
+    assert "Autoridade: USER_DECISION" in output
+    assert "Supersede aplicado: não" in output
+    assert "Belief Store alterado: não" in output
+    assert "World revision alterada: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        resolution = connection.execute(
+            """
+            SELECT source, payload_json FROM events
+            WHERE kind = 'world.claim.conflict.resolution.proposed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        active_claims = connection.execute(
+            """
+            SELECT value_json, status FROM claims
+            WHERE subject_id = ? AND predicate = 'storage.schema_version'
+            ORDER BY learned_at, id
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchall()
+        after_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert resolution is not None
+    assert resolution[0] == "user"
+    payload = json.loads(str(resolution[1]))
+    assert payload["winner_kind"] == "PROPOSED_CLAIM"
+    assert payload["winner_id"] == str(proposal[0])
+    assert payload["authority"] == "USER_DECISION"
+    assert payload["effect_applied"] is False
+    assert active_claims == [("11", "ACTIVE")]
+    assert after_revision == before_revision

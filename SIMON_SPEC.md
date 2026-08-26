@@ -375,6 +375,14 @@ Como `READY` representa um snapshot, a confirmação reconsulta o eixo `subject 
 
 Quando aceita, a nova Claim `ACTIVE` preserva como evidência Observation, Attention assessment, validation e confirmação humana. O Event de aceitação, a Claim e o incremento único de `world_revision` pertencem à mesma transação. A repetição da mesma aceitação é idempotente e não avança o World novamente.
 
+### 8.11. Primeiro contrato de resolução de conflito
+
+Uma validation `CONFLICT` não escolhe vencedor. O primeiro contrato de resolução exige uma decisão humana explícita que selecione como vencedor a Proposed Claim ou uma Claim `ACTIVE` presente no snapshot validado. A escolha é persistida como `world.claim.conflict.resolution.proposed`, com `source=user`, `authority=USER_DECISION` e `effect_applied=false`.
+
+A proposta de resolução também trata a validation como snapshot: antes de ser criada, o conjunto atual de Claims `ACTIVE` para `subject + predicate` precisa continuar exatamente igual a `active_claim_ids` da validation. Mudança de estado exige novo `claim-validate`. Repetir a mesma escolha é idempotente; uma escolha diferente requer uma nova validation.
+
+Esse contrato ainda não possui autoridade para executar `SUPERSEDED`, materializar a Proposed Claim, retirar Claims perdedoras ou avançar `world_revision`. Recência, confiança, observer, modelo ou qualquer score não escolhem vencedor automaticamente.
+
 ---
 
 ## 9. Attention e Executive

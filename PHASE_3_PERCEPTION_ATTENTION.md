@@ -358,3 +358,73 @@ uv run simon claim-accept-ready --validation-event-id evt_...
 7. a Claim aceita preserva toda a cadeia de evidência;
 8. a repetição é idempotente e não avança novamente `world_revision`;
 9. o schema SQLite permanece na versão 11.
+
+## Passo 77 - CONFLICT -> proposta explícita de resolução
+
+Uma validation `CONFLICT` continua incapaz de alterar o Belief Store. O primeiro contrato de resolução registra somente **qual candidato o usuário escolhe como vencedor**, deixando a aplicação do supersede para uma etapa posterior e separada:
+
+```text
+world.claim.validation.completed(outcome=CONFLICT)
+↓
+USER_DECISION
+↓
+world.claim.conflict.resolution.proposed
+↓
+effect_applied=false
+Belief Store inalterado
+world_revision inalterada
+```
+
+O vencedor precisa ser uma referência já presente no conflito validado:
+
+- o próprio Event `world.claim.proposed`, representando intenção de usar o valor da Proposed Claim; ou
+- uma Claim `ACTIVE` cujo ID apareça em `active_claim_ids` da validation, representando intenção de mantê-la como vencedora.
+
+Esse desenho também cobre Belief Stores já contraditórios. Se a validation contiver múltiplas Claims `ACTIVE`, o usuário escolhe uma Claim concreta em vez de uma política vaga como “manter as atuais”.
+
+A escolha é persistida como:
+
+```text
+world.claim.conflict.resolution.proposed
+```
+
+com `source=user`, `authority=USER_DECISION`, `winner_kind`, `winner_id`, snapshot das Claims ativas, Claims equivalentes, Claims conflitantes, `status=PROPOSED` e `effect_applied=false`.
+
+A validation `CONFLICT` é tratada como snapshot. Antes de registrar uma nova proposta de resolução, o sistema abre `BEGIN IMMEDIATE` e compara as Claims atualmente `ACTIVE` para o mesmo `subject + predicate` com `active_claim_ids` da validation. Se o conjunto mudou, a operação é recusada e exige novo `claim-validate`.
+
+Uma validation pode possuir apenas uma escolha de resolução. Repetir a mesma escolha é idempotente. Tentar escolher outro vencedor usando a mesma validation é recusado; para mudar a decisão, é necessário produzir uma nova validation do estado atual.
+
+A CLI expõe somente a proposta, não sua aplicação:
+
+```powershell
+uv run simon claim-conflict-propose `
+    --validation-event-id evt_... `
+    --winner-id evt_...
+```
+
+`winner-id` também pode ser o ID de uma Claim `ACTIVE` listada na validation.
+
+### Deliberadamente fora do Passo 77
+
+- executar `SUPERSEDED`;
+- criar a Proposed Claim como `ACTIVE`;
+- retirar ou expirar Claims perdedoras;
+- escolher vencedor automaticamente por recência, observer, confiança ou modelo;
+- policy de autoridade por domínio;
+- confidence score;
+- interpretação de conflito por LLM;
+- aplicação de `ATTEND` ou `INTERRUPT`;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 77
+
+1. somente validation `CONFLICT` alimenta o contrato;
+2. o vencedor precisa ser a Proposed Claim ou uma Claim `ACTIVE` do snapshot validado;
+3. a escolha é persistida com autoridade humana explícita;
+4. o Belief Store é rechecado antes de registrar uma nova decisão;
+5. validation obsoleta exige novo `claim-validate`;
+6. repetir a mesma escolha é idempotente;
+7. uma mesma validation não aceita escolhas concorrentes;
+8. nenhuma Claim muda de status e `world_revision` permanece inalterada;
+9. o schema SQLite permanece na versão 11.
+

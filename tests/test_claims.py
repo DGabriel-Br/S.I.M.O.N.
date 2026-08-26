@@ -5,13 +5,16 @@ import pytest
 from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     Claim,
+    ClaimConflictResolutionProposal,
     ProposedClaim,
     accept_ready_proposed_claim,
     get_claim,
+    get_claim_conflict_resolution_proposal,
     get_claim_validation,
     get_proposed_claim,
     insert_claim,
     list_active_claims,
+    propose_claim_conflict_resolution,
     propose_claim_from_attention,
     set_current_claim,
     transition_claim,
@@ -522,4 +525,170 @@ def test_claim_acceptance_does_not_generalize_beyond_direct_observation(
         accept_ready_proposed_claim(
             database_path,
             validation_event_id=validation.event.id,
+        )
+
+
+def _create_conflicting_validation(
+    tmp_path: Path,
+) -> tuple[Path, Entity, ProposedClaim, Claim, object]:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    active = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "stable"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, active)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    assert validation.outcome == "CONFLICT"
+    return database_path, subject, proposal, active, validation
+
+
+def test_conflict_resolution_can_propose_proposed_claim_as_winner_without_effect(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    before_revision = get_world_revision(database_path)
+
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=proposal.event.id,
+    )
+
+    assert isinstance(resolution, ClaimConflictResolutionProposal)
+    assert resolution.event.kind == "world.claim.conflict.resolution.proposed"
+    assert resolution.event.source == "user"
+    assert resolution.validation_event_id == validation.event.id
+    assert resolution.proposed_claim_event_id == proposal.event.id
+    assert resolution.winner_kind == "PROPOSED_CLAIM"
+    assert resolution.winner_id == proposal.event.id
+    assert resolution.expected_active_claim_ids == (active.id,)
+    assert resolution.conflicting_claim_ids == (active.id,)
+    assert resolution.event.payload["authority"] == "USER_DECISION"
+    assert resolution.event.payload["effect_applied"] is False
+    assert get_claim_conflict_resolution_proposal(
+        database_path, resolution.event.id
+    ) == resolution
+    assert list_active_claims(
+        database_path, subject_id=subject.id, predicate=proposal.predicate
+    ) == (active,)
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_conflict_resolution_can_select_active_claim_as_winner(tmp_path: Path) -> None:
+    database_path, subject, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    before_revision = get_world_revision(database_path)
+
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=active.id,
+    )
+
+    assert resolution.winner_kind == "ACTIVE_CLAIM"
+    assert resolution.winner_id == active.id
+    assert list_active_claims(
+        database_path, subject_id=subject.id, predicate=proposal.predicate
+    ) == (active,)
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_conflict_resolution_requires_conflict_validation(tmp_path: Path) -> None:
+    database_path, _, proposal = _create_proposed_claim(tmp_path)
+    validation = validate_proposed_claim(
+        database_path, proposed_claim_event_id=proposal.event.id
+    )
+    assert validation.outcome == "READY"
+
+    with pytest.raises(ValueError, match="validation CONFLICT"):
+        propose_claim_conflict_resolution(
+            database_path,
+            validation_event_id=validation.event.id,
+            winner_id=proposal.event.id,
+        )
+
+
+def test_conflict_resolution_rejects_winner_outside_validated_candidates(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, _proposal, _, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    outsider = Claim.create(
+        subject_id=subject.id,
+        predicate="other_predicate",
+        value="outside",
+        epistemic_status="DIRECT_OBSERVATION",
+    )
+    insert_claim(database_path, outsider)
+
+    with pytest.raises(ValueError, match="winner_id"):
+        propose_claim_conflict_resolution(
+            database_path,
+            validation_event_id=validation.event.id,
+            winner_id=outsider.id,
+        )
+
+
+def test_conflict_resolution_rechecks_validation_snapshot_before_proposing(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    late = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "later"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, late)
+    before_revision = get_world_revision(database_path)
+
+    with pytest.raises(ValueError, match="Belief Store mudou"):
+        propose_claim_conflict_resolution(
+            database_path,
+            validation_event_id=validation.event.id,
+            winner_id=active.id,
+        )
+
+    assert list_active_claims(
+        database_path, subject_id=subject.id, predicate=proposal.predicate
+    ) == (active, late)
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_conflict_resolution_is_idempotent_and_immutable_per_validation(
+    tmp_path: Path,
+) -> None:
+    database_path, _, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+
+    first = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=active.id,
+    )
+    repeated = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=active.id,
+    )
+
+    assert repeated == first
+
+    with pytest.raises(ValueError, match="proposta de resolução diferente"):
+        propose_claim_conflict_resolution(
+            database_path,
+            validation_event_id=validation.event.id,
+            winner_id=proposal.event.id,
         )
