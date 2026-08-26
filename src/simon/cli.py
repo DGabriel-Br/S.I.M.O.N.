@@ -15,6 +15,7 @@ from simon.assessment_confirmation import confirm_action_assessment
 from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     accept_ready_proposed_claim,
+    apply_claim_conflict_resolution,
     propose_claim_conflict_resolution,
     propose_claim_from_attention,
     set_current_claim,
@@ -322,6 +323,19 @@ def build_parser() -> argparse.ArgumentParser:
             "ID da world.claim.proposed ou de uma Claim ACTIVE listada na validation "
             "que deve ser proposta como vencedora"
         ),
+    )
+
+    claim_conflict_apply = commands.add_parser(
+        "claim-conflict-apply",
+        help=(
+            "aplica atomicamente uma resolução CONFLICT já decidida pelo usuário, "
+            "rechecando o Belief Store antes de qualquer supersede"
+        ),
+    )
+    claim_conflict_apply.add_argument(
+        "--resolution-event-id",
+        required=True,
+        help="Event world.claim.conflict.resolution.proposed que será aplicado",
     )
 
     model_check = commands.add_parser(
@@ -961,6 +975,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.validation_event_id,
             args.winner_id,
         )
+    if args.command == "claim-conflict-apply":
+        return _claim_conflict_apply(database_path, args.resolution_event_id)
     if args.command == "model-check":
         return _model_check(args.ollama_url, args.timeout)
     if args.command == "model-test":
@@ -1312,6 +1328,46 @@ def _claim_conflict_propose(
     print("Supersede aplicado: não")
     print("Belief Store alterado: não")
     print("World revision alterada: não")
+    return 0
+
+
+def _claim_conflict_apply(database_path: Path, resolution_event_id: str) -> int:
+    try:
+        application = apply_claim_conflict_resolution(
+            database_path,
+            resolution_event_id=resolution_event_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Conflict resolution application: falha ({exc})")
+        return 1
+
+    print(f"Conflict resolution application: {application.event.id}")
+    print(f"Resolution: {application.resolution_event_id}")
+    print(f"Validation: {application.validation_event_id}")
+    print(f"Proposed Claim: {application.proposed_claim_event_id}")
+    print(f"Winner kind: {application.winner_kind}")
+    print(f"Winner Claim: {application.winner_claim.id}")
+    if application.superseded_claim_ids:
+        print(f"Claims supersedidas: {', '.join(application.superseded_claim_ids)}")
+    else:
+        print("Claims supersedidas: nenhuma")
+    print("Autoridade: USER_DECISION")
+    print(
+        "Claim vencedora criada: sim"
+        if application.winner_claim_created
+        else "Claim vencedora criada: não"
+    )
+    print(
+        "Belief Store alterado pela resolução: sim"
+        if application.belief_store_changed
+        else "Belief Store alterado pela resolução: não"
+    )
+    print(
+        "World revision alterada nesta execução: sim"
+        if application.created and application.belief_store_changed
+        else "World revision alterada nesta execução: não"
+    )
+    print("Aplicação criada: sim" if application.created else "Aplicação criada: não")
     return 0
 
 

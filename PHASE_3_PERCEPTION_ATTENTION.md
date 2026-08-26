@@ -428,3 +428,63 @@ uv run simon claim-conflict-propose `
 8. nenhuma Claim muda de status e `world_revision` permanece inalterada;
 9. o schema SQLite permanece na versão 11.
 
+## Passo 78 - aplicação atômica da resolução de CONFLICT
+
+Uma `world.claim.conflict.resolution.proposed` passa a poder ser aplicada explicitamente depois da escolha humana registrada no Passo 77. A aplicação não escolhe vencedor e não interpreta evidências novamente: ela consome exatamente o `winner_kind` e o `winner_id` já autorizados.
+
+```text
+world.claim.validation.completed(outcome=CONFLICT)
+↓
+world.claim.conflict.resolution.proposed
+↓
+claim-conflict-apply
+↓
+world.claim.conflict.resolution.applied
+```
+
+A aplicação abre `BEGIN IMMEDIATE` e revalida novamente o snapshot antes de qualquer efeito. O conjunto atual de Claims `ACTIVE` para o mesmo `subject + predicate` precisa continuar exatamente igual a `expected_active_claim_ids` da resolução e ao snapshot da validation. Se o Belief Store mudou, a aplicação é recusada e exige novo `claim-validate` seguido de uma nova decisão humana.
+
+Existem somente dois efeitos possíveis:
+
+- `PROPOSED_CLAIM`: todas as Claims `ACTIVE` do snapshot são marcadas como `SUPERSEDED` e uma nova Claim `ACTIVE` é criada com o valor da Proposed Claim;
+- `ACTIVE_CLAIM`: a Claim explicitamente escolhida permanece `ACTIVE` e somente as demais Claims `ACTIVE` do snapshot são marcadas como `SUPERSEDED`.
+
+Quando a única Claim `ACTIVE` já é a vencedora, aplicar a resolução não modifica o Belief Store e não avança `world_revision`. O Event de aplicação ainda é persistido para registrar que o conflito foi resolvido sem mudança material do estado atual.
+
+Quando há efeito no Belief Store, todas as mudanças de status, a eventual nova Claim, `world.claim.conflict.resolution.applied` e um único avanço de `world_revision` pertencem à mesma transação. Não há um incremento por Claim supersedida.
+
+Se a Proposed Claim vencer, a nova Claim preserva Observation e Attention da proposta e adiciona validation, resolução humana e Event de aplicação à cadeia de evidências. Se uma Claim já `ACTIVE` vencer, sua evidência não é reescrita; a decisão de resolução permanece auditável pelos Events.
+
+O Event `world.claim.conflict.resolution.applied` usa `source=world`, `authority=USER_DECISION` e `authority_event_id` apontando para a resolução humana. Assim, o subsistema World aplica o efeito, mas a autoridade continua rastreável até a decisão do usuário.
+
+A operação é idempotente por `resolution_event_id`. Repetir a aplicação retorna o mesmo resultado sem novos supersedes, nova Claim ou novo incremento de `world_revision`.
+
+A CLI expõe a borda explicitamente:
+
+```powershell
+uv run simon claim-conflict-apply --resolution-event-id evt_...
+```
+
+### Deliberadamente fora do Passo 78
+
+- escolha automática do vencedor;
+- policy por recência, confidence, observer ou domínio;
+- interpretação de conflito por LLM;
+- merge de valores concorrentes;
+- reescrita de evidências da Claim `ACTIVE` mantida;
+- resolução automática de `DUPLICATE`;
+- aplicação de `ATTEND` ou `INTERRUPT`;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 78
+
+1. somente `world.claim.conflict.resolution.proposed` com autoridade humana explícita pode ser aplicada;
+2. o snapshot da validation e da resolução é rechecado dentro de `BEGIN IMMEDIATE`;
+3. snapshot obsoleto bloqueia qualquer efeito;
+4. Proposed Claim vencedora supersede o snapshot anterior e cria uma nova Claim `ACTIVE`;
+5. Claim `ACTIVE` vencedora preserva a vencedora e supersede somente concorrentes;
+6. manter a única Claim ativa não avança `world_revision`;
+7. qualquer mudança material do Belief Store avança `world_revision` exatamente uma vez;
+8. a aplicação é idempotente;
+9. o schema SQLite permanece na versão 11.
+

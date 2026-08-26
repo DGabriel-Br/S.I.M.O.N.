@@ -383,6 +383,14 @@ A proposta de resolução também trata a validation como snapshot: antes de ser
 
 Esse contrato ainda não possui autoridade para executar `SUPERSEDED`, materializar a Proposed Claim, retirar Claims perdedoras ou avançar `world_revision`. Recência, confiança, observer, modelo ou qualquer score não escolhem vencedor automaticamente.
 
+### 8.12. Aplicação autorizada de resolução de conflito
+
+Uma `world.claim.conflict.resolution.proposed` pode ser aplicada explicitamente sem escolher novamente o vencedor. O subsistema World consome a decisão humana já registrada, revalida atomicamente o snapshot dentro de `BEGIN IMMEDIATE` e persiste `world.claim.conflict.resolution.applied` com `source=world`, `authority=USER_DECISION` e `authority_event_id` apontando para o Event humano.
+
+Se `winner_kind=PROPOSED_CLAIM`, todas as Claims `ACTIVE` do snapshot são `SUPERSEDED` e uma nova Claim `ACTIVE` é criada com a Proposed Claim. Se `winner_kind=ACTIVE_CLAIM`, a vencedora permanece ativa e apenas as demais Claims do snapshot são supersedidas. Uma escolha que mantém a única Claim ativa produz provenance de resolução sem modificar o Belief Store ou avançar `world_revision`.
+
+Mudanças materiais de Belief Store, Event de aplicação e eventual nova Claim pertencem à mesma transação e avançam `world_revision` exatamente uma vez. Snapshot divergente bloqueia a aplicação e exige nova validation e nova resolução. A operação é idempotente por resolução. Nenhum modelo, score ou política de recência pode escolher o vencedor nesta fronteira.
+
 ---
 
 ## 9. Attention e Executive

@@ -5,9 +5,11 @@ import pytest
 from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     Claim,
+    ClaimConflictResolutionApplication,
     ClaimConflictResolutionProposal,
     ProposedClaim,
     accept_ready_proposed_claim,
+    apply_claim_conflict_resolution,
     get_claim,
     get_claim_conflict_resolution_proposal,
     get_claim_validation,
@@ -692,3 +694,197 @@ def test_conflict_resolution_is_idempotent_and_immutable_per_validation(
             validation_event_id=validation.event.id,
             winner_id=proposal.event.id,
         )
+
+def test_conflict_resolution_application_materializes_proposed_winner_atomically(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=proposal.event.id,
+    )
+    before_revision = get_world_revision(database_path)
+
+    application = apply_claim_conflict_resolution(
+        database_path,
+        resolution_event_id=resolution.event.id,
+    )
+
+    assert isinstance(application, ClaimConflictResolutionApplication)
+    assert application.event.kind == "world.claim.conflict.resolution.applied"
+    assert application.event.source == "world"
+    assert application.resolution_event_id == resolution.event.id
+    assert application.validation_event_id == validation.event.id
+    assert application.proposed_claim_event_id == proposal.event.id
+    assert application.winner_kind == "PROPOSED_CLAIM"
+    assert application.winner_claim_created is True
+    assert application.belief_store_changed is True
+    assert application.created is True
+    assert application.superseded_claim_ids == (active.id,)
+    assert application.event.payload["authority"] == "USER_DECISION"
+    assert application.event.payload["authority_event_id"] == resolution.event.id
+    assert application.event.payload["effect_applied"] is True
+    assert application.winner_claim.value == proposal.value
+    assert application.winner_claim.epistemic_status == proposal.epistemic_status
+    assert validation.event.id in application.winner_claim.evidence_event_ids
+    assert resolution.event.id in application.winner_claim.evidence_event_ids
+    assert application.event.id in application.winner_claim.evidence_event_ids
+    stored_active = get_claim(database_path, active.id)
+    assert stored_active is not None
+    assert stored_active.status == "SUPERSEDED"
+    assert list_active_claims(
+        database_path, subject_id=subject.id, predicate=proposal.predicate
+    ) == (application.winner_claim,)
+    assert get_world_revision(database_path) == before_revision + 1
+
+
+def test_conflict_resolution_application_can_keep_single_active_winner_without_world_change(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=active.id,
+    )
+    before_revision = get_world_revision(database_path)
+
+    application = apply_claim_conflict_resolution(
+        database_path,
+        resolution_event_id=resolution.event.id,
+    )
+
+    assert application.winner_kind == "ACTIVE_CLAIM"
+    assert application.winner_claim == active
+    assert application.winner_claim_created is False
+    assert application.superseded_claim_ids == ()
+    assert application.belief_store_changed is False
+    assert application.created is True
+    assert list_active_claims(
+        database_path, subject_id=subject.id, predicate=proposal.predicate
+    ) == (active,)
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_conflict_resolution_application_supersedes_other_active_claims_only(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    winner = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "stable"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    loser = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "legacy"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, winner)
+    insert_claim(database_path, loser)
+    validation = validate_proposed_claim(
+        database_path, proposed_claim_event_id=proposal.event.id
+    )
+    assert validation.outcome == "CONFLICT"
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=winner.id,
+    )
+    before_revision = get_world_revision(database_path)
+
+    application = apply_claim_conflict_resolution(
+        database_path, resolution_event_id=resolution.event.id
+    )
+
+    assert application.winner_claim == winner
+    assert application.superseded_claim_ids == (loser.id,)
+    assert application.winner_claim_created is False
+    assert application.belief_store_changed is True
+    stored_winner = get_claim(database_path, winner.id)
+    stored_loser = get_claim(database_path, loser.id)
+    assert stored_winner is not None
+    assert stored_loser is not None
+    assert stored_winner.status == "ACTIVE"
+    assert stored_loser.status == "SUPERSEDED"
+    assert list_active_claims(
+        database_path, subject_id=subject.id, predicate=proposal.predicate
+    ) == (winner,)
+    assert get_world_revision(database_path) == before_revision + 1
+
+
+def test_conflict_resolution_application_rechecks_resolution_snapshot(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal, active, validation = _create_conflicting_validation(
+        tmp_path
+    )
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=proposal.event.id,
+    )
+    late = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "late"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, late)
+    before_revision = get_world_revision(database_path)
+
+    with pytest.raises(ValueError, match="Belief Store mudou"):
+        apply_claim_conflict_resolution(
+            database_path, resolution_event_id=resolution.event.id
+        )
+
+    stored_active = get_claim(database_path, active.id)
+    stored_late = get_claim(database_path, late.id)
+    assert stored_active is not None
+    assert stored_late is not None
+    assert stored_active.status == "ACTIVE"
+    assert stored_late.status == "ACTIVE"
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_conflict_resolution_application_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    database_path, _, proposal, _, validation = _create_conflicting_validation(tmp_path)
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=proposal.event.id,
+    )
+
+    first = apply_claim_conflict_resolution(
+        database_path, resolution_event_id=resolution.event.id
+    )
+    after_first_revision = get_world_revision(database_path)
+    repeated = apply_claim_conflict_resolution(
+        database_path, resolution_event_id=resolution.event.id
+    )
+
+    assert repeated.created is False
+    assert repeated.event == first.event
+    assert repeated.winner_claim == first.winner_claim
+    assert repeated.superseded_claim_ids == first.superseded_claim_ids
+    assert repeated.belief_store_changed is True
+    assert get_world_revision(database_path) == after_first_revision
+
+
+def test_conflict_resolution_application_requires_resolution_event(tmp_path: Path) -> None:
+    database_path, _, _, _, validation = _create_conflicting_validation(tmp_path)
+
+    with pytest.raises(ValueError, match="resolution.proposed existente"):
+        apply_claim_conflict_resolution(
+            database_path, resolution_event_id=validation.event.id
+        )
+

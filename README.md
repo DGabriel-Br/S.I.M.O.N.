@@ -880,3 +880,11 @@ uv run simon claim-conflict-propose --validation-event-id evt_... --winner-id ev
 
 O `winner-id` precisa apontar para a própria `world.claim.proposed` ou para uma Claim `ACTIVE` listada no snapshot da validation. A escolha gera `world.claim.conflict.resolution.proposed` com `source=user`, `authority=USER_DECISION` e `effect_applied=false`. Antes de registrar a decisão, o conjunto de Claims `ACTIVE` é rechecado dentro de `BEGIN IMMEDIATE`; se mudou desde a validation, uma nova execução de `claim-validate` é obrigatória. O passo não executa `SUPERSEDED`, não cria nova Claim `ACTIVE` e não avança `world_revision`.
 
+A resolução decidida pode então ser aplicada em um ato separado:
+
+```powershell
+uv run simon claim-conflict-apply --resolution-event-id evt_...
+```
+
+A aplicação recheca novamente o snapshot dentro de `BEGIN IMMEDIATE`. Se a Proposed Claim for a vencedora, as Claims `ACTIVE` validadas são supersedidas e nasce uma nova Claim `ACTIVE` com a cadeia de evidências da observação, validation, decisão humana e aplicação. Se uma Claim já `ACTIVE` for a vencedora, somente as concorrentes são supersedidas. Quando a vencedora já é a única Claim ativa, o Belief Store permanece materialmente igual e `world_revision` não avança. O efeito é persistido como `world.claim.conflict.resolution.applied` com `source=world`, `authority=USER_DECISION` e referência explícita ao Event humano que concedeu a autoridade. A repetição da mesma aplicação é idempotente.
+

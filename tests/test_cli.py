@@ -2697,3 +2697,107 @@ def test_claim_conflict_propose_cli_records_user_choice_without_supersede(
     assert payload["effect_applied"] is False
     assert active_claims == [("11", "ACTIVE")]
     assert after_revision == before_revision
+
+
+def test_claim_conflict_apply_cli_applies_user_resolution_atomically(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    from simon.attention import AttentionSignals, assess_observation_attention
+    from simon.claims import (
+        propose_claim_conflict_resolution,
+        propose_claim_from_attention,
+        validate_proposed_claim,
+    )
+    from simon.perception import record_observation
+
+    assert main(["--data-dir", str(tmp_path)]) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    database_path = tmp_path / "simon.db"
+    observation = record_observation(
+        database_path,
+        observer="storage-monitor",
+        signal_kind="storage.schema.changed",
+        summary="schema observado como 12",
+        related_entity_ids=(SIMON_ENTITY_ID,),
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(world_change=True),
+    )
+    proposal = propose_claim_from_attention(
+        database_path,
+        attention_event_id=assessment.event.id,
+        subject_id=SIMON_ENTITY_ID,
+        predicate="storage.schema_version",
+        value=12,
+    )
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    assert validation.outcome == "CONFLICT"
+    resolution = propose_claim_conflict_resolution(
+        database_path,
+        validation_event_id=validation.event.id,
+        winner_id=proposal.event.id,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        before_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+    assert before_revision is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-conflict-apply",
+            "--resolution-event-id",
+            resolution.event.id,
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Conflict resolution application: evt_" in output
+    assert f"Resolution: {resolution.event.id}" in output
+    assert "Winner kind: PROPOSED_CLAIM" in output
+    assert "Winner Claim: clm_" in output
+    assert "Autoridade: USER_DECISION" in output
+    assert "Claim vencedora criada: sim" in output
+    assert "Belief Store alterado pela resolução: sim" in output
+    assert "World revision alterada nesta execução: sim" in output
+
+    with sqlite3.connect(database_path) as connection:
+        claims = connection.execute(
+            """
+            SELECT value_json, status
+            FROM claims
+            WHERE subject_id = ? AND predicate = 'storage.schema_version'
+            ORDER BY learned_at, id
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchall()
+        applied = connection.execute(
+            """
+            SELECT source, payload_json
+            FROM events
+            WHERE kind = 'world.claim.conflict.resolution.applied'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        after_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert claims == [("11", "SUPERSEDED"), ("12", "ACTIVE")]
+    assert applied is not None
+    assert applied[0] == "world"
+    payload = json.loads(str(applied[1]))
+    assert payload["resolution_event_id"] == resolution.event.id
+    assert payload["winner_kind"] == "PROPOSED_CLAIM"
+    assert payload["authority"] == "USER_DECISION"
+    assert payload["effect_applied"] is True
+    assert after_revision == (int(before_revision[0]) + 1,)

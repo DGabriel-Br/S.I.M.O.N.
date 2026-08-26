@@ -16,6 +16,7 @@ PROPOSED_CLAIM_EVENT_KIND = "world.claim.proposed"
 CLAIM_VALIDATION_EVENT_KIND = "world.claim.validation.completed"
 CLAIM_ACCEPTED_EVENT_KIND = "world.claim.accepted"
 CLAIM_CONFLICT_RESOLUTION_EVENT_KIND = "world.claim.conflict.resolution.proposed"
+CLAIM_CONFLICT_RESOLUTION_APPLIED_EVENT_KIND = "world.claim.conflict.resolution.applied"
 CLAIM_VALIDATION_OUTCOMES = {"READY", "DUPLICATE", "CONFLICT"}
 CLAIM_CONFLICT_WINNER_KINDS = {"PROPOSED_CLAIM", "ACTIVE_CLAIM"}
 
@@ -60,6 +61,20 @@ class ClaimConflictResolutionProposal:
     expected_active_claim_ids: tuple[str, ...]
     matching_claim_ids: tuple[str, ...]
     conflicting_claim_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimConflictResolutionApplication:
+    event: Event
+    resolution_event_id: str
+    validation_event_id: str
+    proposed_claim_event_id: str
+    winner_kind: str
+    winner_claim: Claim
+    superseded_claim_ids: tuple[str, ...]
+    winner_claim_created: bool
+    belief_store_changed: bool
+    created: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +507,309 @@ def get_claim_conflict_resolution_proposal(
     )
 
 
+def apply_claim_conflict_resolution(
+    database_path: Path,
+    *,
+    resolution_event_id: str,
+) -> ClaimConflictResolutionApplication:
+    """Aplica uma resolução humana de CONFLICT sem inferir vencedor ou snapshot."""
+    normalized_resolution_event_id = resolution_event_id.strip()
+    if not normalized_resolution_event_id:
+        raise ValueError("conflict resolution application exige resolution_event_id")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        existing = _find_conflict_resolution_application_in_connection(
+            connection,
+            resolution_event_id=normalized_resolution_event_id,
+        )
+        if existing is not None:
+            event, winner_claim_id = existing
+            claim_row = connection.execute(
+                _claim_select() + " WHERE id = ?",
+                (winner_claim_id,),
+            ).fetchone()
+            if claim_row is None:
+                raise RuntimeError(
+                    "aplicação de conflito existente referencia Claim indisponível: "
+                    f"{winner_claim_id}"
+                )
+            payload = event.payload
+            return ClaimConflictResolutionApplication(
+                event=event,
+                resolution_event_id=normalized_resolution_event_id,
+                validation_event_id=_required_payload_string(
+                    payload, "validation_event_id", context="conflict resolution aplicada"
+                ),
+                proposed_claim_event_id=_required_payload_string(
+                    payload,
+                    "proposed_claim_event_id",
+                    context="conflict resolution aplicada",
+                ),
+                winner_kind=_required_payload_string(
+                    payload, "winner_kind", context="conflict resolution aplicada"
+                ),
+                winner_claim=_claim_from_row(claim_row),
+                superseded_claim_ids=_string_tuple_from_payload(
+                    payload, field="superseded_claim_ids"
+                ),
+                winner_claim_created=_required_payload_bool(
+                    payload,
+                    "winner_claim_created",
+                    context="conflict resolution aplicada",
+                ),
+                belief_store_changed=_required_payload_bool(
+                    payload,
+                    "belief_store_changed",
+                    context="conflict resolution aplicada",
+                ),
+                created=False,
+            )
+
+        resolution_row = connection.execute(
+            """
+            SELECT payload_json, trace_id, related_entity_ids_json, goal_id, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (normalized_resolution_event_id, CLAIM_CONFLICT_RESOLUTION_EVENT_KIND),
+        ).fetchone()
+        if resolution_row is None:
+            raise ValueError(
+                "conflict resolution application exige "
+                "world.claim.conflict.resolution.proposed existente: "
+                f"{normalized_resolution_event_id}"
+            )
+        if str(resolution_row[4]) != "user":
+            raise ValueError("conflict resolution não possui autoridade de origem esperada")
+
+        resolution_payload = json.loads(str(resolution_row[0]))
+        if not isinstance(resolution_payload, dict):
+            raise TypeError("payload da conflict resolution possui tipo inválido")
+        if resolution_payload.get("authority") != "USER_DECISION":
+            raise ValueError("conflict resolution não possui autoridade USER_DECISION")
+        if resolution_payload.get("status") != "PROPOSED":
+            raise ValueError("conflict resolution não está disponível para aplicação")
+        if resolution_payload.get("effect_applied") is not False:
+            raise ValueError("conflict resolution já possui efeito aplicado")
+
+        validation_event_id = _required_payload_string(
+            resolution_payload,
+            "validation_event_id",
+            context="conflict resolution",
+        )
+        proposed_claim_event_id = _required_payload_string(
+            resolution_payload,
+            "proposed_claim_event_id",
+            context="conflict resolution",
+        )
+        winner_kind = _required_payload_string(
+            resolution_payload,
+            "winner_kind",
+            context="conflict resolution",
+        )
+        winner_id = _required_payload_string(
+            resolution_payload,
+            "winner_id",
+            context="conflict resolution",
+        )
+        if winner_kind not in CLAIM_CONFLICT_WINNER_KINDS:
+            raise TypeError("conflict resolution possui winner_kind inválido")
+        expected_active_claim_ids = _string_tuple_from_payload(
+            resolution_payload,
+            field="expected_active_claim_ids",
+        )
+
+        validation_row = connection.execute(
+            """
+            SELECT payload_json, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (validation_event_id, CLAIM_VALIDATION_EVENT_KIND),
+        ).fetchone()
+        if validation_row is None:
+            raise ValueError(
+                f"claim validation da resolução não encontrada: {validation_event_id}"
+            )
+        if str(validation_row[1]) != "world":
+            raise ValueError("claim validation não possui autoridade de origem esperada")
+        validation_payload = json.loads(str(validation_row[0]))
+        if not isinstance(validation_payload, dict):
+            raise TypeError("payload da claim validation possui tipo inválido")
+        if validation_payload.get("outcome") != "CONFLICT":
+            raise ValueError("conflict resolution application exige validation CONFLICT")
+        if validation_payload.get("effect_applied") is not False:
+            raise ValueError("claim validation já possui efeito aplicado")
+        if validation_payload.get("proposed_claim_event_id") != proposed_claim_event_id:
+            raise ValueError("conflict resolution diverge da Proposed Claim validada")
+        validation_active_claim_ids = _string_tuple_from_payload(
+            validation_payload,
+            field="active_claim_ids",
+        )
+        if expected_active_claim_ids != validation_active_claim_ids:
+            raise ValueError("conflict resolution diverge do snapshot da validation")
+
+        proposal_row = connection.execute(
+            """
+            SELECT payload_json, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (proposed_claim_event_id, PROPOSED_CLAIM_EVENT_KIND),
+        ).fetchone()
+        if proposal_row is None:
+            raise ValueError(f"proposed claim não encontrada: {proposed_claim_event_id}")
+        if str(proposal_row[1]) != "perception":
+            raise ValueError(
+                "conflict resolution application exige proposta originada em perception"
+            )
+        proposal_payload = json.loads(str(proposal_row[0]))
+        if not isinstance(proposal_payload, dict):
+            raise TypeError("payload da proposed claim possui tipo inválido")
+        subject_id = _required_payload_string(
+            proposal_payload, "subject_id", context="proposed claim"
+        )
+        predicate = _required_payload_string(
+            proposal_payload, "predicate", context="proposed claim"
+        )
+        epistemic_status = _required_payload_string(
+            proposal_payload, "epistemic_status", context="proposed claim"
+        )
+        if epistemic_status != "DIRECT_OBSERVATION":
+            raise ValueError(
+                "conflict resolution application exige epistemic_status DIRECT_OBSERVATION"
+            )
+        raw_evidence_event_ids = proposal_payload.get("evidence_event_ids")
+        if not isinstance(raw_evidence_event_ids, list) or not all(
+            isinstance(item, str) for item in raw_evidence_event_ids
+        ):
+            raise TypeError("proposed claim não possui evidence_event_ids válidos")
+
+        current_rows = connection.execute(
+            _claim_select()
+            + " WHERE subject_id = ? AND predicate = ? AND status = 'ACTIVE' "
+            "ORDER BY learned_at, id",
+            (subject_id, predicate),
+        ).fetchall()
+        current_active_claim_ids = tuple(str(row[0]) for row in current_rows)
+        if current_active_claim_ids != expected_active_claim_ids:
+            raise ValueError(
+                "Belief Store mudou após conflict resolution proposal; "
+                "execute claim-validate novamente"
+            )
+
+        if winner_kind == "ACTIVE_CLAIM":
+            if winner_id not in current_active_claim_ids:
+                raise ValueError("Claim ACTIVE vencedora não pertence mais ao snapshot atual")
+            winner_claim_id = winner_id
+            superseded_claim_ids = tuple(
+                claim_id for claim_id in current_active_claim_ids if claim_id != winner_id
+            )
+            winner_claim_created = False
+        else:
+            if winner_id != proposed_claim_event_id:
+                raise ValueError("PROPOSED_CLAIM vencedora diverge da proposta validada")
+            winner_claim_id = f"clm_{uuid4().hex}"
+            superseded_claim_ids = current_active_claim_ids
+            winner_claim_created = True
+
+        belief_store_changed = winner_claim_created or bool(superseded_claim_ids)
+        application_event = Event.create(
+            kind=CLAIM_CONFLICT_RESOLUTION_APPLIED_EVENT_KIND,
+            source="world",
+            payload={
+                "resolution_event_id": normalized_resolution_event_id,
+                "validation_event_id": validation_event_id,
+                "proposed_claim_event_id": proposed_claim_event_id,
+                "winner_kind": winner_kind,
+                "winner_id": winner_id,
+                "winner_claim_id": winner_claim_id,
+                "superseded_claim_ids": list(superseded_claim_ids),
+                "winner_claim_created": winner_claim_created,
+                "belief_store_changed": belief_store_changed,
+                "authority": "USER_DECISION",
+                "authority_event_id": normalized_resolution_event_id,
+                "effect_applied": True,
+            },
+            trace_id=(
+                str(resolution_row[1])
+                if resolution_row[1] is not None
+                else proposed_claim_event_id
+            ),
+            related_entity_ids=_string_tuple_from_json(
+                resolution_row[2],
+                field="related_entity_ids",
+            ),
+            goal_id=str(resolution_row[3]) if resolution_row[3] is not None else None,
+        )
+
+        for claim_id in superseded_claim_ids:
+            cursor = connection.execute(
+                """
+                UPDATE claims
+                SET status = 'SUPERSEDED'
+                WHERE id = ? AND status = 'ACTIVE'
+                """,
+                (claim_id,),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("snapshot mudou durante aplicação da conflict resolution")
+
+        if winner_claim_created:
+            evidence_event_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *raw_evidence_event_ids,
+                        validation_event_id,
+                        normalized_resolution_event_id,
+                        application_event.id,
+                    )
+                )
+            )
+            winner_claim = Claim(
+                id=winner_claim_id,
+                subject_id=subject_id,
+                predicate=predicate,
+                value=proposal_payload.get("value"),
+                epistemic_status=epistemic_status,
+                valid_from=None,
+                valid_until=None,
+                learned_at=datetime.now(UTC),
+                evidence_event_ids=evidence_event_ids,
+                status=ACTIVE,
+            )
+            _insert_claim_in_connection(connection, winner_claim)
+        else:
+            winner_row = connection.execute(
+                _claim_select() + " WHERE id = ? AND status = 'ACTIVE'",
+                (winner_claim_id,),
+            ).fetchone()
+            if winner_row is None:
+                raise RuntimeError(
+                    f"Claim vencedora deixou de estar ACTIVE: {winner_claim_id}"
+                )
+            winner_claim = _claim_from_row(winner_row)
+
+        _insert_event_in_connection(connection, application_event)
+        if belief_store_changed:
+            advance_world_revision_in_connection(connection)
+
+    return ClaimConflictResolutionApplication(
+        event=application_event,
+        resolution_event_id=normalized_resolution_event_id,
+        validation_event_id=validation_event_id,
+        proposed_claim_event_id=proposed_claim_event_id,
+        winner_kind=winner_kind,
+        winner_claim=winner_claim,
+        superseded_claim_ids=superseded_claim_ids,
+        winner_claim_created=winner_claim_created,
+        belief_store_changed=belief_store_changed,
+        created=True,
+    )
+
+
 def accept_ready_proposed_claim(
     database_path: Path,
     *,
@@ -708,6 +1026,75 @@ def _find_existing_claim_acceptance_in_connection(
         )
         return claim_id, event
     return None
+
+
+def _find_conflict_resolution_application_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    resolution_event_id: str,
+) -> tuple[Event, str] | None:
+    rows = connection.execute(
+        """
+        SELECT
+            id, occurred_at, source, payload_json, trace_id,
+            related_entity_ids_json, goal_id, experience_id
+        FROM events
+        WHERE kind = ?
+        ORDER BY occurred_at DESC, rowid DESC
+        """,
+        (CLAIM_CONFLICT_RESOLUTION_APPLIED_EVENT_KIND,),
+    ).fetchall()
+    for row in rows:
+        payload = json.loads(str(row[3]))
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("resolution_event_id") != resolution_event_id:
+            continue
+        winner_claim_id = payload.get("winner_claim_id")
+        if not isinstance(winner_claim_id, str):
+            raise TypeError(
+                "world.claim.conflict.resolution.applied sem winner_claim_id válido"
+            )
+        event = Event(
+            id=str(row[0]),
+            kind=CLAIM_CONFLICT_RESOLUTION_APPLIED_EVENT_KIND,
+            occurred_at=datetime.fromisoformat(str(row[1])),
+            source=str(row[2]),
+            payload=payload,
+            trace_id=str(row[4]) if row[4] is not None else None,
+            related_entity_ids=_string_tuple_from_json(
+                row[5],
+                field="related_entity_ids",
+            ),
+            goal_id=str(row[6]) if row[6] is not None else None,
+            experience_id=str(row[7]) if row[7] is not None else None,
+        )
+        return event, winner_claim_id
+    return None
+
+
+def _required_payload_string(
+    payload: dict[str, object],
+    field: str,
+    *,
+    context: str,
+) -> str:
+    raw = payload.get(field)
+    if not isinstance(raw, str) or not raw.strip():
+        raise TypeError(f"{context} sem {field} válido")
+    return raw
+
+
+def _required_payload_bool(
+    payload: dict[str, object],
+    field: str,
+    *,
+    context: str,
+) -> bool:
+    raw = payload.get(field)
+    if not isinstance(raw, bool):
+        raise TypeError(f"{context} sem {field} válido")
+    return raw
 
 
 def _find_conflict_resolution_proposal_in_connection(
