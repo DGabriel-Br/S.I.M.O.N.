@@ -852,7 +852,22 @@ O classificador não executa o destino automaticamente. Cada `attention.assessed
 uv run simon attention-open --attention-event-id evt_...
 ```
 
-O comando cria `attention.item.opened` com `status=PENDING`. Quando não existe Goal aberto, `executive-next` passa a retornar `NEEDS_ATTENTION_REVIEW` e mostra os itens pendentes. Se houver um Goal foreground, `ATTEND` não o preempta. Um novo turno humano também continua podendo propor um Goal, e uma proposta de Goal pendente continua podendo ser respondida; Attention ocioso não bloqueia foreground humano. O item ainda não pode ser dispensado, concluído ou transformado automaticamente em Goal.
+O comando cria `attention.item.opened` com `status=PENDING`. Quando não existe Goal aberto, `executive-next` passa a retornar `NEEDS_ATTENTION_REVIEW` e mostra os itens pendentes. Se houver um Goal foreground, `ATTEND` não o preempta. Um novo turno humano também continua podendo propor um Goal, e uma proposta de Goal pendente continua podendo ser respondida; Attention ocioso não bloqueia foreground humano.
+
+Itens pendentes agora podem receber uma review humana explícita:
+
+```powershell
+uv run simon attention-review --item-id evt_... --decision dismiss
+uv run simon attention-review --item-id evt_... --decision acknowledge
+```
+
+Também é possível transformar o item em uma proposta de Goal estruturada, ainda sem criar o Goal:
+
+```powershell
+uv run simon attention-review --item-id evt_... --decision goal --title "Restaurar serviço" --desired-state "O serviço voltou ao normal." --success-criterion "O serviço responde normalmente."
+```
+
+A terceira forma persiste `attention.goal_proposal.completed`; `goal-accept` continua sendo necessário em um ciclo separado. `DISMISSED`, `ACKNOWLEDGED` e `GOAL_PROPOSED` deixam de alimentar `NEEDS_ATTENTION_REVIEW`, não alteram `world_revision` e não trocam o foreground.
 
 O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, interpretação cognitiva de observações, revisão conversacional de Attention e aplicação de `INTERRUPT` permanecem fora deste corte.
 

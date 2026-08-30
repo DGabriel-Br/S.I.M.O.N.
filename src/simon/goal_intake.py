@@ -234,7 +234,11 @@ def _load_proposal(
 
     if row is None:
         raise ValueError(f"Event de proposta não encontrado: {proposal_event_id}")
-    if str(row[0]) != "cognition.goal_proposal.completed":
+    proposal_kind = str(row[0])
+    if proposal_kind not in {
+        "cognition.goal_proposal.completed",
+        "attention.goal_proposal.completed",
+    }:
         raise ValueError(
             "Event não representa uma proposta de Goal concluída: "
             f"{proposal_event_id}"

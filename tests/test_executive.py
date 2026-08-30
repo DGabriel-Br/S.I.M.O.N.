@@ -4,7 +4,12 @@ import sqlite3
 from pathlib import Path
 
 from simon.actions import create_action, transition_action
-from simon.attention import AttentionSignals, assess_observation_attention, open_attention_item
+from simon.attention import (
+    AttentionSignals,
+    assess_observation_attention,
+    open_attention_item,
+    review_attention_item,
+)
 from simon.cli import main
 from simon.events import Event, append_event
 from simon.executive import decide_next
@@ -455,4 +460,31 @@ def test_attend_does_not_preempt_active_foreground_goal(tmp_path: Path) -> None:
     assert decision.outcome == "PROCEED"
     assert decision.operation == "plan.propose"
     assert decision.goal_id == goal.id
+    assert decision.attention_candidates == ()
+
+
+def test_reviewed_attend_no_longer_blocks_idle_executive(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="sinal revisável",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(subscribed=True),
+    )
+    opening = open_attention_item(database_path, attention_event_id=assessment.event.id)
+    review_attention_item(
+        database_path,
+        attention_item_event_id=opening.item.event.id,
+        decision="DISMISS",
+    )
+
+    decision = decide_next(database_path)
+
+    assert decision.outcome == "DONE"
+    assert decision.reason_code == "no_open_goal"
     assert decision.attention_candidates == ()

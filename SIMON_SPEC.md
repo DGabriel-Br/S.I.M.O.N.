@@ -5841,3 +5841,19 @@ Texto que não corresponde à gramática pequena de aceitação ou rejeição n�
 
 O contrato mantém proposta, aceitação/rejeição e planejamento em ciclos distintos, preservando provenance e autoridade humana sem nova tabela ou migration. O schema SQLite permanece 11.
 
+
+### 33.26. Lifecycle humano de ATTEND
+
+Um `attention.item.opened` materializado a partir de `ATTEND` não pode permanecer indefinidamente como compromisso sem possuir uma saída explícita. O primeiro lifecycle de review é estritamente humano e terminal por item: `DISMISS`, `ACKNOWLEDGE` ou `PROPOSE_GOAL`.
+
+A review persiste `attention.item.reviewed` com `source=user` e `authority=USER_DECISION`. `DISMISS` produz estado `DISMISSED`; `ACKNOWLEDGE` produz `ACKNOWLEDGED`; ambos removem o item do conjunto pendente sem criar trabalho, alterar Focus ou mudar o World.
+
+`PROPOSE_GOAL` não concede ao Attention Manager autoridade para formular ou aceitar um Goal. O usuário fornece explicitamente título, estado desejado, critérios de sucesso e questões em aberto opcionais segundo o contrato `GoalProposal`. A mesma transação persiste `attention.goal_proposal.completed` com `source=user`, `materialized_by=attention`, `origin=ATTENTION_REVIEW` e a review terminal `GOAL_PROPOSED`.
+
+A proposta permanece separada do Goal. `accept_goal_proposal()` pode consumir esse novo tipo de proposta, mas somente um ato posterior de aceitação cria um Goal `USER/ACTIVE`. A review em si registra `goal_created=false` e não chama Planner ou Executive runner.
+
+Cada `attention.item.opened` admite no máximo uma decisão terminal. Repetir a mesma review é idempotente; escolher outro destino para o mesmo item é recusado. Quando o destino é `PROPOSE_GOAL`, alterar o conteúdo da proposta em uma repetição também é recusado. Mudança de intenção exige um novo item, não mutação retroativa da decisão persistida.
+
+Itens com review terminal não são mais retornados por `list_pending_attention_items()` e deixam de produzir `NEEDS_ATTENTION_REVIEW`. Reexecutar a materialização original não reabre o item; a abertura continua imutável e o estado corrente é reconstruído pelos Events posteriores.
+
+Nenhuma dessas transições altera `world_revision`, Claim, capability ou foreground. Revisão conversacional, `DEFERRED`, reabertura, formulação por modelo e efeito de `INTERRUPT` continuam fora deste contrato. O schema permanece 11.

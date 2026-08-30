@@ -3017,3 +3017,191 @@ def test_attention_open_cli_surfaces_pending_item_to_idle_executive(
     assert "Razão: pending_attention_items" in executive_output
     assert "Itens de atenção pendentes:" in executive_output
     assert "arquivo monitorado mudou" in executive_output
+
+
+def test_attention_review_cli_dismisses_pending_item(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "calendar",
+            "--kind",
+            "deadline.changed",
+            "--subscribed",
+            "prazo acompanhado mudou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        assessment_row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert assessment_row is not None
+    assessment_event_id = str(assessment_row[0])
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-open",
+            "--attention-event-id",
+            assessment_event_id,
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        item_row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.item.opened'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert item_row is not None
+    item_event_id = str(item_row[0])
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-review",
+            "--item-id",
+            item_event_id,
+            "--decision",
+            "dismiss",
+        ]
+    ) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+
+    assert "Decisão: DISMISS" in output
+    assert "Estado: DISMISSED" in output
+    assert "Autoridade: USER_DECISION" in output
+    assert "Goal criado: não" in output
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-open",
+            "--attention-event-id",
+            assessment_event_id,
+        ]
+    ) == 0
+    reopened_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Estado: DISMISSED" in reopened_output
+    assert "Item criado: não" in reopened_output
+
+    assert main(["--data-dir", str(tmp_path), "executive-next"]) == 0
+    executive_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Executive: DONE" in executive_output
+    assert "Razão: no_open_goal" in executive_output
+
+
+def test_attention_review_cli_materializes_goal_proposal_without_accepting_it(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "monitor",
+            "--kind",
+            "service.degraded",
+            "--subscribed",
+            "serviço degradou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        assessment_row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert assessment_row is not None
+    assessment_event_id = str(assessment_row[0])
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-open",
+            "--attention-event-id",
+            assessment_event_id,
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        item_row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.item.opened'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert item_row is not None
+    item_event_id = str(item_row[0])
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-review",
+            "--item-id",
+            item_event_id,
+            "--decision",
+            "goal",
+            "--title",
+            "Restaurar serviço",
+            "--desired-state",
+            "O serviço voltou ao estado operacional esperado.",
+            "--success-criterion",
+            "O serviço responde normalmente.",
+        ]
+    ) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+
+    assert "Decisão: PROPOSE_GOAL" in output
+    assert "Estado: GOAL_PROPOSED" in output
+    assert "Proposta de Goal: evt_" in output
+    assert "Título: Restaurar serviço" in output
+    assert "Goal criado: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        proposal_row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.goal_proposal.completed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        goal_count_before = connection.execute("SELECT COUNT(*) FROM goals").fetchone()
+    assert proposal_row is not None
+    assert goal_count_before == (0,)
+    proposal_event_id = str(proposal_row[0])
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "goal-accept",
+            proposal_event_id,
+        ]
+    ) == 0
+    accept_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Goal: gol_" in accept_output
+    assert "Título: Restaurar serviço" in accept_output
+    assert "Goal persistido: sim" in accept_output

@@ -13,9 +13,12 @@ from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.assessment_confirmation import confirm_action_assessment
 from simon.attention import (
+    AttentionReviewDecision,
     AttentionSignals,
     assess_observation_attention,
+    get_attention_item_review,
     open_attention_item,
+    review_attention_item,
 )
 from simon.claims import (
     accept_ready_proposed_claim,
@@ -27,6 +30,7 @@ from simon.claims import (
     validate_proposed_claim,
 )
 from simon.cognition import (
+    GoalProposal,
     UserInputInterpretation,
     interpret_user_input,
     propose_goal,
@@ -268,6 +272,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Event attention.assessed com destino ATTEND",
     )
 
+    attention_review = commands.add_parser(
+        "attention-review",
+        help=(
+            "fecha um item ATTEND por decisão humana: dispensar, reconhecer ou "
+            "materializar uma proposta estruturada de Goal"
+        ),
+    )
+    attention_review.add_argument(
+        "--item-id",
+        required=True,
+        help="Event attention.item.opened ainda PENDING",
+    )
+    attention_review.add_argument(
+        "--decision",
+        required=True,
+        choices=("dismiss", "acknowledge", "goal"),
+        help="decisão humana terminal para o item",
+    )
+    attention_review.add_argument(
+        "--title",
+        help="título da proposta de Goal; obrigatório somente com --decision goal",
+    )
+    attention_review.add_argument(
+        "--desired-state",
+        help="estado desejado da proposta; obrigatório somente com --decision goal",
+    )
+    attention_review.add_argument(
+        "--success-criterion",
+        action="append",
+        default=[],
+        help="critério de sucesso; obrigatório ao menos uma vez com --decision goal",
+    )
+    attention_review.add_argument(
+        "--open-question",
+        action="append",
+        default=[],
+        help="questão em aberto opcional da proposta; pode ser repetida",
+    )
+
     claim_propose = commands.add_parser(
         "claim-propose",
         help=(
@@ -408,7 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     goal_accept.add_argument(
         "proposal_event_id",
-        help="ID do Event cognition.goal_proposal.completed que será aceito",
+        help="ID do Event de proposta de Goal concluída que será aceito",
     )
 
     goal_assess = commands.add_parser(
@@ -990,6 +1033,16 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         )
     if args.command == "attention-open":
         return _attention_open(database_path, args.attention_event_id)
+    if args.command == "attention-review":
+        return _attention_review(
+            database_path,
+            args.item_id,
+            args.decision,
+            args.title,
+            args.desired_state,
+            tuple(args.success_criterion),
+            tuple(args.open_question),
+        )
     if args.command == "claim-propose":
         return _claim_propose(
             database_path,
@@ -1267,10 +1320,88 @@ def _attention_open(database_path: Path, attention_event_id: str) -> int:
     print(f"Resumo: {item.summary}")
     print(f"Razões: {', '.join(item.reasons)}")
     print(f"Goal relacionado: {item.event.goal_id or 'nenhum'}")
-    print("Estado: PENDING")
+    review = get_attention_item_review(database_path, item.event.id)
+    current_status = review.status if review is not None else "PENDING"
+    print(f"Estado: {current_status}")
     print(f"Item criado: {'sim' if opening.created else 'não'}")
     print("Foco do Executive alterado: não")
     print("Goal criado: não")
+    return 0
+
+
+def _attention_review(
+    database_path: Path,
+    attention_item_event_id: str,
+    decision: str,
+    title: str | None,
+    desired_state: str | None,
+    success_criteria: tuple[str, ...],
+    open_questions: tuple[str, ...],
+) -> int:
+    decision_map: dict[str, AttentionReviewDecision] = {
+        "dismiss": "DISMISS",
+        "acknowledge": "ACKNOWLEDGE",
+        "goal": "PROPOSE_GOAL",
+    }
+    normalized_decision = decision_map.get(decision)
+    if normalized_decision is None:
+        print(f"Attention review: falha (decisão inválida: {decision})")
+        return 1
+
+    proposal: GoalProposal | None = None
+    if normalized_decision == "PROPOSE_GOAL":
+        if title is None or desired_state is None or not success_criteria:
+            print(
+                "Attention review: falha (--decision goal exige --title, "
+                "--desired-state e ao menos um --success-criterion)"
+            )
+            return 1
+        try:
+            proposal = GoalProposal(
+                title=title,
+                desired_state=desired_state,
+                success_criteria=list(success_criteria),
+                open_questions=list(open_questions),
+            )
+        except ValueError as exc:
+            print(f"Attention review: falha (proposta de Goal inválida: {exc})")
+            return 1
+    elif title is not None or desired_state is not None or success_criteria or open_questions:
+        print(
+            "Attention review: falha (campos de Goal só são aceitos com --decision goal)"
+        )
+        return 1
+
+    try:
+        receipt = review_attention_item(
+            database_path,
+            attention_item_event_id=attention_item_event_id,
+            decision=normalized_decision,
+            goal_proposal=proposal,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Attention review: falha ({exc})")
+        return 1
+
+    review = receipt.review
+    print(f"Attention review: {review.event.id}")
+    print(f"Attention item: {review.attention_item_event_id}")
+    print(f"Decisão: {review.decision}")
+    print(f"Estado: {review.status}")
+    print("Autoridade: USER_DECISION")
+    print(f"Review criada: {'sim' if receipt.created else 'não'}")
+    print("Foco do Executive alterado: não")
+    print("Goal criado: não")
+    if receipt.goal_proposal_event is not None:
+        proposal_payload = receipt.goal_proposal_event.payload.get("proposal")
+        proposal_output = GoalProposal.model_validate(proposal_payload)
+        print(f"Proposta de Goal: {receipt.goal_proposal_event.id}")
+        print(f"Título: {proposal_output.title}")
+        print(f"Estado desejado: {proposal_output.desired_state}")
+        print("Critérios de sucesso:")
+        for criterion in proposal_output.success_criteria:
+            print(f"- {criterion}")
+        print(f"Para aceitar: uv run simon goal-accept {receipt.goal_proposal_event.id}")
     return 0
 
 
@@ -1762,7 +1893,11 @@ def _print_executive_decision(decision: ExecutiveDecision) -> None:
                 f"{attention_candidate.summary} "
                 f"| razões={reasons} | goal={goal}"
             )
-        print("Revisão conversacional de Attention: ainda não implementada neste passo")
+        print(
+            "Revisão técnica: uv run simon attention-review "
+            "--item-id <evt_...> --decision dismiss|acknowledge|goal"
+        )
+        print("Revisão conversacional de Attention: ainda não implementada")
 
     if decision.blockers:
         print("Blockers preservados:")

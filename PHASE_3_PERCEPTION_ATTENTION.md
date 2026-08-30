@@ -612,3 +612,81 @@ Neste passo ainda não existe operação para concluir, dispensar, adiar ou tran
 7. um turno humano pode iniciar ou responder uma proposta de Goal mesmo com Attention pendente;
 8. a CLI expõe `attention-open` sem executar trabalho do item;
 9. o schema SQLite permanece na versão 11.
+
+## Passo 81 - Lifecycle humano de itens ATTEND
+
+Um `attention.item.opened` em `PENDING` passa a possuir um lifecycle terminal explícito, sem dar ao Attention Manager autoridade para escolher trabalho. A revisão é sempre uma decisão humana e pode seguir três caminhos:
+
+```text
+PENDING
+├─ DISMISS       -> DISMISSED
+├─ ACKNOWLEDGE   -> ACKNOWLEDGED
+└─ PROPOSE_GOAL  -> GOAL_PROPOSED
+```
+
+A CLI expõe a fronteira através de:
+
+```powershell
+uv run simon attention-review --item-id evt_... --decision dismiss
+uv run simon attention-review --item-id evt_... --decision acknowledge
+```
+
+`DISMISSED` significa que o usuário removeu conscientemente o item do radar atual. `ACKNOWLEDGED` registra que o sinal foi visto e preservado, mas não deve virar trabalho neste momento. Ambos criam `attention.item.reviewed` com `source=user`, `authority=USER_DECISION`, `effect_applied=true`, `focus_changed=false` e `goal_created=false`.
+
+Depois de qualquer review terminal, o item deixa de aparecer em `list_pending_attention_items()` e, portanto, deixa de alimentar `NEEDS_ATTENTION_REVIEW`. Reexecutar `attention-open` não reabre o compromisso: o mesmo Event de abertura é recuperado e a CLI mostra o estado terminal reconstruído.
+
+### Transformação em proposta de Goal
+
+O terceiro caminho não cria Goal automaticamente. Neste primeiro corte, o usuário precisa fornecer explicitamente o conteúdo estruturado da proposta:
+
+```powershell
+uv run simon attention-review `
+  --item-id evt_... `
+  --decision goal `
+  --title "Restaurar serviço" `
+  --desired-state "O serviço voltou ao estado operacional esperado." `
+  --success-criterion "O serviço responde normalmente."
+```
+
+A operação persiste, na mesma transação, `attention.goal_proposal.completed` e `attention.item.reviewed(status=GOAL_PROPOSED)`. A proposta utiliza o mesmo contrato `GoalProposal` já consumido pelo intake de Goals, mas sua provenance registra `source=user`, `authority=USER_DECISION`, `materialized_by=attention` e `origin=ATTENTION_REVIEW`.
+
+A proposta não cria registro em `goals`. Para materializar o Goal continua sendo necessário um ato separado:
+
+```powershell
+uv run simon goal-accept evt_PROPOSTA
+```
+
+`accept_goal_proposal()` passa a aceitar tanto `cognition.goal_proposal.completed` quanto `attention.goal_proposal.completed`. A aceitação continua criando um Goal `USER/ACTIVE` somente no ciclo posterior.
+
+### Imutabilidade e idempotência
+
+Cada item pode possuir somente uma review terminal. Repetir a mesma decisão recupera o Event existente. Tentar aplicar outra decisão ao mesmo item é recusado.
+
+Para `PROPOSE_GOAL`, a imutabilidade inclui o conteúdo da proposta. Repetir a mesma decisão com título, estado desejado ou critérios diferentes é recusado em vez de substituir silenciosamente a proposta anterior.
+
+Nenhuma review altera `world_revision`, cria Claim, executa capability, troca foreground ou preempta Goal aberto.
+
+### Deliberadamente fora do Passo 81
+
+- revisão conversacional por ordinal ou linguagem natural;
+- formulação automática da proposta de Goal pelo modelo;
+- `DEFERRED` e agendamento de retorno;
+- reabertura de item terminal;
+- criação ou aceitação automática de Goal;
+- aplicação de `INTERRUPT`;
+- ranking entre itens;
+- scheduler/background loop;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 81
+
+1. somente item `attention.item.opened` válido pode ser revisado;
+2. `DISMISS` encerra o item como `DISMISSED`;
+3. `ACKNOWLEDGE` encerra o item como `ACKNOWLEDGED`;
+4. `PROPOSE_GOAL` exige `GoalProposal` estruturada e encerra o item como `GOAL_PROPOSED`;
+5. a proposta de Goal continua separada da criação do Goal;
+6. review repetida com a mesma decisão é idempotente;
+7. decisão diferente ou proposta diferente sobre a mesma review é recusada;
+8. itens revisados deixam de alimentar `NEEDS_ATTENTION_REVIEW`;
+9. nenhuma review altera `world_revision`, foco, Claim ou capability;
+10. o schema SQLite permanece na versão 11.
