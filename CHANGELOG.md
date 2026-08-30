@@ -36,6 +36,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - aceitação humana restrita de Proposed Claims `READY` com `claim-accept-ready`: a confirmação revalida atomicamente que o eixo `subject + predicate` continua sem Claim ativa, persiste `world.claim.accepted` com `source=user`, cria somente uma Claim `DIRECT_OBSERVATION` e avança `world_revision` uma única vez.
 - proposta explícita de resolução para validations `CONFLICT` com `claim-conflict-propose`: o usuário escolhe como vencedor a Proposed Claim ou uma Claim `ACTIVE` participante do snapshot, gerando `world.claim.conflict.resolution.proposed` sem supersede, sem escrita no Belief Store e com rechecagem do conjunto ativo antes de registrar a decisão.
 - aplicação atômica de resolução com `claim-conflict-apply`: o snapshot é rechecado novamente, a Proposed Claim vencedora pode materializar uma nova Claim `ACTIVE` e a Claim ativa vencedora pode superseder somente concorrentes; qualquer mudança material avança `world_revision` uma única vez e a operação é idempotente.
+- binding de evidência para validations `DUPLICATE` com `claim-bind-duplicate-evidence`: uma nova observação equivalente reforça as Claims `ACTIVE` já existentes ao anexar a nova cadeia de evidências sem criar Claim duplicada, mudar valor/status ou avançar `world_revision`; o snapshot é rechecado e a operação é idempotente por validation.
 
 ## [0.1.0] - 2026-08-19
 

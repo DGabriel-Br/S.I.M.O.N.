@@ -15,6 +15,7 @@ TERMINAL_STATUSES = {"SUPERSEDED", "RETRACTED", "EXPIRED"}
 PROPOSED_CLAIM_EVENT_KIND = "world.claim.proposed"
 CLAIM_VALIDATION_EVENT_KIND = "world.claim.validation.completed"
 CLAIM_ACCEPTED_EVENT_KIND = "world.claim.accepted"
+CLAIM_EVIDENCE_BOUND_EVENT_KIND = "world.claim.evidence.bound"
 CLAIM_CONFLICT_RESOLUTION_EVENT_KIND = "world.claim.conflict.resolution.proposed"
 CLAIM_CONFLICT_RESOLUTION_APPLIED_EVENT_KIND = "world.claim.conflict.resolution.applied"
 CLAIM_VALIDATION_OUTCOMES = {"READY", "DUPLICATE", "CONFLICT"}
@@ -48,6 +49,16 @@ class ClaimValidation:
 class ClaimAcceptance:
     claim: Claim
     event: Event
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimEvidenceBinding:
+    event: Event
+    validation_event_id: str
+    proposed_claim_event_id: str
+    bound_claims: tuple[Claim, ...]
+    evidence_event_ids_added: tuple[str, ...]
     created: bool
 
 
@@ -810,6 +821,236 @@ def apply_claim_conflict_resolution(
     )
 
 
+def bind_duplicate_claim_evidence(
+    database_path: Path,
+    *,
+    validation_event_id: str,
+) -> ClaimEvidenceBinding:
+    """Anexa nova evidência a Claims equivalentes sem mudar a visão atual do World."""
+    normalized_validation_event_id = validation_event_id.strip()
+    if not normalized_validation_event_id:
+        raise ValueError("duplicate evidence binding exige validation_event_id")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        validation_row = connection.execute(
+            """
+            SELECT payload_json, trace_id, related_entity_ids_json, goal_id, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (normalized_validation_event_id, CLAIM_VALIDATION_EVENT_KIND),
+        ).fetchone()
+        if validation_row is None:
+            raise ValueError(
+                "duplicate evidence binding exige world.claim.validation.completed existente: "
+                f"{normalized_validation_event_id}"
+            )
+        if str(validation_row[4]) != "world":
+            raise ValueError("claim validation não possui autoridade de origem esperada")
+
+        validation_payload = json.loads(str(validation_row[0]))
+        if not isinstance(validation_payload, dict):
+            raise TypeError("payload da claim validation possui tipo inválido")
+        proposed_claim_event_id = _required_payload_string(
+            validation_payload,
+            "proposed_claim_event_id",
+            context="claim validation",
+        )
+        if validation_payload.get("outcome") != "DUPLICATE":
+            raise ValueError(
+                "duplicate evidence binding exige validation DUPLICATE; "
+                f"outcome atual: {validation_payload.get('outcome')}"
+            )
+        if validation_payload.get("effect_applied") is not False:
+            raise ValueError("claim validation já possui efeito aplicado")
+
+        active_claim_ids = _required_payload_string_tuple(
+            validation_payload,
+            "active_claim_ids",
+            context="claim validation",
+        )
+        matching_claim_ids = _required_payload_string_tuple(
+            validation_payload,
+            "matching_claim_ids",
+            context="claim validation",
+        )
+        conflicting_claim_ids = _required_payload_string_tuple(
+            validation_payload,
+            "conflicting_claim_ids",
+            context="claim validation",
+        )
+        if not matching_claim_ids:
+            raise ValueError("validation DUPLICATE não possui Claim equivalente")
+        if conflicting_claim_ids:
+            raise ValueError("validation DUPLICATE contém conflito persistido")
+        if active_claim_ids != matching_claim_ids:
+            raise ValueError("validation DUPLICATE possui snapshot inconsistente")
+
+        existing = _find_claim_evidence_binding_in_connection(
+            connection,
+            validation_event_id=normalized_validation_event_id,
+        )
+        if existing is not None:
+            bound_claims = tuple(
+                _require_claim_in_connection(connection, claim_id)
+                for claim_id in existing[1]
+            )
+            return ClaimEvidenceBinding(
+                event=existing[0],
+                validation_event_id=normalized_validation_event_id,
+                proposed_claim_event_id=proposed_claim_event_id,
+                bound_claims=bound_claims,
+                evidence_event_ids_added=existing[2],
+                created=False,
+            )
+
+        proposal_row = connection.execute(
+            """
+            SELECT payload_json, trace_id, related_entity_ids_json, goal_id, source
+            FROM events
+            WHERE id = ? AND kind = ?
+            """,
+            (proposed_claim_event_id, PROPOSED_CLAIM_EVENT_KIND),
+        ).fetchone()
+        if proposal_row is None:
+            raise ValueError(f"proposed claim não encontrada: {proposed_claim_event_id}")
+        if str(proposal_row[4]) != "perception":
+            raise ValueError(
+                "duplicate evidence binding deste passo exige proposta originada em perception"
+            )
+
+        proposal_payload = json.loads(str(proposal_row[0]))
+        if not isinstance(proposal_payload, dict):
+            raise TypeError("payload da proposed claim possui tipo inválido")
+        subject_id = _required_payload_string(
+            proposal_payload,
+            "subject_id",
+            context="proposed claim",
+        )
+        predicate = _required_payload_string(
+            proposal_payload,
+            "predicate",
+            context="proposed claim",
+        )
+        epistemic_status = _required_payload_string(
+            proposal_payload,
+            "epistemic_status",
+            context="proposed claim",
+        )
+        if epistemic_status != "DIRECT_OBSERVATION":
+            raise ValueError(
+                "duplicate evidence binding deste passo exige DIRECT_OBSERVATION"
+            )
+        raw_evidence_event_ids = _required_payload_string_tuple(
+            proposal_payload,
+            "evidence_event_ids",
+            context="proposed claim",
+        )
+        if proposal_payload.get("status") != "PROPOSED":
+            raise ValueError("proposed claim não está disponível para confirmação")
+        if proposal_payload.get("effect_applied") is not False:
+            raise ValueError("proposed claim já possui efeito aplicado")
+
+        current_rows = connection.execute(
+            _claim_select()
+            + " WHERE subject_id = ? AND predicate = ? AND status = 'ACTIVE' "
+            "ORDER BY learned_at, id",
+            (subject_id, predicate),
+        ).fetchall()
+        current_claims = tuple(_claim_from_row(row) for row in current_rows)
+        current_active_claim_ids = tuple(claim.id for claim in current_claims)
+        if current_active_claim_ids != active_claim_ids:
+            raise ValueError(
+                "Belief Store mudou após validation DUPLICATE; "
+                "execute claim-validate novamente"
+            )
+        if any(
+            claim.value != proposal_payload.get("value")
+            or claim.epistemic_status != epistemic_status
+            for claim in current_claims
+        ):
+            raise ValueError(
+                "Belief Store deixou de ser equivalente após validation DUPLICATE; "
+                "execute claim-validate novamente"
+            )
+
+        binding_event_id = f"evt_{uuid4().hex}"
+        evidence_event_ids_added = tuple(
+            dict.fromkeys(
+                (
+                    *raw_evidence_event_ids,
+                    normalized_validation_event_id,
+                    binding_event_id,
+                )
+            )
+        )
+        binding_event = Event(
+            id=binding_event_id,
+            kind=CLAIM_EVIDENCE_BOUND_EVENT_KIND,
+            occurred_at=datetime.now(UTC),
+            source="world",
+            payload={
+                "validation_event_id": normalized_validation_event_id,
+                "proposed_claim_event_id": proposed_claim_event_id,
+                "bound_claim_ids": list(current_active_claim_ids),
+                "evidence_event_ids_added": list(evidence_event_ids_added),
+                "basis": "DETERMINISTIC_EQUIVALENCE",
+                "claim_evidence_updated": True,
+                "current_world_view_changed": False,
+                "effect_applied": True,
+            },
+            trace_id=(
+                str(validation_row[1])
+                if validation_row[1] is not None
+                else str(proposal_row[1])
+                if proposal_row[1] is not None
+                else proposed_claim_event_id
+            ),
+            related_entity_ids=_string_tuple_from_json(
+                validation_row[2],
+                field="related_entity_ids",
+            ),
+            goal_id=str(validation_row[3]) if validation_row[3] is not None else None,
+        )
+
+        for claim in current_claims:
+            merged_evidence = tuple(
+                dict.fromkeys((*claim.evidence_event_ids, *evidence_event_ids_added))
+            )
+            cursor = connection.execute(
+                """
+                UPDATE claims
+                SET evidence_event_ids_json = ?
+                WHERE id = ? AND status = 'ACTIVE'
+                """,
+                (
+                    json.dumps(merged_evidence, separators=(",", ":")),
+                    claim.id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    "snapshot mudou durante confirmação de Claim DUPLICATE"
+                )
+
+        _insert_event_in_connection(connection, binding_event)
+        bound_claims = tuple(
+            _require_claim_in_connection(connection, claim_id)
+            for claim_id in current_active_claim_ids
+        )
+
+    return ClaimEvidenceBinding(
+        event=binding_event,
+        validation_event_id=normalized_validation_event_id,
+        proposed_claim_event_id=proposed_claim_event_id,
+        bound_claims=bound_claims,
+        evidence_event_ids_added=evidence_event_ids_added,
+        created=True,
+    )
+
+
 def accept_ready_proposed_claim(
     database_path: Path,
     *,
@@ -1028,6 +1269,66 @@ def _find_existing_claim_acceptance_in_connection(
     return None
 
 
+
+def _find_claim_evidence_binding_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    validation_event_id: str,
+) -> tuple[Event, tuple[str, ...], tuple[str, ...]] | None:
+    rows = connection.execute(
+        """
+        SELECT
+            id, occurred_at, source, payload_json, trace_id,
+            related_entity_ids_json, goal_id, experience_id
+        FROM events
+        WHERE kind = ?
+        ORDER BY occurred_at DESC, rowid DESC
+        """,
+        (CLAIM_EVIDENCE_BOUND_EVENT_KIND,),
+    ).fetchall()
+    for row in rows:
+        payload = json.loads(str(row[3]))
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("validation_event_id") != validation_event_id:
+            continue
+        event = Event(
+            id=str(row[0]),
+            kind=CLAIM_EVIDENCE_BOUND_EVENT_KIND,
+            occurred_at=datetime.fromisoformat(str(row[1])),
+            source=str(row[2]),
+            payload=payload,
+            trace_id=str(row[4]) if row[4] is not None else None,
+            related_entity_ids=_string_tuple_from_json(
+                row[5],
+                field="related_entity_ids",
+            ),
+            goal_id=str(row[6]) if row[6] is not None else None,
+            experience_id=str(row[7]) if row[7] is not None else None,
+        )
+        bound_claim_ids = _required_payload_string_tuple(
+            payload,
+            "bound_claim_ids",
+            context="duplicate evidence binding",
+        )
+        evidence_event_ids_added = _required_payload_string_tuple(
+            payload,
+            "evidence_event_ids_added",
+            context="duplicate evidence binding",
+        )
+        return event, bound_claim_ids, evidence_event_ids_added
+    return None
+
+
+def _require_claim_in_connection(
+    connection: sqlite3.Connection,
+    claim_id: str,
+) -> Claim:
+    row = connection.execute(_claim_select() + " WHERE id = ?", (claim_id,)).fetchone()
+    if row is None:
+        raise RuntimeError(f"Claim referenciada não encontrada: {claim_id}")
+    return _claim_from_row(row)
+
 def _find_conflict_resolution_application_in_connection(
     connection: sqlite3.Connection,
     *,
@@ -1083,6 +1384,18 @@ def _required_payload_string(
     if not isinstance(raw, str) or not raw.strip():
         raise TypeError(f"{context} sem {field} válido")
     return raw
+
+
+def _required_payload_string_tuple(
+    payload: dict[str, object],
+    field: str,
+    *,
+    context: str,
+) -> tuple[str, ...]:
+    raw = payload.get(field)
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise TypeError(f"{context} sem {field} válido")
+    return tuple(raw)
 
 
 def _required_payload_bool(

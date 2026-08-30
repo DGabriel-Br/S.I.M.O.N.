@@ -488,3 +488,60 @@ uv run simon claim-conflict-apply --resolution-event-id evt_...
 8. a aplicação é idempotente;
 9. o schema SQLite permanece na versão 11.
 
+## Passo 79 - DUPLICATE -> evidence binding na Claim existente
+
+Uma validation `DUPLICATE` passa a preservar a nova evidência sem criar uma segunda Claim para o mesmo fato:
+
+```text
+world.claim.validation.completed(outcome=DUPLICATE)
+↓
+claim-bind-duplicate-evidence
+↓
+world.claim.evidence.bound
+↓
+Claim ACTIVE existente recebe novas evidence_event_ids
+↓
+valor/status/claim_id inalterados
+world_revision inalterada
+```
+
+O contrato inicial continua restrito a Proposed Claims originadas em `perception` com `epistemic_status=DIRECT_OBSERVATION`. A validation precisa conter somente Claims equivalentes: `active_claim_ids` e `matching_claim_ids` devem representar o mesmo snapshot e `conflicting_claim_ids` precisa estar vazio.
+
+Antes do binding, o sistema abre `BEGIN IMMEDIATE` e reconsulta o eixo `subject + predicate`. O conjunto atual de Claims `ACTIVE` precisa continuar exatamente igual ao snapshot validado, e todas precisam continuar equivalentes ao `value + epistemic_status` da Proposed Claim. Qualquer mudança exige novo `claim-validate`.
+
+O Event `world.claim.evidence.bound` usa `source=world`, referencia validation, Proposed Claim e Claims vinculadas, registra `basis=DETERMINISTIC_EQUIVALENCE`, `claim_evidence_updated=true`, `current_world_view_changed=false` e `effect_applied=true`.
+
+Cada Claim equivalente preserva suas evidências anteriores e recebe, sem duplicação, a Observation e o Attention assessment da Proposed Claim, a validation `DUPLICATE` e o próprio Event de binding. Não nasce nova Claim e nenhuma Claim muda de status.
+
+Como `world_revision` representa alterações na visão corrente das Claims e não simples enriquecimento de provenance, o binding não avança a revisão. Isso evita invalidar Plans apenas porque uma crença já corrente recebeu evidência adicional.
+
+A operação é idempotente por `validation_event_id`. Repetir o mesmo comando retorna o binding já persistido e não anexa novamente a mesma cadeia.
+
+A CLI expõe a borda explicitamente:
+
+```powershell
+uv run simon claim-bind-duplicate-evidence --validation-event-id evt_...
+```
+
+### Deliberadamente fora do Passo 79
+
+- confidence score derivado da quantidade de evidências;
+- escolha de melhor observer;
+- recência como autoridade;
+- merge semântico de valores;
+- alteração de `learned_at` da Claim original;
+- aplicação de `ATTEND` ou `INTERRUPT`;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 79
+
+1. somente validation `DUPLICATE` alimenta o binding;
+2. o snapshot é rechecado dentro de `BEGIN IMMEDIATE`;
+3. snapshot obsoleto exige nova validation;
+4. nenhuma Claim nova é criada;
+5. Claims equivalentes preservam evidências anteriores e recebem a nova cadeia;
+6. valor, estado epistemológico, status e `claim_id` permanecem inalterados;
+7. `world_revision` não avança;
+8. repetir o mesmo binding é idempotente;
+9. o schema SQLite permanece na versão 11.
+

@@ -7,9 +7,11 @@ from simon.claims import (
     Claim,
     ClaimConflictResolutionApplication,
     ClaimConflictResolutionProposal,
+    ClaimEvidenceBinding,
     ProposedClaim,
     accept_ready_proposed_claim,
     apply_claim_conflict_resolution,
+    bind_duplicate_claim_evidence,
     get_claim,
     get_claim_conflict_resolution_proposal,
     get_claim_validation,
@@ -377,6 +379,194 @@ def test_claim_validation_requires_proposed_claim_event(tmp_path: Path) -> None:
             database_path,
             proposed_claim_event_id=attention_event_id,
         )
+
+
+
+def _create_duplicate_validation(
+    tmp_path: Path,
+) -> tuple[Path, Entity, ProposedClaim, Claim, object]:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    original_evidence = Event.create(kind="file.snapshot.recorded", source="test")
+    append_event(database_path, original_evidence)
+    active = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value=proposal.value,
+        epistemic_status=proposal.epistemic_status,
+        evidence_event_ids=(original_evidence.id,),
+    )
+    insert_claim(database_path, active)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    assert validation.outcome == "DUPLICATE"
+    return database_path, subject, proposal, active, validation
+
+
+def test_duplicate_evidence_binding_appends_evidence_without_creating_claim_or_world_revision(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal, active, validation = _create_duplicate_validation(
+        tmp_path
+    )
+    before_revision = get_world_revision(database_path)
+
+    binding = bind_duplicate_claim_evidence(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+
+    assert isinstance(binding, ClaimEvidenceBinding)
+    assert binding.created is True
+    assert binding.event.kind == "world.claim.evidence.bound"
+    assert binding.event.source == "world"
+    assert binding.validation_event_id == validation.event.id
+    assert binding.proposed_claim_event_id == proposal.event.id
+    assert tuple(claim.id for claim in binding.bound_claims) == (active.id,)
+    assert binding.event.payload["basis"] == "DETERMINISTIC_EQUIVALENCE"
+    assert binding.event.payload["claim_evidence_updated"] is True
+    assert binding.event.payload["current_world_view_changed"] is False
+    assert binding.event.payload["effect_applied"] is True
+    assert proposal.evidence_event_ids[0] in binding.evidence_event_ids_added
+    assert proposal.attention_event_id in binding.evidence_event_ids_added
+    assert validation.event.id in binding.evidence_event_ids_added
+    assert binding.event.id in binding.evidence_event_ids_added
+
+    stored = get_claim(database_path, active.id)
+    assert stored is not None
+    assert stored.status == "ACTIVE"
+    assert active.evidence_event_ids[0] in stored.evidence_event_ids
+    assert all(
+        event_id in stored.evidence_event_ids
+        for event_id in binding.evidence_event_ids_added
+    )
+    assert list_active_claims(
+        database_path,
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+    ) == (stored,)
+    assert get_event(database_path, binding.event.id) == binding.event
+    assert get_world_revision(database_path) == before_revision
+
+
+def test_duplicate_evidence_binding_is_idempotent_per_validation(tmp_path: Path) -> None:
+    database_path, _, _, active, validation = _create_duplicate_validation(tmp_path)
+
+    first = bind_duplicate_claim_evidence(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+    after_first = get_claim(database_path, active.id)
+    after_first_revision = get_world_revision(database_path)
+    repeated = bind_duplicate_claim_evidence(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+
+    assert repeated.created is False
+    assert repeated.event == first.event
+    assert repeated.bound_claims == first.bound_claims
+    assert repeated.evidence_event_ids_added == first.evidence_event_ids_added
+    assert get_claim(database_path, active.id) == after_first
+    assert get_world_revision(database_path) == after_first_revision
+
+
+def test_duplicate_evidence_binding_rechecks_belief_store_snapshot(tmp_path: Path) -> None:
+    database_path, subject, proposal, active, validation = _create_duplicate_validation(
+        tmp_path
+    )
+    late = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value={"state": "late"},
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, late)
+    before_binding = get_claim(database_path, active.id)
+    before_revision = get_world_revision(database_path)
+
+    with pytest.raises(ValueError, match="Belief Store mudou"):
+        bind_duplicate_claim_evidence(
+            database_path,
+            validation_event_id=validation.event.id,
+        )
+
+    assert get_claim(database_path, active.id) == before_binding
+    assert get_world_revision(database_path) == before_revision
+
+
+@pytest.mark.parametrize("outcome_kind", ["READY", "CONFLICT"])
+def test_duplicate_evidence_binding_rejects_non_duplicate_validation(
+    tmp_path: Path,
+    outcome_kind: str,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    if outcome_kind == "CONFLICT":
+        insert_claim(
+            database_path,
+            Claim.create(
+                subject_id=subject.id,
+                predicate=proposal.predicate,
+                value={"state": "other"},
+                epistemic_status=proposal.epistemic_status,
+            ),
+        )
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    assert validation.outcome == outcome_kind
+
+    with pytest.raises(ValueError, match="validation DUPLICATE"):
+        bind_duplicate_claim_evidence(
+            database_path,
+            validation_event_id=validation.event.id,
+        )
+
+
+def test_duplicate_evidence_binding_updates_all_equivalent_active_claims(
+    tmp_path: Path,
+) -> None:
+    database_path, subject, proposal = _create_proposed_claim(tmp_path)
+    first = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value=proposal.value,
+        epistemic_status=proposal.epistemic_status,
+    )
+    second = Claim.create(
+        subject_id=subject.id,
+        predicate=proposal.predicate,
+        value=proposal.value,
+        epistemic_status=proposal.epistemic_status,
+    )
+    insert_claim(database_path, first)
+    insert_claim(database_path, second)
+    validation = validate_proposed_claim(
+        database_path,
+        proposed_claim_event_id=proposal.event.id,
+    )
+    assert validation.outcome == "DUPLICATE"
+    before_revision = get_world_revision(database_path)
+
+    binding = bind_duplicate_claim_evidence(
+        database_path,
+        validation_event_id=validation.event.id,
+    )
+
+    assert tuple(claim.id for claim in binding.bound_claims) == (
+        first.id,
+        second.id,
+    )
+    for claim_id in (first.id, second.id):
+        stored = get_claim(database_path, claim_id)
+        assert stored is not None
+        assert all(
+            event_id in stored.evidence_event_ids
+            for event_id in binding.evidence_event_ids_added
+        )
+    assert get_world_revision(database_path) == before_revision
 
 
 def test_ready_proposed_claim_can_be_accepted_only_by_explicit_user_authority(

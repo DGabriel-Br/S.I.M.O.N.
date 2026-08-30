@@ -16,6 +16,7 @@ from simon.attention import AttentionSignals, assess_observation_attention
 from simon.claims import (
     accept_ready_proposed_claim,
     apply_claim_conflict_resolution,
+    bind_duplicate_claim_evidence,
     propose_claim_conflict_resolution,
     propose_claim_from_attention,
     set_current_claim,
@@ -302,6 +303,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--validation-event-id",
         required=True,
         help="Event world.claim.validation.completed com outcome READY",
+    )
+
+    claim_bind_duplicate_evidence = commands.add_parser(
+        "claim-bind-duplicate-evidence",
+        help=(
+            "anexa a evidência de uma Proposed Claim DUPLICATE às Claims equivalentes "
+            "sem criar nova Claim nem avançar o World"
+        ),
+    )
+    claim_bind_duplicate_evidence.add_argument(
+        "--validation-event-id",
+        required=True,
+        help="Event world.claim.validation.completed com outcome DUPLICATE",
     )
 
     claim_conflict_propose = commands.add_parser(
@@ -969,6 +983,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         return _claim_validate(database_path, args.proposal_event_id)
     if args.command == "claim-accept-ready":
         return _claim_accept_ready(database_path, args.validation_event_id)
+    if args.command == "claim-bind-duplicate-evidence":
+        return _claim_bind_duplicate_evidence(database_path, args.validation_event_id)
     if args.command == "claim-conflict-propose":
         return _claim_conflict_propose(
             database_path,
@@ -1301,6 +1317,36 @@ def _claim_accept_ready(database_path: Path, validation_event_id: str) -> int:
         print("Aceitação criada: sim")
     else:
         print("Aceitação criada: não (a proposta já havia sido aceita)")
+    return 0
+
+
+def _claim_bind_duplicate_evidence(database_path: Path, validation_event_id: str) -> int:
+    try:
+        binding = bind_duplicate_claim_evidence(
+            database_path,
+            validation_event_id=validation_event_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Claim evidence binding: falha ({exc})")
+        return 1
+
+    print(f"Claim evidence binding: {binding.event.id}")
+    print(f"Validation: {binding.validation_event_id}")
+    print(f"Proposed Claim: {binding.proposed_claim_event_id}")
+    print(
+        "Claims vinculadas: "
+        + ", ".join(claim.id for claim in binding.bound_claims)
+    )
+    print(f"Novas evidências vinculadas: {len(binding.evidence_event_ids_added)}")
+    print("Nova Claim criada: não")
+    print("Evidência da Claim atualizada: sim")
+    print("Visão atual do World alterada: não")
+    print("World revision alterada: não")
+    print(
+        "Binding criado: sim"
+        if binding.created
+        else "Binding criado: não (validation já vinculada)"
+    )
     return 0
 
 

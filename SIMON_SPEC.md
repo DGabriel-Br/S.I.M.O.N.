@@ -391,6 +391,12 @@ Se `winner_kind=PROPOSED_CLAIM`, todas as Claims `ACTIVE` do snapshot são `SUPE
 
 Mudanças materiais de Belief Store, Event de aplicação e eventual nova Claim pertencem à mesma transação e avançam `world_revision` exatamente uma vez. Snapshot divergente bloqueia a aplicação e exige nova validation e nova resolução. A operação é idempotente por resolução. Nenhum modelo, score ou política de recência pode escolher o vencedor nesta fronteira.
 
+### 8.13. Evidence binding para Proposed Claim duplicada
+
+Uma validation `DUPLICATE` de `DIRECT_OBSERVATION` pode enriquecer a evidência das Claims `ACTIVE` equivalentes sem criar uma nova crença. O subsistema World revalida atomicamente o snapshot, persiste `world.claim.evidence.bound` e acrescenta Observation, Attention assessment, validation e o Event de binding às `evidence_event_ids` das Claims equivalentes.
+
+Esse efeito altera provenance, não a visão corrente do World: `claim_id`, `value`, `epistemic_status`, `status` e `learned_at` permanecem iguais e `world_revision` não avança. Snapshot divergente exige nova validation e a operação é idempotente por `validation_event_id`. Quantidade de evidências não é convertida em confidence score ou autoridade automática.
+
 ---
 
 ## 9. Attention e Executive

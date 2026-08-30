@@ -864,13 +864,21 @@ uv run simon claim-validate --proposal-event-id evt_...
 
 A validação persiste `world.claim.validation.completed` e produz `READY` quando não existe Claim ativa para o mesmo `subject + predicate`, `DUPLICATE` quando já existe uma Claim equivalente com o mesmo valor e estado epistemológico, ou `CONFLICT` quando existe ao menos uma Claim ativa diferente. `CONFLICT` tem precedência quando coexistem Claims equivalentes e divergentes. O resultado continua com `effect_applied=false`: nenhuma Claim é criada, supersedida ou removida e `world_revision` não avança. `READY` significa somente que não existe concorrência ativa nesse eixo, não que a proposta seja verdadeira em sentido universal ou validada por domínio.
 
+Uma `DUPLICATE` de `DIRECT_OBSERVATION` pode preservar a nova evidência sem criar outra Claim:
+
+```powershell
+uv run simon claim-bind-duplicate-evidence --validation-event-id evt_...
+```
+
+O binding persiste `world.claim.evidence.bound`, revalida dentro de `BEGIN IMMEDIATE` que o conjunto de Claims `ACTIVE` continua igual ao snapshot `DUPLICATE` e anexa Observation, Attention, validation e o próprio Event de binding a `evidence_event_ids` das Claims equivalentes. Valor, estado epistemológico, status e `claim_id` permanecem iguais. Como a visão corrente do World não mudou, `world_revision` não avança. Repetir o mesmo binding é idempotente.
+
 Uma `READY` de `DIRECT_OBSERVATION` pode então atravessar a primeira fronteira de escrita somente por confirmação humana explícita:
 
 ```powershell
 uv run simon claim-accept-ready --validation-event-id evt_...
 ```
 
-O comando persiste `world.claim.accepted` com `source=user` e `authority=USER_CONFIRMATION`, cria a Claim `ACTIVE` e avança `world_revision` uma vez. Antes da escrita, o mesmo `subject + predicate` é consultado novamente dentro de `BEGIN IMMEDIATE`; se qualquer Claim ativa surgiu depois da validação `READY`, a aceitação é recusada e exige nova validação. O contrato não usa `set_current_claim()`, portanto não supersede Claims existentes. Repetir a mesma confirmação é idempotente e não altera novamente o World. `DUPLICATE`, `CONFLICT` e estados epistemológicos diferentes de `DIRECT_OBSERVATION` continuam sem caminho de aceitação neste corte.
+O comando persiste `world.claim.accepted` com `source=user` e `authority=USER_CONFIRMATION`, cria a Claim `ACTIVE` e avança `world_revision` uma vez. Antes da escrita, o mesmo `subject + predicate` é consultado novamente dentro de `BEGIN IMMEDIATE`; se qualquer Claim ativa surgiu depois da validação `READY`, a aceitação é recusada e exige nova validação. O contrato não usa `set_current_claim()`, portanto não supersede Claims existentes. Repetir a mesma confirmação é idempotente e não altera novamente o World. `DUPLICATE` possui somente o caminho de evidence binding descrito acima; `CONFLICT` e estados epistemológicos diferentes de `DIRECT_OBSERVATION` não atravessam esta aceitação `READY`.
 
 Uma validation `CONFLICT` também pode agora receber uma **proposta de resolução**, ainda sem qualquer efeito no Belief Store:
 

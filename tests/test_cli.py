@@ -2558,6 +2558,165 @@ def test_claim_accept_ready_cli_requires_human_confirmation_before_world_change(
     assert after_revision == (int(before_revision[0]) + 1,)
 
 
+
+def test_claim_bind_duplicate_evidence_cli_preserves_new_evidence_without_new_claim(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(["--data-dir", str(tmp_path)]) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "storage-monitor",
+            "--kind",
+            "storage.schema.observed",
+            "--entity-id",
+            SIMON_ENTITY_ID,
+            "--world-change",
+            "schema",
+            "continua",
+            "11",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        attention = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        before_claim = connection.execute(
+            """
+            SELECT id, evidence_event_ids_json
+            FROM claims
+            WHERE subject_id = ?
+              AND predicate = 'storage.schema_version'
+              AND status = 'ACTIVE'
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchone()
+        before_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+    assert attention is not None
+    assert before_claim is not None
+    assert before_revision is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-propose",
+            "--attention-event-id",
+            str(attention[0]),
+            "--subject-id",
+            SIMON_ENTITY_ID,
+            "--predicate",
+            "storage.schema_version",
+            "--value-json",
+            "11",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        proposal = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'world.claim.proposed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert proposal is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-validate",
+            "--proposal-event-id",
+            str(proposal[0]),
+        ]
+    ) == 0
+    validation_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Outcome: DUPLICATE" in validation_output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        validation = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'world.claim.validation.completed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert validation is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "claim-bind-duplicate-evidence",
+            "--validation-event-id",
+            str(validation[0]),
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Claim evidence binding: evt_" in output
+    assert f"Validation: {validation[0]}" in output
+    assert f"Claims vinculadas: {before_claim[0]}" in output
+    assert "Nova Claim criada: não" in output
+    assert "Evidência da Claim atualizada: sim" in output
+    assert "Visão atual do World alterada: não" in output
+    assert "World revision alterada: não" in output
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        claims = connection.execute(
+            """
+            SELECT id, evidence_event_ids_json, status
+            FROM claims
+            WHERE subject_id = ? AND predicate = 'storage.schema_version'
+            ORDER BY learned_at, id
+            """,
+            (SIMON_ENTITY_ID,),
+        ).fetchall()
+        binding = connection.execute(
+            """
+            SELECT source, payload_json
+            FROM events
+            WHERE kind = 'world.claim.evidence.bound'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+        after_revision = connection.execute(
+            "SELECT revision FROM world_state WHERE singleton = 1"
+        ).fetchone()
+
+    assert len(claims) == 1
+    assert claims[0][0] == before_claim[0]
+    assert claims[0][2] == "ACTIVE"
+    before_evidence = tuple(json.loads(str(before_claim[1])))
+    after_evidence = tuple(json.loads(str(claims[0][1])))
+    assert len(after_evidence) > len(before_evidence)
+    assert all(event_id in after_evidence for event_id in before_evidence)
+    assert binding is not None
+    assert binding[0] == "world"
+    payload = json.loads(str(binding[1]))
+    assert payload["bound_claim_ids"] == [str(before_claim[0])]
+    assert payload["basis"] == "DETERMINISTIC_EQUIVALENCE"
+    assert payload["current_world_view_changed"] is False
+    assert payload["effect_applied"] is True
+    assert after_revision == before_revision
+
+
 def test_claim_conflict_propose_cli_records_user_choice_without_supersede(
     tmp_path: Path,
     capsys: object,
