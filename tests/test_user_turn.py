@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from simon.actions import list_actions_for_plan
+from simon.attention import AttentionSignals, assess_observation_attention, open_attention_item
 from simon.cli import main
 from simon.cognition import GoalProposal, UserInputInterpretation
 from simon.events import get_event
@@ -16,6 +17,7 @@ from simon.goal_verification import (
 )
 from simon.goals import Goal, get_goal, insert_goal, list_open_goals
 from simon.model_provider import StructuredModelResult
+from simon.perception import record_observation
 from simon.planning import PlanIntentDraft, PlanIntentStep
 from simon.plans import create_plan, list_plans_for_goal
 from simon.storage import initialize_storage
@@ -1043,3 +1045,61 @@ def test_pending_goal_proposal_blocks_continue_until_answered(tmp_path: Path) ->
     pending = find_latest_pending_conversational_goal_proposal(database_path)
     assert pending is not None
     assert pending.id == proposed.effect_id
+
+
+def _pending_attend(database_path: Path) -> None:
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="item de atenção pendente",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(subscribed=True),
+    )
+    open_attention_item(database_path, attention_event_id=assessment.event.id)
+
+
+def test_user_foreground_request_can_propose_goal_while_attend_is_pending(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _pending_attend(database_path)
+
+    receipt = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "PROPOSE"
+    assert receipt.effect_type == "goal.proposal"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.final_decision.outcome == "NEEDS_ATTENTION_REVIEW"
+    assert list_open_goals(database_path) == ()
+
+
+def test_pending_goal_proposal_response_outranks_idle_attend_review(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _pending_attend(database_path)
+    proposed = handle_user_turn(
+        database_path,
+        "Corrija a falha do script",
+        provider=GoalIntakeProvider(),
+        model="fake-model",
+    )
+    assert proposed.effect_type == "goal.proposal"
+
+    receipt = handle_user_turn(database_path, "sim")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "ACCEPT"
+    assert receipt.effect_type == "goal.accepted"
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.final_decision.outcome == "PROCEED"
+    assert receipt.executive_receipt.final_decision.operation == "plan.propose"
+    assert len(list_open_goals(database_path)) == 1

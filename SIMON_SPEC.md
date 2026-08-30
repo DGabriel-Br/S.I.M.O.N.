@@ -476,6 +476,14 @@ Pequenas mudanças de prioridade não devem causar thrashing constante.
 
 O primeiro Attention Manager implementado é deliberadamente determinístico e não aplica efeitos. Sinais explícitos de urgência/risco classificam como `INTERRUPT`; relevância ao Goal/subscription como `ATTEND`; mudança candidata do World como `UPDATE_WORLD`; ruído conhecido como `IGNORE`; demais observações como `RECORD`. A avaliação é persistida em `attention.assessed` com `effect_applied=false`. Aplicação ao World, mudança de foco e interrupção real permanecem responsabilidades separadas.
 
+### 9.8. Materialização persistente de ATTEND
+
+Um assessment com destino `ATTEND` pode ser materializado explicitamente como `attention.item.opened`. O item preserva Observation, assessment, resumo, razões, Goal e Entities relacionados, usa `status=PENDING` e registra `focus_changed=false` e `goal_created=false`. A mesma avaliação não pode abrir múltiplos itens; a materialização é idempotente.
+
+Quando não existe Goal aberto e há itens `PENDING`, o Executive pode retornar `NEEDS_ATTENTION_REVIEW` em vez de `DONE/no_open_goal`, expondo os itens em ordem de chegada. Essa ordem não é ranking de importância. `ATTEND` não preempta Goal foreground, não cria Goal e não altera Focus.
+
+Foreground humano continua superior a uma pendência passiva de Attention: um turno explícito pode propor um novo Goal e uma proposta de Goal já pendente pode ser respondida mesmo quando o Executive está mostrando `NEEDS_ATTENTION_REVIEW`. A revisão, resolução ou transformação do item em trabalho permanece um contrato posterior.
+
 ---
 
 ## 10. Goals
@@ -5813,7 +5821,7 @@ O mecanismo reutiliza a mesma provenance baseada em Events criada no foco inicia
 
 ### 33.24. Proposta conversacional de novo Goal quando ocioso
 
-Quando não existe Goal aberto, `user-turn` pode usar um `ModelProvider` explicitamente configurado para transformar uma nova solicitação foreground em uma proposta de Goal sem aceitar essa proposta. O gate de entrada é estrito: a rota só é elegível quando `ExecutiveDecision` termina em `DONE` com `reason_code=no_open_goal`.
+Quando não existe Goal aberto, `user-turn` pode usar um `ModelProvider` explicitamente configurado para transformar uma nova solicitação foreground em uma proposta de Goal sem aceitar essa proposta. Originalmente essa rota era elegível somente em `DONE/no_open_goal`. Com a materialização persistente de `ATTEND`, o mesmo estado de ausência de Goal também pode aparecer como `NEEDS_ATTENTION_REVIEW`; nesse caso uma solicitação humana foreground continua autorizada a entrar na rota de proposta, sem consumir nem descartar o item de Attention.
 
 O turno humano permanece registrado como `user.turn.received`. O contexto cognitivo, a interpretação estruturada e a proposta recebem esse Event como `trace_id`, evitando criar um segundo Event de entrada apenas para reutilizar o pipeline cognitivo. A interpretação precisa ser `REQUEST`; outros intents são preservados como entrada não roteada e não produzem `cognition.goal_proposal.completed`.
 
@@ -5823,7 +5831,7 @@ Se qualquer Goal estiver aberto, o gateway não usa essa rota. O estado foregrou
 
 ### 33.25. Aceitação e rejeição conversacional da proposta de Goal
 
-Uma proposta de Goal criada pelo caminho conversacional não deve desaparecer implicitamente nem ser substituída por qualquer texto subsequente. Enquanto a proposta conversacional mais recente não tiver sido respondida e não existir Goal aberto, ela funciona como o gate foreground atual.
+Uma proposta de Goal criada pelo caminho conversacional não deve desaparecer implicitamente nem ser substituída por qualquer texto subsequente. Enquanto a proposta conversacional mais recente não tiver sido respondida e não existir Goal aberto, ela funciona como o gate foreground atual, inclusive quando existem itens `ATTEND` pendentes. A decisão humana sobre a proposta tem precedência sobre a revisão passiva de Attention.
 
 Um segundo turno afirmativo explícito pode aceitar somente essa proposta. A aceitação reutiliza `accept_goal_proposal()`, persiste `goal.proposal.accepted` com `source=user` e cria exatamente um Goal `USER/ACTIVE`. O turno de aceitação não executa nenhuma operação `PROCEED`; planejamento continua sendo um ciclo posterior do Executive.
 

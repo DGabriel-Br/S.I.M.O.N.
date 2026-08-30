@@ -12,7 +12,11 @@ from pydantic import BaseModel, ConfigDict
 from simon import __version__
 from simon.actions import interrupt_running_actions
 from simon.assessment_confirmation import confirm_action_assessment
-from simon.attention import AttentionSignals, assess_observation_attention
+from simon.attention import (
+    AttentionSignals,
+    assess_observation_attention,
+    open_attention_item,
+)
 from simon.claims import (
     accept_ready_proposed_claim,
     apply_claim_conflict_resolution,
@@ -250,6 +254,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="sinaliza ruído conhecido sem valor operacional",
     )
     observe.add_argument("summary", nargs="+", help="resumo normalizado da observação")
+
+    attention_open = commands.add_parser(
+        "attention-open",
+        help=(
+            "materializa um assessment ATTEND como item persistente de atenção "
+            "sem alterar foco ou criar Goal"
+        ),
+    )
+    attention_open.add_argument(
+        "--attention-event-id",
+        required=True,
+        help="Event attention.assessed com destino ATTEND",
+    )
 
     claim_propose = commands.add_parser(
         "claim-propose",
@@ -971,6 +988,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
             args.world_change,
             args.known_noise,
         )
+    if args.command == "attention-open":
+        return _attention_open(database_path, args.attention_event_id)
     if args.command == "claim-propose":
         return _claim_propose(
             database_path,
@@ -1228,6 +1247,30 @@ def _observe(
     print(f"Razões: {', '.join(assessment.decision.reasons)}")
     print(f"Assessment: {assessment.event.id}")
     print("Efeito aplicado ao World/Executive: não")
+    return 0
+
+
+def _attention_open(database_path: Path, attention_event_id: str) -> int:
+    try:
+        opening = open_attention_item(
+            database_path,
+            attention_event_id=attention_event_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Attention item: falha ({exc})")
+        return 1
+
+    item = opening.item
+    print(f"Attention item: {item.event.id}")
+    print(f"Assessment: {item.assessment_event_id}")
+    print(f"Observation: {item.observation_event_id}")
+    print(f"Resumo: {item.summary}")
+    print(f"Razões: {', '.join(item.reasons)}")
+    print(f"Goal relacionado: {item.event.goal_id or 'nenhum'}")
+    print("Estado: PENDING")
+    print(f"Item criado: {'sim' if opening.created else 'não'}")
+    print("Foco do Executive alterado: não")
+    print("Goal criado: não")
     return 0
 
 
@@ -1702,9 +1745,24 @@ def _print_executive_decision(decision: ExecutiveDecision) -> None:
 
     if decision.goal_candidates:
         print("Goals candidatos:")
-        for index, candidate in enumerate(decision.goal_candidates, start=1):
-            print(f"{index}. {candidate.goal_id}: {candidate.status} | {candidate.title}")
+        for index, goal_candidate in enumerate(decision.goal_candidates, start=1):
+            print(
+                f"{index}. {goal_candidate.goal_id}: "
+                f"{goal_candidate.status} | {goal_candidate.title}"
+            )
         print('Seleção conversacional: responda com o ordinal ou com o título único do Goal')
+
+    if decision.attention_candidates:
+        print("Itens de atenção pendentes:")
+        for index, attention_candidate in enumerate(decision.attention_candidates, start=1):
+            reasons = ", ".join(attention_candidate.reasons)
+            goal = attention_candidate.goal_id or "nenhum"
+            print(
+                f"{index}. {attention_candidate.attention_item_event_id}: "
+                f"{attention_candidate.summary} "
+                f"| razões={reasons} | goal={goal}"
+            )
+        print("Revisão conversacional de Attention: ainda não implementada neste passo")
 
     if decision.blockers:
         print("Blockers preservados:")

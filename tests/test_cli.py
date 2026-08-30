@@ -2960,3 +2960,60 @@ def test_claim_conflict_apply_cli_applies_user_resolution_atomically(
     assert payload["authority"] == "USER_DECISION"
     assert payload["effect_applied"] is True
     assert after_revision == (int(before_revision[0]) + 1,)
+
+
+def test_attention_open_cli_surfaces_pending_item_to_idle_executive(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "filesystem",
+            "--kind",
+            "file.changed",
+            "--subscribed",
+            "arquivo",
+            "monitorado",
+            "mudou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assessment_event_id = str(row[0])
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-open",
+            "--attention-event-id",
+            assessment_event_id,
+        ]
+    ) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Attention item: evt_" in output
+    assert f"Assessment: {assessment_event_id}" in output
+    assert "Resumo: arquivo monitorado mudou" in output
+    assert "Estado: PENDING" in output
+    assert "Foco do Executive alterado: não" in output
+    assert "Goal criado: não" in output
+
+    assert main(["--data-dir", str(tmp_path), "executive-next"]) == 0
+    executive_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Executive: NEEDS_ATTENTION_REVIEW" in executive_output
+    assert "Razão: pending_attention_items" in executive_output
+    assert "Itens de atenção pendentes:" in executive_output
+    assert "arquivo monitorado mudou" in executive_output

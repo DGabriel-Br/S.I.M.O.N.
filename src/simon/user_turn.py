@@ -249,8 +249,11 @@ def handle_user_turn(
                 reason_code="continue_routing_failed",
             )
         if (
-            continue_decision.outcome == "DONE"
-            and continue_decision.reason_code == "no_open_goal"
+            (
+                continue_decision.outcome == "DONE"
+                and continue_decision.reason_code == "no_open_goal"
+            )
+            or continue_decision.outcome == "NEEDS_ATTENTION_REVIEW"
         ):
             pending_goal_proposal = find_latest_pending_conversational_goal_proposal(
                 database_path
@@ -347,7 +350,10 @@ def handle_user_turn(
             max_transitions=max_transitions,
         )
 
-    if decision.outcome == "DONE" and decision.reason_code == "no_open_goal":
+    if (
+        (decision.outcome == "DONE" and decision.reason_code == "no_open_goal")
+        or decision.outcome == "NEEDS_ATTENTION_REVIEW"
+    ):
         pending_goal_proposal = find_latest_pending_conversational_goal_proposal(
             database_path
         )
@@ -1596,6 +1602,17 @@ def _decision_gate_payload(decision: ExecutiveDecision) -> dict[str, object]:
                 "title": candidate.title,
             }
             for candidate in decision.goal_candidates
+        ],
+        "attention_candidates": [
+            {
+                "attention_item_event_id": candidate.attention_item_event_id,
+                "assessment_event_id": candidate.assessment_event_id,
+                "observation_event_id": candidate.observation_event_id,
+                "summary": candidate.summary,
+                "reasons": list(candidate.reasons),
+                "goal_id": candidate.goal_id,
+            }
+            for candidate in decision.attention_candidates
         ],
     }
 

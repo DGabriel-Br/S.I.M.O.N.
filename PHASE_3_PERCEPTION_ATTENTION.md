@@ -545,3 +545,70 @@ uv run simon claim-bind-duplicate-evidence --validation-event-id evt_...
 8. repetir o mesmo binding é idempotente;
 9. o schema SQLite permanece na versão 11.
 
+
+## Passo 80 - ATTEND -> item persistente para revisão do Executive
+
+O destino `ATTEND` passa a possuir seu primeiro consumidor sem adquirir semântica de interrupção. Um `attention.assessed` com `destination=ATTEND` pode ser materializado explicitamente como:
+
+```text
+attention.item.opened
+```
+
+O item preserva o assessment, a Observation, resumo, razões, `trace_id`, Goal e Entities relacionados. O Event usa `source=attention`, `status=PENDING`, `effect_applied=true`, `focus_changed=false` e `goal_created=false`.
+
+A materialização é explícita e separada da classificação:
+
+```powershell
+uv run simon attention-open --attention-event-id evt_...
+```
+
+`observe` continua somente registrando Observation + assessment. Assim, classificar como `ATTEND` não cria silenciosamente um compromisso executivo.
+
+### Radar do Executive
+
+Itens `PENDING` sobrevivem a restart e podem ser reconstruídos somente pelos Events persistidos. Quando não existe Goal aberto para conduzir, `decide_next()` deixa de responder `DONE/no_open_goal` se houver itens `ATTEND` materializados e retorna:
+
+```text
+NEEDS_ATTENTION_REVIEW
+```
+
+A decisão carrega `attention_candidates` em ordem de chegada, com item, assessment, Observation, resumo, razões e eventual Goal relacionado. A ordem é somente apresentação estável; não constitui ranking de importância nem escolha autônoma de trabalho.
+
+`ATTEND` não preempta trabalho foreground. Se existir um Goal aberto, a condução normal desse Goal continua tendo precedência e o item permanece pendente. `INTERRUPT` continua sendo uma categoria separada e ainda sem efeito operacional.
+
+### Foreground humano continua superior ao ATTEND ocioso
+
+Quando o Executive está sem Goal e mostra `NEEDS_ATTENTION_REVIEW`, um novo turno humano explícito continua podendo propor um Goal. Da mesma forma, uma proposta conversacional de Goal já pendente continua podendo ser aceita ou rejeitada mesmo enquanto existe item de Attention pendente.
+
+Essa regra não é um score de prioridade. Ela preserva uma fronteira já existente: solicitação e decisão humanas foreground não podem ser bloqueadas por uma pendência passiva de Attention.
+
+### Idempotência e limites
+
+Uma mesma `attention.assessed` pode abrir no máximo um item. Repetir `attention-open` recupera o Event existente. A operação não altera `world_revision`, não cria Claim, não cria Goal, não seleciona foco e não executa capability.
+
+Neste passo ainda não existe operação para concluir, dispensar, adiar ou transformar o item em Goal. Portanto, um item aberto permanece `PENDING` até que o próximo contrato de revisão seja implementado.
+
+### Deliberadamente fora do Passo 80
+
+- revisão conversacional do item;
+- `ACKNOWLEDGED`, `DISMISSED`, `DEFERRED` ou outro lifecycle terminal;
+- criação automática de Goal a partir de Attention;
+- troca automática de foco;
+- preempção de Goal;
+- aplicação de `INTERRUPT`;
+- ranking numérico entre itens;
+- FocusSession persistente;
+- scheduler/background loop;
+- Machine Learning.
+
+### Critérios de conclusão do Passo 80
+
+1. somente assessment `ATTEND` pode ser materializado;
+2. o item sobrevive a nova conexão com o banco;
+3. repetir a materialização é idempotente;
+4. nenhum item altera `world_revision`, Goal ou foco;
+5. sem Goal aberto, o Executive expõe `NEEDS_ATTENTION_REVIEW` com os candidatos persistidos;
+6. um Goal foreground aberto não é preemptado por `ATTEND`;
+7. um turno humano pode iniciar ou responder uma proposta de Goal mesmo com Attention pendente;
+8. a CLI expõe `attention-open` sem executar trabalho do item;
+9. o schema SQLite permanece na versão 11.

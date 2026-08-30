@@ -37,6 +37,7 @@ Todas as mudanças relevantes do S.I.M.O.N. serão registradas neste arquivo.
 - proposta explícita de resolução para validations `CONFLICT` com `claim-conflict-propose`: o usuário escolhe como vencedor a Proposed Claim ou uma Claim `ACTIVE` participante do snapshot, gerando `world.claim.conflict.resolution.proposed` sem supersede, sem escrita no Belief Store e com rechecagem do conjunto ativo antes de registrar a decisão.
 - aplicação atômica de resolução com `claim-conflict-apply`: o snapshot é rechecado novamente, a Proposed Claim vencedora pode materializar uma nova Claim `ACTIVE` e a Claim ativa vencedora pode superseder somente concorrentes; qualquer mudança material avança `world_revision` uma única vez e a operação é idempotente.
 - binding de evidência para validations `DUPLICATE` com `claim-bind-duplicate-evidence`: uma nova observação equivalente reforça as Claims `ACTIVE` já existentes ao anexar a nova cadeia de evidências sem criar Claim duplicada, mudar valor/status ou avançar `world_revision`; o snapshot é rechecado e a operação é idempotente por validation.
+- primeiro consumidor de `ATTEND` com `attention-open`: um assessment relevante pode virar `attention.item.opened` persistente e aparecer ao Executive ocioso como `NEEDS_ATTENTION_REVIEW`, sem criar Goal, mudar foco, alterar o World ou preemptar trabalho foreground; solicitações humanas e propostas de Goal pendentes continuam tendo precedência.
 
 ## [0.1.0] - 2026-08-19
 

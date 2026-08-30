@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from simon.actions import Action
+from simon.attention import AttentionItem, list_pending_attention_items
 from simon.goal_verification import get_latest_goal_assessment_context
 from simon.plan_failure import PlanFailureContext, get_active_plan_failure_context
 from simon.plan_proposal import PendingPlanProposal, find_latest_pending_plan_proposal
@@ -18,6 +19,7 @@ ExecutiveOutcome = Literal[
     "NEEDS_USER_CONFIRMATION",
     "NEEDS_OPERATION_AUTHORIZATION",
     "NEEDS_GOAL_SELECTION",
+    "NEEDS_ATTENTION_REVIEW",
     "BLOCKED",
     "DONE",
 ]
@@ -53,6 +55,16 @@ class ExecutiveGoalCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutiveAttentionCandidate:
+    attention_item_event_id: str
+    assessment_event_id: str
+    observation_event_id: str
+    summary: str
+    reasons: tuple[str, ...]
+    goal_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutiveDecision:
     outcome: ExecutiveOutcome
     reason_code: str
@@ -68,6 +80,7 @@ class ExecutiveDecision:
     capability: str | None = None
     blockers: tuple[StepBlocker, ...] = ()
     goal_candidates: tuple[ExecutiveGoalCandidate, ...] = ()
+    attention_candidates: tuple[ExecutiveAttentionCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.reason_code.strip() or not self.reason.strip():
@@ -75,12 +88,14 @@ class ExecutiveDecision:
         if self.outcome == "PROCEED" and self.operation is None:
             raise ValueError("ExecutiveDecision PROCEED exige uma operação")
         if (
-            self.outcome in {"DONE", "BLOCKED", "NEEDS_GOAL_SELECTION"}
+            self.outcome in {"DONE", "BLOCKED", "NEEDS_GOAL_SELECTION", "NEEDS_ATTENTION_REVIEW"}
             and self.operation is not None
         ):
             raise ValueError(f"ExecutiveDecision {self.outcome} não pode executar operação")
         if self.requires_model and self.operation is None:
             raise ValueError("requires_model exige uma operação")
+        if self.outcome == "NEEDS_ATTENTION_REVIEW" and not self.attention_candidates:
+            raise ValueError("NEEDS_ATTENTION_REVIEW exige attention_candidates")
 
 
 def decide_next(
@@ -105,6 +120,19 @@ def decide_next(
                         title=goal.title,
                     )
                     for goal in overview.open_goals
+                ),
+            )
+        attention_items = list_pending_attention_items(database_path)
+        if attention_items:
+            return ExecutiveDecision(
+                outcome="NEEDS_ATTENTION_REVIEW",
+                reason_code="pending_attention_items",
+                reason=(
+                    "não existe Goal foreground aberto, mas há itens ATTEND pendentes "
+                    "para revisão"
+                ),
+                attention_candidates=tuple(
+                    _attention_candidate(item) for item in attention_items
                 ),
             )
         return ExecutiveDecision(
@@ -166,6 +194,17 @@ def decide_next(
         reason=f"o último Plan está {plan.status} e o Goal continua ACTIVE",
         operation="plan.propose",
         requires_model=True,
+    )
+
+
+def _attention_candidate(item: AttentionItem) -> ExecutiveAttentionCandidate:
+    return ExecutiveAttentionCandidate(
+        attention_item_event_id=item.event.id,
+        assessment_event_id=item.assessment_event_id,
+        observation_event_id=item.observation_event_id,
+        summary=item.summary,
+        reasons=item.reasons,
+        goal_id=item.event.goal_id,
     )
 
 

@@ -844,9 +844,17 @@ A chamada produz dois Events. `perception.observation.recorded` preserva a obser
 
 A ordem atual é simples: urgência ou risco resultam em `INTERRUPT`; relevância ao Goal ou subscription resulta em `ATTEND`; mudança candidata do World resulta em `UPDATE_WORLD`; ruído conhecido resulta em `IGNORE`; na ausência desses sinais, o destino é `RECORD`.
 
-Nenhum desses destinos é executado neste corte. `UPDATE_WORLD` não cria Claim, `ATTEND` não muda o foco e `INTERRUPT` não pausa Goal ou Action. A avaliação registra `effect_applied=false` justamente para tornar essa fronteira auditável.
+O classificador não executa o destino automaticamente. Cada `attention.assessed` continua nascendo com `effect_applied=false`; consumidores posteriores precisam atravessar contratos explícitos. `INTERRUPT` ainda não pausa Goal ou Action.
 
-O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, interpretação cognitiva de observações e aplicação de efeitos permanecem fora deste passo.
+`ATTEND` já possui seu primeiro consumidor persistente. Um assessment relevante pode ser colocado no radar do Executive sem alterar o foco:
+
+```powershell
+uv run simon attention-open --attention-event-id evt_...
+```
+
+O comando cria `attention.item.opened` com `status=PENDING`. Quando não existe Goal aberto, `executive-next` passa a retornar `NEEDS_ATTENTION_REVIEW` e mostra os itens pendentes. Se houver um Goal foreground, `ATTEND` não o preempta. Um novo turno humano também continua podendo propor um Goal, e uma proposta de Goal pendente continua podendo ser respondida; Attention ocioso não bloqueia foreground humano. O item ainda não pode ser dispensado, concluído ou transformado automaticamente em Goal.
+
+O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, interpretação cognitiva de observações, revisão conversacional de Attention e aplicação de `INTERRUPT` permanecem fora deste corte.
 
 O primeiro consumidor de `UPDATE_WORLD` também está disponível, ainda sem autoridade de escrita no World. Depois de uma Observation já associada a uma Entity e classificada como `UPDATE_WORLD`, uma Proposed Claim pode ser estruturada explicitamente:
 

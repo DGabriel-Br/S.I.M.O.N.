@@ -4,10 +4,12 @@ import sqlite3
 from pathlib import Path
 
 from simon.actions import create_action, transition_action
+from simon.attention import AttentionSignals, assess_observation_attention, open_attention_item
 from simon.cli import main
 from simon.events import Event, append_event
 from simon.executive import decide_next
 from simon.goals import Goal, insert_goal, transition_goal
+from simon.perception import record_observation
 from simon.plans import create_plan
 from simon.storage import initialize_storage
 from simon.user_ask import dispatch_next_user_ask
@@ -400,3 +402,57 @@ def test_executive_next_cli_exposes_structured_gate(tmp_path: Path, capsys: obje
     assert f"Goal: {goal.id}" in output
     assert "Step: step_01" in output
     assert "Capability: process.run" in output
+
+
+def test_executive_surfaces_pending_attend_when_no_goal_is_open(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="há algo relevante para revisar",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(subscribed=True),
+    )
+    opening = open_attention_item(database_path, attention_event_id=assessment.event.id)
+
+    decision = decide_next(database_path)
+
+    assert decision.outcome == "NEEDS_ATTENTION_REVIEW"
+    assert decision.reason_code == "pending_attention_items"
+    assert decision.operation is None
+    assert len(decision.attention_candidates) == 1
+    candidate = decision.attention_candidates[0]
+    assert candidate.attention_item_event_id == opening.item.event.id
+    assert candidate.assessment_event_id == assessment.event.id
+    assert candidate.observation_event_id == observation.event.id
+    assert candidate.summary == "há algo relevante para revisar"
+    assert candidate.reasons == ("subscribed",)
+
+
+def test_attend_does_not_preempt_active_foreground_goal(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="outro sinal relevante",
+        goal_id=goal.id,
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(goal_relevant=True),
+    )
+    open_attention_item(database_path, attention_event_id=assessment.event.id)
+
+    decision = decide_next(database_path)
+
+    assert decision.outcome == "PROCEED"
+    assert decision.operation == "plan.propose"
+    assert decision.goal_id == goal.id
+    assert decision.attention_candidates == ()
