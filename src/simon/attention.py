@@ -199,11 +199,15 @@ def review_attention_item(
     attention_item_event_id: str,
     decision: AttentionReviewDecision,
     goal_proposal: GoalProposal | None = None,
+    trace_id: str | None = None,
 ) -> AttentionItemReviewReceipt:
     """Fecha um item ATTEND por decisão humana, sem trocar foco nem criar Goal."""
     normalized_item_id = attention_item_event_id.strip()
     if not normalized_item_id:
         raise ValueError("attention_item_event_id não pode ser vazio")
+    normalized_trace_id = trace_id.strip() if trace_id is not None else None
+    if trace_id is not None and not normalized_trace_id:
+        raise ValueError("trace_id não pode ser vazio quando informado")
     if decision == "PROPOSE_GOAL" and goal_proposal is None:
         raise ValueError("PROPOSE_GOAL exige uma proposta de Goal estruturada")
     if decision != "PROPOSE_GOAL" and goal_proposal is not None:
@@ -257,7 +261,7 @@ def review_attention_item(
                         "authority": "USER_DECISION",
                         "materialized_by": "attention",
                     },
-                    trace_id=item.event.trace_id or item.event.id,
+                    trace_id=normalized_trace_id or item.event.trace_id or item.event.id,
                     related_entity_ids=item.event.related_entity_ids,
                 )
 
@@ -276,7 +280,7 @@ def review_attention_item(
                     "goal_created": False,
                     "effect_applied": True,
                 },
-                trace_id=item.event.trace_id or item.event.id,
+                trace_id=normalized_trace_id or item.event.trace_id or item.event.id,
                 related_entity_ids=item.event.related_entity_ids,
                 goal_id=item.event.goal_id,
             )

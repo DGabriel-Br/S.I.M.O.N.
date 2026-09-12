@@ -5,7 +5,13 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from simon.actions import list_actions_for_plan
-from simon.attention import AttentionSignals, assess_observation_attention, open_attention_item
+from simon.attention import (
+    AttentionSignals,
+    assess_observation_attention,
+    get_attention_item_review,
+    list_pending_attention_items,
+    open_attention_item,
+)
 from simon.cli import main
 from simon.cognition import GoalProposal, UserInputInterpretation
 from simon.events import get_event
@@ -1103,3 +1109,136 @@ def test_pending_goal_proposal_response_outranks_idle_attend_review(tmp_path: Pa
     assert receipt.executive_receipt.final_decision.outcome == "PROCEED"
     assert receipt.executive_receipt.final_decision.operation == "plan.propose"
     assert len(list_open_goals(database_path)) == 1
+
+
+
+def _pending_attend_item(database_path: Path, *, summary: str) -> str:
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary=summary,
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(subscribed=True),
+    )
+    opening = open_attention_item(database_path, attention_event_id=assessment.event.id)
+    return opening.item.event.id
+
+
+def test_user_turn_can_dismiss_single_pending_attention_item(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    item_id = _pending_attend_item(database_path, summary="arquivo acompanhado mudou")
+
+    receipt = handle_user_turn(database_path, "dispense")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "REVIEW_ATTENTION"
+    assert receipt.effect_type == "attention.review"
+    assert receipt.effect_id is not None
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.transitions_executed == 0
+    assert receipt.executive_receipt.final_decision.outcome == "DONE"
+    assert receipt.executive_receipt.final_decision.reason_code == "no_open_goal"
+    review = get_attention_item_review(database_path, item_id)
+    assert review is not None
+    assert review.decision == "DISMISS"
+    assert review.event.trace_id == receipt.turn_event.id
+    assert list_pending_attention_items(database_path) == ()
+
+
+def test_user_turn_can_acknowledge_second_attention_item(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    first_id = _pending_attend_item(database_path, summary="primeiro sinal")
+    second_id = _pending_attend_item(database_path, summary="segundo sinal")
+
+    receipt = handle_user_turn(database_path, "já vi o segundo")
+
+    assert receipt.status == "ROUTED"
+    assert receipt.intent == "REVIEW_ATTENTION"
+    review = get_attention_item_review(database_path, second_id)
+    assert review is not None
+    assert review.decision == "ACKNOWLEDGE"
+    assert get_attention_item_review(database_path, first_id) is None
+    assert tuple(item.event.id for item in list_pending_attention_items(database_path)) == (
+        first_id,
+    )
+    assert receipt.executive_receipt is not None
+    assert receipt.executive_receipt.final_decision.outcome == "NEEDS_ATTENTION_REVIEW"
+    remaining_candidate = receipt.executive_receipt.final_decision.attention_candidates[0]
+    assert remaining_candidate.attention_item_event_id == first_id
+
+
+def test_user_turn_requires_attention_selection_when_multiple_items_are_pending(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    _pending_attend_item(database_path, summary="primeiro sinal")
+    _pending_attend_item(database_path, summary="segundo sinal")
+
+    receipt = handle_user_turn(database_path, "já vi isso")
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == "attention_review_selection_required"
+    assert len(list_pending_attention_items(database_path)) == 2
+
+
+def test_user_turn_can_propose_goal_from_attention_and_accept_it_next_turn(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    item_id = _pending_attend_item(database_path, summary="serviço acompanhado falhou")
+
+    proposed = handle_user_turn(
+        database_path,
+        (
+            "transforme o primeiro em objetivo: "
+            "título=Restaurar serviço; "
+            "estado=O serviço voltou ao estado operacional; "
+            "critério=O serviço responde normalmente"
+        ),
+    )
+
+    assert proposed.status == "ROUTED"
+    assert proposed.intent == "REVIEW_ATTENTION"
+    assert proposed.effect_type == "attention.review"
+    assert proposed.effect_id is not None
+    review = get_attention_item_review(database_path, item_id)
+    assert review is not None
+    assert review.decision == "PROPOSE_GOAL"
+    assert review.goal_proposal_event_id is not None
+    proposal_event = get_event(database_path, review.goal_proposal_event_id)
+    assert proposal_event is not None
+    assert proposal_event.kind == "attention.goal_proposal.completed"
+    assert proposal_event.source == "user"
+    assert proposal_event.trace_id == proposed.turn_event.id
+    assert proposal_event.payload["proposal"]["title"] == "Restaurar serviço"
+    assert list_open_goals(database_path) == ()
+
+    accepted = handle_user_turn(database_path, "sim")
+
+    assert accepted.status == "ROUTED"
+    assert accepted.intent == "ACCEPT"
+    assert accepted.effect_type == "goal.accepted"
+    open_goals = list_open_goals(database_path)
+    assert len(open_goals) == 1
+    assert open_goals[0].title == "Restaurar serviço"
+
+
+def test_user_turn_attention_goal_requires_structured_details(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    item_id = _pending_attend_item(database_path, summary="serviço acompanhado falhou")
+
+    receipt = handle_user_turn(
+        database_path,
+        "quero transformar o primeiro em um objetivo",
+    )
+
+    assert receipt.status == "UNSUPPORTED"
+    assert receipt.routing_event.payload["reason_code"] == (
+        "attention_goal_proposal_details_required"
+    )
+    assert get_attention_item_review(database_path, item_id) is None
+    assert len(list_pending_attention_items(database_path)) == 1

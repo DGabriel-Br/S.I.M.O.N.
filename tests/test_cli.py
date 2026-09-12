@@ -3205,3 +3205,53 @@ def test_attention_review_cli_materializes_goal_proposal_without_accepting_it(
     assert "Goal: gol_" in accept_output
     assert "Título: Restaurar serviço" in accept_output
     assert "Goal persistido: sim" in accept_output
+
+
+def test_user_turn_cli_reviews_single_pending_attention_item(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "calendar",
+            "--kind",
+            "deadline.changed",
+            "--subscribed",
+            "prazo acompanhado mudou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        assessment_row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert assessment_row is not None
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "attention-open",
+            "--attention-event-id",
+            str(assessment_row[0]),
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    assert main(["--data-dir", str(tmp_path), "user-turn", "dispense"]) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+
+    assert "User turn: ROUTED" in output
+    assert "Intent: REVIEW_ATTENTION" in output
+    assert "Efeito do gate: attention.review evt_" in output
+    assert "Decisão: DISMISS" in output
+    assert "Estado: DISMISSED" in output
+    assert "Executive: DONE" in output

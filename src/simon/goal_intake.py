@@ -147,7 +147,7 @@ def reject_goal_proposal(
 def find_latest_pending_conversational_goal_proposal(
     database_path: Path,
 ) -> Event | None:
-    """Retorna somente a proposta conversacional mais recente, se ainda não respondida."""
+    """Retorna a proposta conversacional mais recente, de cognição ou Attention."""
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             """
@@ -156,7 +156,10 @@ def find_latest_pending_conversational_goal_proposal(
             INNER JOIN events AS turn
                 ON turn.id = proposal.trace_id
                AND turn.kind = 'user.turn.received'
-            WHERE proposal.kind = 'cognition.goal_proposal.completed'
+            WHERE proposal.kind IN (
+                'cognition.goal_proposal.completed',
+                'attention.goal_proposal.completed'
+            )
             ORDER BY proposal.occurred_at DESC, proposal.id DESC
             LIMIT 1
             """

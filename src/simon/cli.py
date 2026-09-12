@@ -1684,6 +1684,8 @@ def _user_turn(
     elif receipt.effect_type == "goal.rejected":
         print("Goal persistido: não")
         print("Proposta descartada: sim")
+    elif receipt.effect_type == "attention.review" and receipt.effect_id is not None:
+        _print_attention_review_from_event(database_path, receipt.effect_id)
     if receipt.executive_receipt is not None:
         _print_operation_gate_if_applicable(
             database_path,
@@ -1703,7 +1705,10 @@ def _user_turn(
 
 def _print_goal_proposal_from_event(database_path: Path, event_id: str) -> None:
     event = get_event(database_path, event_id)
-    if event is None or event.kind != "cognition.goal_proposal.completed":
+    if event is None or event.kind not in {
+        "cognition.goal_proposal.completed",
+        "attention.goal_proposal.completed",
+    }:
         raise RuntimeError(f"proposta de Goal não encontrada: {event_id}")
 
     raw_proposal = event.payload.get("proposal")
@@ -1736,6 +1741,26 @@ def _print_goal_proposal_from_event(database_path: Path, event_id: str) -> None:
     print("Goal persistido: não")
     print('Para responder pela conversa: "sim" para aceitar ou "não" para rejeitar')
     print(f"Para aceitar: uv run simon goal-accept {event_id}")
+
+
+def _print_attention_review_from_event(database_path: Path, event_id: str) -> None:
+    event = get_event(database_path, event_id)
+    if event is None or event.kind != "attention.item.reviewed":
+        raise RuntimeError(f"attention review não encontrada: {event_id}")
+
+    decision = event.payload.get("decision")
+    status = event.payload.get("status")
+    item_id = event.payload.get("attention_item_event_id")
+    proposal_event_id = event.payload.get("goal_proposal_event_id")
+    print(f"Attention review: {event.id}")
+    print(f"Attention item: {item_id if isinstance(item_id, str) else 'indisponível'}")
+    print(f"Decisão: {decision if isinstance(decision, str) else 'indisponível'}")
+    print(f"Estado: {status if isinstance(status, str) else 'indisponível'}")
+    print("Foco do Executive alterado: não")
+    print("Goal criado: não")
+    if isinstance(proposal_event_id, str):
+        print(f"Proposta de Goal: {proposal_event_id}")
+        _print_goal_proposal_from_event(database_path, proposal_event_id)
 
 
 def _print_user_turn_receipt(receipt: UserTurnReceipt) -> None:

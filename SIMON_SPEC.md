@@ -5857,3 +5857,17 @@ Cada `attention.item.opened` admite no máximo uma decisão terminal. Repetir a 
 Itens com review terminal não são mais retornados por `list_pending_attention_items()` e deixam de produzir `NEEDS_ATTENTION_REVIEW`. Reexecutar a materialização original não reabre o item; a abertura continua imutável e o estado corrente é reconstruído pelos Events posteriores.
 
 Nenhuma dessas transições altera `world_revision`, Claim, capability ou foreground. Revisão conversacional, `DEFERRED`, reabertura, formulação por modelo e efeito de `INTERRUPT` continuam fora deste contrato. O schema permanece 11.
+
+### 33.27. Review conversacional de itens ATTEND
+
+Quando `decide_next()` retorna `NEEDS_ATTENTION_REVIEW`, `user-turn` pode resolver um único item pendente por uma gramática determinística antes de cair no fluxo genérico de nova solicitação. A conversa não implementa uma segunda máquina de estados: ela seleciona o `attention.item.opened` e chama o mesmo `review_attention_item()` definido no lifecycle humano.
+
+`DISMISS` aceita formas explícitas como `dispense`, `descarte` e `ignore`. `ACKNOWLEDGE` aceita formas como `já vi isso`, `reconheça` e `ciente`. Se existe apenas um candidato, a seleção é implícita pelo conjunto unitário; com múltiplos candidatos, ordinal, número de item ou Event id precisam resolver exatamente um item. O gateway nunca escolhe por semelhança semântica ou pelo resumo mais parecido.
+
+`PROPOSE_GOAL` também pode ser materializado pela conversa, mas o conteúdo continua vindo explicitamente do usuário. O primeiro contrato usa campos rotulados após `:`: `título=`, `estado=`, um ou mais `critério=` e `pergunta=` opcional. Ausência ou invalidade do contrato não fecha o item.
+
+A review conversacional recebe `trace_id` do `user.turn.received`. Quando a decisão é `PROPOSE_GOAL`, esse mesmo trace é aplicado a `attention.goal_proposal.completed`. O detector de proposta conversacional pendente aceita tanto `cognition.goal_proposal.completed` quanto `attention.goal_proposal.completed` somente quando o `trace_id` referencia um `user.turn.received`. Assim, uma proposta criada pelo comando técnico `attention-review` não é confundida com foreground conversacional.
+
+Uma proposta de Goal conversacional já pendente continua sendo um compromisso foreground mais forte que `ATTEND`: antes de consumir outra review, o usuário precisa aceitar ou rejeitar a proposta atual. Um turno afirmativo ou negativo reutiliza os contratos existentes de `accept_goal_proposal()` e `reject_goal_proposal()`.
+
+Uma review válida gera `executive.user_turn.routed` com `intent=REVIEW_ATTENTION`, `authority_scope=CURRENT_ATTENTION_REVIEW_ONLY` e `effect_type=attention.review`. O turno executa zero transições de trabalho e não cria Goal, Plan, Action, Claim ou capability, não troca foco e não altera `world_revision`. O schema permanece 11.

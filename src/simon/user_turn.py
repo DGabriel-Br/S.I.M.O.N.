@@ -7,11 +7,17 @@ from pathlib import Path
 from typing import Literal
 
 from simon.assessment_confirmation import confirm_action_assessment
-from simon.cognition import interpret_user_input, propose_goal
+from simon.attention import AttentionReviewDecision, review_attention_item
+from simon.cognition import GoalProposal, interpret_user_input, propose_goal
 from simon.cognition_analysis import retry_cognition_analysis
 from simon.context import build_cognitive_context
 from simon.events import Event, append_event
-from simon.executive import ExecutiveDecision, ExecutiveGoalCandidate, decide_next
+from simon.executive import (
+    ExecutiveAttentionCandidate,
+    ExecutiveDecision,
+    ExecutiveGoalCandidate,
+    decide_next,
+)
 from simon.executive_runner import ExecutiveContinueReceipt, run_executive_until_gate
 from simon.file_patch import execute_next_file_patch, retry_file_patch
 from simon.goal_completion import complete_goal_from_assessment
@@ -57,6 +63,7 @@ UserTurnIntent = Literal[
     "PROPOSE",
     "ACCEPT",
     "REJECT",
+    "REVIEW_ATTENTION",
 ]
 UserTurnStatus = Literal["ROUTED", "UNSUPPORTED", "FAILED"]
 UserTurnEffectType = Literal[
@@ -73,6 +80,7 @@ UserTurnEffectType = Literal[
     "goal.proposal",
     "goal.accepted",
     "goal.rejected",
+    "attention.review",
 ]
 
 _CONTINUE_UTTERANCES = {
@@ -171,6 +179,7 @@ class UserTurnReceipt:
                 "PROPOSE",
                 "ACCEPT",
                 "REJECT",
+                "REVIEW_ATTENTION",
             }
             and self.effect_type is None
         ):
@@ -365,6 +374,40 @@ def handle_user_turn(
                 proposal_event=pending_goal_proposal,
                 text=normalized_text,
             )
+        if decision.outcome == "NEEDS_ATTENTION_REVIEW":
+            attention_review_decision = _attention_review_decision(normalized_text)
+            if attention_review_decision is not None:
+                attention_item_event_id = _resolve_attention_item_selection(
+                    normalized_text,
+                    decision.attention_candidates,
+                )
+                if attention_item_event_id is None:
+                    return _unsupported_turn(
+                        database_path,
+                        turn_event=turn_event,
+                        goal_id=None,
+                        reason_code="attention_review_selection_required",
+                        current_decision=decision,
+                    )
+                goal_proposal: GoalProposal | None = None
+                if attention_review_decision == "PROPOSE_GOAL":
+                    goal_proposal = _parse_attention_goal_proposal(normalized_text)
+                    if goal_proposal is None:
+                        return _unsupported_turn(
+                            database_path,
+                            turn_event=turn_event,
+                            goal_id=None,
+                            reason_code="attention_goal_proposal_details_required",
+                            current_decision=decision,
+                        )
+                return _route_attention_review(
+                    database_path,
+                    turn_event=turn_event,
+                    decision=decision,
+                    attention_item_event_id=attention_item_event_id,
+                    review_decision=attention_review_decision,
+                    goal_proposal=goal_proposal,
+                )
         return _route_new_goal_proposal(
             database_path,
             turn_event=turn_event,
@@ -899,6 +942,205 @@ def _route_pending_goal_proposal_response(
         reason_code="goal_proposal_response_required",
         current_decision=decision,
     )
+
+
+def _attention_review_decision(text: str) -> AttentionReviewDecision | None:
+    normalized = _normalize_turn_text(text)
+    goal_prefixes = (
+        "transforme ",
+        "transforma ",
+        "quero transformar ",
+    )
+    if any(normalized.startswith(prefix) for prefix in goal_prefixes) and any(
+        marker in normalized
+        for marker in (" em objetivo", " em um objetivo", " em goal", " em um goal")
+    ):
+        return "PROPOSE_GOAL"
+
+    selection_head = _normalize_turn_text(text.split(":", maxsplit=1)[0])
+    reference = (
+        r"(?:primeiro|segundo|terceiro|quarto|quinto|sexto|setimo|oitavo|nono|decimo|"
+        r"\d{1,3}|evt_\w+)"
+    )
+    dismiss_pattern = (
+        rf"^(?:dispense|dispensa|descarte|ignore)"
+        rf"(?: isso| (?:(?:o|a|item) )?{reference})?$"
+    )
+    if re.fullmatch(dismiss_pattern, selection_head):
+        return "DISMISS"
+
+    acknowledge_patterns = (
+        rf"^(?:ja vi|reconheca|reconheco)(?: isso| (?:(?:o|a|item) )?{reference})?$",
+        rf"^ciente(?: (?:do|da) {reference})?$",
+        rf"^marque como visto(?: (?:(?:o|a|item) )?{reference})?$",
+    )
+    if any(re.fullmatch(pattern, selection_head) for pattern in acknowledge_patterns):
+        return "ACKNOWLEDGE"
+    return None
+
+
+def _resolve_attention_item_selection(
+    text: str,
+    candidates: tuple[ExecutiveAttentionCandidate, ...],
+) -> str | None:
+    if not candidates:
+        return None
+
+    direct_matches = {
+        candidate.attention_item_event_id
+        for candidate in candidates
+        if candidate.attention_item_event_id in text
+    }
+    if len(direct_matches) == 1:
+        return next(iter(direct_matches))
+    if len(direct_matches) > 1:
+        return None
+
+    selection_text = _normalize_turn_text(text.split(":", maxsplit=1)[0])
+    ordinal_words = {
+        "primeiro": 0,
+        "segundo": 1,
+        "terceiro": 2,
+        "quarto": 3,
+        "quinto": 4,
+        "sexto": 5,
+        "setimo": 6,
+        "oitavo": 7,
+        "nono": 8,
+        "decimo": 9,
+    }
+    ordinal_indexes = {
+        index
+        for word, index in ordinal_words.items()
+        if re.search(rf"\b{word}\b", selection_text)
+    }
+    if len(ordinal_indexes) == 1:
+        index = next(iter(ordinal_indexes))
+        return candidates[index].attention_item_event_id if index < len(candidates) else None
+    if len(ordinal_indexes) > 1:
+        return None
+
+    numeric_match = re.search(r"\b(?:item|o|a)\s+(\d{1,3})\b", selection_text)
+    if numeric_match is not None:
+        index = int(numeric_match.group(1)) - 1
+        if 0 <= index < len(candidates):
+            return candidates[index].attention_item_event_id
+        return None
+
+    if len(candidates) == 1:
+        return candidates[0].attention_item_event_id
+    return None
+
+
+def _parse_attention_goal_proposal(text: str) -> GoalProposal | None:
+    if ":" not in text:
+        return None
+    _, raw_fields = text.split(":", maxsplit=1)
+    title: str | None = None
+    desired_state: str | None = None
+    success_criteria: list[str] = []
+    open_questions: list[str] = []
+
+    for raw_field in raw_fields.split(";"):
+        field = raw_field.strip()
+        if not field:
+            continue
+        if "=" not in field:
+            return None
+        raw_key, raw_value = field.split("=", maxsplit=1)
+        key = _normalize_turn_text(raw_key)
+        value = raw_value.strip()
+        if not value:
+            return None
+        if key in {"titulo", "title"}:
+            if title is not None:
+                return None
+            title = value
+        elif key in {"estado", "estado desejado", "desired state"}:
+            if desired_state is not None:
+                return None
+            desired_state = value
+        elif key in {"criterio", "criterio de sucesso", "success criterion"}:
+            success_criteria.append(value)
+        elif key in {"pergunta", "questao", "questao em aberto", "open question"}:
+            open_questions.append(value)
+        else:
+            return None
+
+    if title is None or desired_state is None or not success_criteria:
+        return None
+    try:
+        return GoalProposal(
+            title=title,
+            desired_state=desired_state,
+            success_criteria=success_criteria,
+            open_questions=open_questions,
+        )
+    except ValueError:
+        return None
+
+
+def _route_attention_review(
+    database_path: Path,
+    *,
+    turn_event: Event,
+    decision: ExecutiveDecision,
+    attention_item_event_id: str,
+    review_decision: AttentionReviewDecision,
+    goal_proposal: GoalProposal | None,
+) -> UserTurnReceipt:
+    try:
+        review_receipt = review_attention_item(
+            database_path,
+            attention_item_event_id=attention_item_event_id,
+            decision=review_decision,
+            goal_proposal=goal_proposal,
+            trace_id=turn_event.id,
+        )
+        next_decision = decide_next(database_path)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return _failed_turn(
+            database_path,
+            turn_event=turn_event,
+            intent="REVIEW_ATTENTION",
+            goal_id=None,
+            error=str(exc),
+            reason_code="attention_review_routing_failed",
+            current_decision=decision,
+        )
+
+    executive_receipt = ExecutiveContinueReceipt(
+        status="STOPPED",
+        initial_decision=decision,
+        final_decision=next_decision,
+    )
+    proposal_event_id = (
+        review_receipt.goal_proposal_event.id
+        if review_receipt.goal_proposal_event is not None
+        else None
+    )
+    routing_event = _append_routed_event(
+        database_path,
+        turn_event=turn_event,
+        intent="REVIEW_ATTENTION",
+        executive_receipt=executive_receipt,
+        authority_scope="CURRENT_ATTENTION_REVIEW_ONLY",
+        goal_id=None,
+        current_decision=decision,
+        effect_type="attention.review",
+        effect_id=review_receipt.review.event.id,
+        proposal_event_id=proposal_event_id,
+    )
+    return UserTurnReceipt(
+        status="ROUTED",
+        turn_event=turn_event,
+        intent="REVIEW_ATTENTION",
+        routing_event=routing_event,
+        executive_receipt=executive_receipt,
+        effect_type="attention.review",
+        effect_id=review_receipt.review.event.id,
+    )
+
 
 def _route_new_goal_proposal(
     database_path: Path,
@@ -1514,6 +1756,9 @@ def _unsupported_turn(
             "PROPOSE_NEW_GOAL_WHEN_IDLE",
             "ACCEPT_PENDING_GOAL_PROPOSAL",
             "REJECT_PENDING_GOAL_PROPOSAL",
+            "DISMISS_PENDING_ATTENTION_ITEM",
+            "ACKNOWLEDGE_PENDING_ATTENTION_ITEM",
+            "PROPOSE_GOAL_FROM_PENDING_ATTENTION_ITEM",
             "SELECT_CURRENT_GOAL",
             "SWITCH_FOREGROUND_GOAL",
             "MATERIALIZE_CURRENT_PROCESS_PROPOSAL",

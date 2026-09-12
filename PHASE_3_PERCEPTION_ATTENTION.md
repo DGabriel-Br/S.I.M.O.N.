@@ -690,3 +690,49 @@ Nenhuma review altera `world_revision`, cria Claim, executa capability, troca fo
 8. itens revisados deixam de alimentar `NEEDS_ATTENTION_REVIEW`;
 9. nenhuma review altera `world_revision`, foco, Claim ou capability;
 10. o schema SQLite permanece na versão 11.
+
+## Passo 82 - Review conversacional determinística de ATTEND
+
+O gateway `user-turn` passa a consumir `NEEDS_ATTENTION_REVIEW` sem criar um segundo lifecycle paralelo. A conversa apenas resolve a decisão humana e o item concreto; o efeito continua sendo executado por `review_attention_item()`.
+
+O primeiro vocabulário é deliberadamente pequeno. Para um item único, formas como `dispense`, `descarte`, `ignore`, `já vi isso` ou `ciente` são suficientes. Quando existem vários candidatos, a escolha precisa ser explícita por ordinal, número de item ou Event id, por exemplo `dispense o primeiro` ou `já vi o segundo`. Ambiguidade produz `attention_review_selection_required` e não consome nenhum item.
+
+### Conversão em proposta de Goal
+
+A conversa também pode materializar `PROPOSE_GOAL`, mas ainda não usa o modelo para inventar o objetivo. O usuário fornece o contrato mínimo em campos explícitos:
+
+```text
+quero transformar o segundo em um objetivo: título=Restaurar serviço; estado=O serviço voltou ao normal; critério=O serviço responde normalmente
+```
+
+`critério=` pode aparecer mais de uma vez e `pergunta=` é opcional. Se título, estado ou pelo menos um critério estiverem ausentes, o turno termina em `attention_goal_proposal_details_required` e o item permanece `PENDING`.
+
+Uma review válida é persistida como `attention.item.reviewed` com o mesmo contrato do Passo 81. Quando existe proposta de Goal, `attention.goal_proposal.completed` recebe o `user.turn.received` atual como `trace_id`. Por isso ela entra no mesmo gate conversacional de proposta pendente: um turno posterior `sim` pode aceitá-la e `não` pode rejeitá-la. Aceitação e review continuam sendo atos diferentes.
+
+### Autoridade e precedência
+
+Uma proposta de Goal já pendente continua tendo precedência sobre Attention passivo. Se o usuário já materializou uma proposta e ainda não respondeu, um texto de review não pode contornar esse gate. Da mesma forma, uma solicitação humana que não pertence à gramática pequena de review continua elegível para o fluxo normal de nova proposta de Goal quando o Executive está ocioso.
+
+A review conversacional executa zero transições de trabalho. Ela não cria Goal, Plan ou Action, não muda foco, não chama capability e não altera `world_revision`. `executive.user_turn.routed` registra `intent=REVIEW_ATTENTION`, `authority_scope=CURRENT_ATTENTION_REVIEW_ONLY` e `effect_type=attention.review`.
+
+### Deliberadamente fora do Passo 82
+
+- formulação livre da proposta de Goal pelo modelo;
+- matching semântico entre texto e itens de Attention;
+- review de múltiplos itens em um único turno;
+- `DEFERRED` e agendamento;
+- reabertura de item terminal;
+- efeito operacional de `INTERRUPT`;
+- ranking probabilístico ou Machine Learning.
+
+### Critérios de conclusão do Passo 82
+
+1. item único pode ser dispensado ou reconhecido por conversa sem Event id técnico;
+2. múltiplos itens exigem seleção determinística e ambiguidade não é adivinhada;
+3. a review reutiliza `review_attention_item()` e não cria lifecycle paralelo;
+4. `PROPOSE_GOAL` exige título, estado e ao menos um critério explícitos;
+5. a proposta criada pela conversa preserva `trace_id` do turno humano;
+6. `sim`/`não` posteriores podem responder a essa proposta sem `goal-accept` técnico;
+7. proposta de Goal pendente continua tendo precedência sobre Attention;
+8. nenhuma review executa trabalho ou altera `world_revision`;
+9. o schema SQLite permanece na versão 11.

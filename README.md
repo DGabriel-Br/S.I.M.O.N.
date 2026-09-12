@@ -867,9 +867,19 @@ Também é possível transformar o item em uma proposta de Goal estruturada, ain
 uv run simon attention-review --item-id evt_... --decision goal --title "Restaurar serviço" --desired-state "O serviço voltou ao normal." --success-criterion "O serviço responde normalmente."
 ```
 
-A terceira forma persiste `attention.goal_proposal.completed`; `goal-accept` continua sendo necessário em um ciclo separado. `DISMISSED`, `ACKNOWLEDGED` e `GOAL_PROPOSED` deixam de alimentar `NEEDS_ATTENTION_REVIEW`, não alteram `world_revision` e não trocam o foreground.
+A terceira forma persiste `attention.goal_proposal.completed`; `goal-accept` continua disponível como comando técnico em um ciclo separado. `DISMISSED`, `ACKNOWLEDGED` e `GOAL_PROPOSED` deixam de alimentar `NEEDS_ATTENTION_REVIEW`, não alteram `world_revision` e não trocam o foreground.
 
-O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, interpretação cognitiva de observações, revisão conversacional de Attention e aplicação de `INTERRUPT` permanecem fora deste corte.
+A mesma review agora possui uma borda conversacional determinística pelo `user-turn`. Exemplos:
+
+```text
+dispense o primeiro
+já vi o segundo
+quero transformar o primeiro em um objetivo: título=Restaurar serviço; estado=O serviço voltou ao normal; critério=O serviço responde normalmente
+```
+
+Com um único item, a referência ordinal pode ser omitida. Com vários itens, a seleção precisa ser resolvida explicitamente. A transformação em Goal exige os campos estruturados acima; o modelo não formula o objetivo neste passo. A proposta produzida pela review conversacional pode ser respondida no turno seguinte com `sim` ou `não`, mantendo review, proposta e aceitação em atos separados.
+
+O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, formulação livre de Goal por modelo e aplicação de `INTERRUPT` permanecem fora deste corte.
 
 O primeiro consumidor de `UPDATE_WORLD` também está disponível, ainda sem autoridade de escrita no World. Depois de uma Observation já associada a uma Entity e classificada como `UPDATE_WORLD`, uma Proposed Claim pode ser estruturada explicitamente:
 

@@ -182,3 +182,66 @@ def test_only_latest_conversational_goal_proposal_can_remain_pending(tmp_path: P
     latest = _create_conversational_proposal_event(database_path)
 
     assert find_latest_pending_conversational_goal_proposal(database_path) == latest
+
+
+
+def test_attention_goal_proposal_from_user_turn_is_pending_conversational(
+    tmp_path: Path,
+) -> None:
+    from simon.goal_intake import find_latest_pending_conversational_goal_proposal
+
+    database_path, _ = initialize_storage(tmp_path)
+    turn = Event.create(
+        kind="user.turn.received",
+        source="user",
+        payload={"text": "transforme o primeiro em objetivo"},
+    )
+    append_event(database_path, turn)
+    proposal = GoalProposal(
+        title="Restaurar serviço",
+        desired_state="O serviço voltou ao estado operacional.",
+        success_criteria=["O serviço responde normalmente."],
+        open_questions=[],
+    )
+    proposal_event = Event.create(
+        kind="attention.goal_proposal.completed",
+        source="user",
+        payload={
+            "model": None,
+            "proposal": proposal.model_dump(mode="json"),
+            "origin": "ATTENTION_REVIEW",
+        },
+        trace_id=turn.id,
+    )
+    append_event(database_path, proposal_event)
+
+    assert find_latest_pending_conversational_goal_proposal(database_path) == proposal_event
+
+
+def test_technical_attention_goal_proposal_is_not_conversational_pending(
+    tmp_path: Path,
+) -> None:
+    from simon.goal_intake import find_latest_pending_conversational_goal_proposal
+
+    database_path, _ = initialize_storage(tmp_path)
+    proposal = GoalProposal(
+        title="Restaurar serviço",
+        desired_state="O serviço voltou ao estado operacional.",
+        success_criteria=["O serviço responde normalmente."],
+        open_questions=[],
+    )
+    append_event(
+        database_path,
+        Event.create(
+            kind="attention.goal_proposal.completed",
+            source="user",
+            payload={
+                "model": None,
+                "proposal": proposal.model_dump(mode="json"),
+                "origin": "ATTENTION_REVIEW",
+            },
+            trace_id="trace_tecnico",
+        ),
+    )
+
+    assert find_latest_pending_conversational_goal_proposal(database_path) is None
