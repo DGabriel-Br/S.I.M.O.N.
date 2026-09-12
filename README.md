@@ -844,7 +844,7 @@ A chamada produz dois Events. `perception.observation.recorded` preserva a obser
 
 A ordem atual é simples: urgência ou risco resultam em `INTERRUPT`; relevância ao Goal ou subscription resulta em `ATTEND`; mudança candidata do World resulta em `UPDATE_WORLD`; ruído conhecido resulta em `IGNORE`; na ausência desses sinais, o destino é `RECORD`.
 
-O classificador não executa o destino automaticamente. Cada `attention.assessed` continua nascendo com `effect_applied=false`; consumidores posteriores precisam atravessar contratos explícitos. `INTERRUPT` ainda não pausa Goal ou Action.
+O classificador não executa o destino automaticamente. Cada `attention.assessed` continua nascendo com `effect_applied=false`; consumidores posteriores precisam atravessar contratos explícitos. `INTERRUPT` não pausa Goal ou Action automaticamente.
 
 `ATTEND` já possui seu primeiro consumidor persistente. Um assessment relevante pode ser colocado no radar do Executive sem alterar o foco:
 
@@ -869,6 +869,14 @@ uv run simon attention-review --item-id evt_... --decision goal --title "Restaur
 
 A terceira forma persiste `attention.goal_proposal.completed`; `goal-accept` continua disponível como comando técnico em um ciclo separado. `DISMISSED`, `ACKNOWLEDGED` e `GOAL_PROPOSED` deixam de alimentar `NEEDS_ATTENTION_REVIEW`, não alteram `world_revision` e não trocam o foreground.
 
+Um assessment `INTERRUPT` pode ser materializado separadamente como pedido de preempção:
+
+```powershell
+uv run simon interrupt-open --attention-event-id evt_...
+```
+
+O comando cria `attention.interrupt.requested` com `status=PENDING`, `preemption_requested=true` e `preemption_applied=false`. Enquanto existir um pedido pendente, `executive-next` retorna `NEEDS_INTERRUPT_REVIEW` antes de qualquer operação `PROCEED`. Isso impede o início de uma nova transição, mas não muda o lifecycle existente: Goal e Plan não são pausados, Action não é interrompida, foco não é trocado e `world_revision` não avança. A decisão de aplicar ou recusar a preempção permanece separada.
+
 A mesma review agora possui uma borda conversacional determinística pelo `user-turn`. Exemplos:
 
 ```text
@@ -879,7 +887,7 @@ quero transformar o primeiro em um objetivo: título=Restaurar serviço; estado=
 
 Com um único item, a referência ordinal pode ser omitida. Com vários itens, a seleção precisa ser resolvida explicitamente. A transformação em Goal exige os campos estruturados acima; o modelo não formula o objetivo neste passo. A proposta produzida pela review conversacional pode ser respondida no turno seguinte com `sim` ou `não`, mantendo review, proposta e aceitação em atos separados.
 
-O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, formulação livre de Goal por modelo e aplicação de `INTERRUPT` permanecem fora deste corte.
+O contrato e seus limites estão documentados em [`PHASE_3_PERCEPTION_ATTENTION.md`](PHASE_3_PERCEPTION_ATTENTION.md). Sensores contínuos, subscriptions persistentes, formulação livre de Goal por modelo e aplicação efetiva de preempção continuam fora deste corte.
 
 O primeiro consumidor de `UPDATE_WORLD` também está disponível, ainda sem autoridade de escrita no World. Depois de uma Observation já associada a uma Entity e classificada como `UPDATE_WORLD`, uma Proposed Claim pode ser estruturada explicitamente:
 

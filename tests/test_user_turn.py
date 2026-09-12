@@ -11,6 +11,7 @@ from simon.attention import (
     get_attention_item_review,
     list_pending_attention_items,
     open_attention_item,
+    open_interrupt_request,
 )
 from simon.cli import main
 from simon.cognition import GoalProposal, UserInputInterpretation
@@ -1242,3 +1243,41 @@ def test_user_turn_attention_goal_requires_structured_details(tmp_path: Path) ->
     )
     assert get_attention_item_review(database_path, item_id) is None
     assert len(list_pending_attention_items(database_path)) == 1
+
+
+def test_pending_interrupt_is_preserved_in_unsupported_user_turn_gate(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    observation = record_observation(
+        database_path,
+        observer="runtime",
+        signal_kind="service.failed",
+        summary="falha urgente exige revisão",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(urgent=True),
+    )
+    opening = open_interrupt_request(
+        database_path,
+        attention_event_id=assessment.event.id,
+    )
+
+    receipt = handle_user_turn(database_path, "faça qualquer outra coisa")
+
+    assert receipt.status == "UNSUPPORTED"
+    gate = receipt.routing_event.payload["gate"]
+    assert isinstance(gate, dict)
+    assert gate["outcome"] == "NEEDS_INTERRUPT_REVIEW"
+    candidates = gate["interrupt_candidates"]
+    assert isinstance(candidates, list)
+    assert candidates == [
+        {
+            "interrupt_request_event_id": opening.request.event.id,
+            "assessment_event_id": assessment.event.id,
+            "observation_event_id": observation.event.id,
+            "summary": "falha urgente exige revisão",
+            "reasons": ["urgent"],
+            "goal_id": None,
+        }
+    ]

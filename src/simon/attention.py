@@ -14,6 +14,7 @@ from simon.perception import Observation, get_observation
 AttentionDestination = Literal["IGNORE", "RECORD", "UPDATE_WORLD", "ATTEND", "INTERRUPT"]
 AttentionReviewDecision = Literal["DISMISS", "ACKNOWLEDGE", "PROPOSE_GOAL"]
 AttentionItemStatus = Literal["PENDING", "DISMISSED", "ACKNOWLEDGED", "GOAL_PROPOSED"]
+AttentionInterruptStatus = Literal["PENDING"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,22 @@ class AttentionItemReview:
 class AttentionItemReviewReceipt:
     review: AttentionItemReview
     goal_proposal_event: Event | None
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionInterruptRequest:
+    event: Event
+    assessment_event_id: str
+    observation_event_id: str
+    summary: str
+    reasons: tuple[str, ...]
+    status: AttentionInterruptStatus
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionInterruptOpening:
+    request: AttentionInterruptRequest
     created: bool
 
 
@@ -189,6 +206,65 @@ def open_attention_item(
     append_event(database_path, event)
     return AttentionItemOpening(
         item=_attention_item_from_event(event),
+        created=True,
+    )
+
+
+def open_interrupt_request(
+    database_path: Path,
+    *,
+    attention_event_id: str,
+) -> AttentionInterruptOpening:
+    """Materializa um INTERRUPT como pedido persistente sem aplicar preempção."""
+    assessment = get_event(database_path, attention_event_id)
+    if assessment is None:
+        raise ValueError(f"attention assessment não encontrado: {attention_event_id}")
+    if assessment.kind != "attention.assessed":
+        raise ValueError(
+            f"event não é um attention assessment: {attention_event_id} ({assessment.kind})"
+        )
+    if assessment.payload.get("destination") != "INTERRUPT":
+        raise ValueError("interrupt request exige assessment com destino INTERRUPT")
+    if assessment.payload.get("effect_applied") is not False:
+        raise ValueError("attention assessment não está disponível para materialização")
+
+    existing = _find_interrupt_request_for_assessment(database_path, attention_event_id)
+    if existing is not None:
+        return AttentionInterruptOpening(request=existing, created=False)
+
+    observation_event_id = assessment.payload.get("observation_event_id")
+    if not isinstance(observation_event_id, str):
+        raise TypeError(
+            f"observation_event_id inválido no assessment: {attention_event_id}"
+        )
+    observation = get_observation(database_path, observation_event_id)
+    if observation is None:
+        raise ValueError(f"observation não encontrada: {observation_event_id}")
+
+    reasons = _string_tuple_payload(assessment.payload, "reasons")
+    event = Event.create(
+        kind="attention.interrupt.requested",
+        source="attention",
+        payload={
+            "assessment_event_id": assessment.id,
+            "observation_event_id": observation.event.id,
+            "summary": observation.summary,
+            "reasons": list(reasons),
+            "status": "PENDING",
+            "preemption_requested": True,
+            "preemption_applied": False,
+            "focus_changed": False,
+            "goal_paused": False,
+            "plan_paused": False,
+            "effect_applied": True,
+        },
+        trace_id=assessment.trace_id or observation.event.trace_id or observation.event.id,
+        related_entity_ids=assessment.related_entity_ids,
+        goal_id=assessment.goal_id,
+    )
+    append_event(database_path, event)
+    return AttentionInterruptOpening(
+        request=_interrupt_request_from_event(event),
         created=True,
     )
 
@@ -365,6 +441,38 @@ def list_pending_attention_items(database_path: Path) -> tuple[AttentionItem, ..
         if item is not None and item.event.payload.get("status") == "PENDING":
             items.append(item)
     return tuple(items)
+
+
+def get_interrupt_request(
+    database_path: Path,
+    event_id: str,
+) -> AttentionInterruptRequest | None:
+    event = get_event(database_path, event_id)
+    if event is None:
+        return None
+    return _interrupt_request_from_event(event)
+
+
+def list_pending_interrupt_requests(
+    database_path: Path,
+) -> tuple[AttentionInterruptRequest, ...]:
+    """Lista pedidos INTERRUPT pendentes em ordem de chegada."""
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM events
+            WHERE kind = 'attention.interrupt.requested'
+            ORDER BY occurred_at, rowid
+            """
+        ).fetchall()
+
+    requests: list[AttentionInterruptRequest] = []
+    for row in rows:
+        request = get_interrupt_request(database_path, str(row[0]))
+        if request is not None and request.status == "PENDING":
+            requests.append(request)
+    return tuple(requests)
 
 
 def _load_event_by_id(connection: sqlite3.Connection, event_id: str) -> Event:
@@ -564,6 +672,27 @@ def _find_attention_item_for_assessment(
     return None
 
 
+def _find_interrupt_request_for_assessment(
+    database_path: Path,
+    attention_event_id: str,
+) -> AttentionInterruptRequest | None:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM events
+            WHERE kind = 'attention.interrupt.requested'
+            ORDER BY occurred_at, rowid
+            """
+        ).fetchall()
+
+    for row in rows:
+        request = get_interrupt_request(database_path, str(row[0]))
+        if request is not None and request.assessment_event_id == attention_event_id:
+            return request
+    return None
+
+
 def _attention_item_from_event(event: Event) -> AttentionItem:
     if event.kind != "attention.item.opened":
         raise ValueError(f"event não é um attention item: {event.id} ({event.kind})")
@@ -584,6 +713,33 @@ def _attention_item_from_event(event: Event) -> AttentionItem:
         observation_event_id=observation_event_id,
         summary=summary,
         reasons=_string_tuple_payload(event.payload, "reasons"),
+    )
+
+
+def _interrupt_request_from_event(event: Event) -> AttentionInterruptRequest:
+    if event.kind != "attention.interrupt.requested":
+        raise ValueError(f"event não é interrupt request: {event.id} ({event.kind})")
+
+    assessment_event_id = event.payload.get("assessment_event_id")
+    observation_event_id = event.payload.get("observation_event_id")
+    summary = event.payload.get("summary")
+    status = event.payload.get("status")
+    if not isinstance(assessment_event_id, str):
+        raise TypeError(f"assessment_event_id inválido no interrupt request: {event.id}")
+    if not isinstance(observation_event_id, str):
+        raise TypeError(f"observation_event_id inválido no interrupt request: {event.id}")
+    if not isinstance(summary, str) or not summary.strip():
+        raise TypeError(f"summary inválido no interrupt request: {event.id}")
+    if status != "PENDING":
+        raise TypeError(f"status inválido no interrupt request: {event.id}")
+
+    return AttentionInterruptRequest(
+        event=event,
+        assessment_event_id=assessment_event_id,
+        observation_event_id=observation_event_id,
+        summary=summary,
+        reasons=_string_tuple_payload(event.payload, "reasons"),
+        status=status,
     )
 
 

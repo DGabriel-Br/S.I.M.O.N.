@@ -18,6 +18,7 @@ from simon.attention import (
     assess_observation_attention,
     get_attention_item_review,
     open_attention_item,
+    open_interrupt_request,
     review_attention_item,
 )
 from simon.claims import (
@@ -270,6 +271,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--attention-event-id",
         required=True,
         help="Event attention.assessed com destino ATTEND",
+    )
+
+    interrupt_open = commands.add_parser(
+        "interrupt-open",
+        help=(
+            "materializa um assessment INTERRUPT como pedido persistente de preempção "
+            "sem pausar Goal ou Plan"
+        ),
+    )
+    interrupt_open.add_argument(
+        "--attention-event-id",
+        required=True,
+        help="Event attention.assessed com destino INTERRUPT",
     )
 
     attention_review = commands.add_parser(
@@ -1033,6 +1047,8 @@ def _run_locked(args: argparse.Namespace, data_dir: Path) -> int:
         )
     if args.command == "attention-open":
         return _attention_open(database_path, args.attention_event_id)
+    if args.command == "interrupt-open":
+        return _interrupt_open(database_path, args.attention_event_id)
     if args.command == "attention-review":
         return _attention_review(
             database_path,
@@ -1326,6 +1342,32 @@ def _attention_open(database_path: Path, attention_event_id: str) -> int:
     print(f"Item criado: {'sim' if opening.created else 'não'}")
     print("Foco do Executive alterado: não")
     print("Goal criado: não")
+    return 0
+
+
+def _interrupt_open(database_path: Path, attention_event_id: str) -> int:
+    try:
+        opening = open_interrupt_request(
+            database_path,
+            attention_event_id=attention_event_id,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        print(f"Interrupt request: falha ({exc})")
+        return 1
+
+    request = opening.request
+    print(f"Interrupt request: {request.event.id}")
+    print(f"Assessment: {request.assessment_event_id}")
+    print(f"Observation: {request.observation_event_id}")
+    print(f"Resumo: {request.summary}")
+    print(f"Razões: {', '.join(request.reasons)}")
+    print(f"Goal relacionado: {request.event.goal_id or 'nenhum'}")
+    print(f"Estado: {request.status}")
+    print(f"Pedido criado: {'sim' if opening.created else 'não'}")
+    print("Preempção aplicada: não")
+    print("Goal pausado: não")
+    print("Plan pausado: não")
+    print("Foco do Executive alterado: não")
     return 0
 
 
@@ -1922,7 +1964,23 @@ def _print_executive_decision(decision: ExecutiveDecision) -> None:
             "Revisão técnica: uv run simon attention-review "
             "--item-id <evt_...> --decision dismiss|acknowledge|goal"
         )
-        print("Revisão conversacional de Attention: ainda não implementada")
+        print("Revisão conversacional: dispense, reconheça ou transforme o item em Goal")
+
+    if decision.interrupt_candidates:
+        print("Pedidos de interrupção pendentes:")
+        for index, interrupt_candidate in enumerate(
+            decision.interrupt_candidates,
+            start=1,
+        ):
+            reasons = ", ".join(interrupt_candidate.reasons)
+            related_goal = interrupt_candidate.goal_id or "nenhum"
+            print(
+                f"{index}. {interrupt_candidate.interrupt_request_event_id}: "
+                f"{interrupt_candidate.summary} "
+                f"| razões={reasons} | goal relacionado={related_goal}"
+            )
+        print("Preempção aplicada: não")
+        print("Revisão de INTERRUPT ainda não implementada neste passo")
 
     if decision.blockers:
         print("Blockers preservados:")

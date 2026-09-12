@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Literal
 
 from simon.actions import Action
-from simon.attention import AttentionItem, list_pending_attention_items
+from simon.attention import (
+    AttentionInterruptRequest,
+    AttentionItem,
+    list_pending_attention_items,
+    list_pending_interrupt_requests,
+)
 from simon.goal_verification import get_latest_goal_assessment_context
 from simon.plan_failure import PlanFailureContext, get_active_plan_failure_context
 from simon.plan_proposal import PendingPlanProposal, find_latest_pending_plan_proposal
@@ -20,6 +25,7 @@ ExecutiveOutcome = Literal[
     "NEEDS_OPERATION_AUTHORIZATION",
     "NEEDS_GOAL_SELECTION",
     "NEEDS_ATTENTION_REVIEW",
+    "NEEDS_INTERRUPT_REVIEW",
     "BLOCKED",
     "DONE",
 ]
@@ -65,6 +71,16 @@ class ExecutiveAttentionCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutiveInterruptCandidate:
+    interrupt_request_event_id: str
+    assessment_event_id: str
+    observation_event_id: str
+    summary: str
+    reasons: tuple[str, ...]
+    goal_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutiveDecision:
     outcome: ExecutiveOutcome
     reason_code: str
@@ -81,6 +97,7 @@ class ExecutiveDecision:
     blockers: tuple[StepBlocker, ...] = ()
     goal_candidates: tuple[ExecutiveGoalCandidate, ...] = ()
     attention_candidates: tuple[ExecutiveAttentionCandidate, ...] = ()
+    interrupt_candidates: tuple[ExecutiveInterruptCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.reason_code.strip() or not self.reason.strip():
@@ -88,7 +105,14 @@ class ExecutiveDecision:
         if self.outcome == "PROCEED" and self.operation is None:
             raise ValueError("ExecutiveDecision PROCEED exige uma operação")
         if (
-            self.outcome in {"DONE", "BLOCKED", "NEEDS_GOAL_SELECTION", "NEEDS_ATTENTION_REVIEW"}
+            self.outcome
+            in {
+                "DONE",
+                "BLOCKED",
+                "NEEDS_GOAL_SELECTION",
+                "NEEDS_ATTENTION_REVIEW",
+                "NEEDS_INTERRUPT_REVIEW",
+            }
             and self.operation is not None
         ):
             raise ValueError(f"ExecutiveDecision {self.outcome} não pode executar operação")
@@ -96,6 +120,8 @@ class ExecutiveDecision:
             raise ValueError("requires_model exige uma operação")
         if self.outcome == "NEEDS_ATTENTION_REVIEW" and not self.attention_candidates:
             raise ValueError("NEEDS_ATTENTION_REVIEW exige attention_candidates")
+        if self.outcome == "NEEDS_INTERRUPT_REVIEW" and not self.interrupt_candidates:
+            raise ValueError("NEEDS_INTERRUPT_REVIEW exige interrupt_candidates")
 
 
 def decide_next(
@@ -106,6 +132,26 @@ def decide_next(
     """Decide uma única próxima operação legítima sem alterar o estado persistido."""
     overview = reconstruct_resume_state(database_path, goal_id=goal_id)
     state = overview.selected
+
+    interrupt_requests = list_pending_interrupt_requests(database_path)
+    if interrupt_requests:
+        return ExecutiveDecision(
+            outcome="NEEDS_INTERRUPT_REVIEW",
+            reason_code="pending_interrupt_requests",
+            reason=(
+                "há pedidos INTERRUPT pendentes; o Executive bloqueia novas transições "
+                "até revisão explícita sem pausar Goal ou Plan automaticamente"
+            ),
+            goal_id=state.goal.id if state is not None else None,
+            plan_id=(
+                state.plan.id
+                if state is not None and state.plan is not None
+                else None
+            ),
+            interrupt_candidates=tuple(
+                _interrupt_candidate(request) for request in interrupt_requests
+            ),
+        )
 
     if state is None:
         if len(overview.open_goals) > 1:
@@ -205,6 +251,19 @@ def _attention_candidate(item: AttentionItem) -> ExecutiveAttentionCandidate:
         summary=item.summary,
         reasons=item.reasons,
         goal_id=item.event.goal_id,
+    )
+
+
+def _interrupt_candidate(
+    request: AttentionInterruptRequest,
+) -> ExecutiveInterruptCandidate:
+    return ExecutiveInterruptCandidate(
+        interrupt_request_event_id=request.event.id,
+        assessment_event_id=request.assessment_event_id,
+        observation_event_id=request.observation_event_id,
+        summary=request.summary,
+        reasons=request.reasons,
+        goal_id=request.event.goal_id,
     )
 
 

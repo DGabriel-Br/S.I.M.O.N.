@@ -484,6 +484,8 @@ Quando não existe Goal aberto e há itens `PENDING`, o Executive pode retornar 
 
 Foreground humano continua superior a uma pendência passiva de Attention: um turno explícito pode propor um novo Goal e uma proposta de Goal já pendente pode ser respondida mesmo quando o Executive está mostrando `NEEDS_ATTENTION_REVIEW`. A revisão, resolução ou transformação do item em trabalho permanece um contrato posterior.
 
+`INTERRUPT` possui uma fronteira mais forte, mas ainda sem autoridade de preempção. Um assessment `INTERRUPT` pode ser materializado como `attention.interrupt.requested(status=PENDING, preemption_requested=true, preemption_applied=false)`. Enquanto existir pedido pendente, o Executive retorna `NEEDS_INTERRUPT_REVIEW` antes de qualquer nova transição. Esse gate pode impedir o runner de iniciar trabalho adicional, mas não altera sozinho Goal, Plan, Action, Focus ou `world_revision`. Pausar ou substituir o foreground exige um contrato posterior e autoridade explícita.
+
 ---
 
 ## 10. Goals

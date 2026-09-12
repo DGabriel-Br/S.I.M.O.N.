@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from simon.actions import create_action, list_actions_for_plan, transition_action
+from simon.attention import AttentionSignals, assess_observation_attention, open_interrupt_request
 from simon.cli import main
 from simon.cognition_analysis import AnalysisFinding, CognitionAnalysis
 from simon.events import Event, append_event
@@ -12,6 +13,7 @@ from simon.executive import decide_next
 from simon.executive_runner import run_executive_once
 from simon.goals import Goal, insert_goal
 from simon.model_provider import StructuredModelResult
+from simon.perception import record_observation
 from simon.planning import PlanIntentDraft, PlanIntentStep
 from simon.plans import create_plan, list_plans_for_goal
 from simon.storage import initialize_storage
@@ -115,6 +117,31 @@ def test_runner_does_not_cross_operation_authorization_gate(tmp_path: Path) -> N
     assert receipt.decision.outcome == "NEEDS_OPERATION_AUTHORIZATION"
     assert receipt.decision.operation == "plan.run"
     assert list_actions_for_plan(database_path, plan.id) == ()
+
+
+def test_runner_does_not_cross_pending_interrupt_review_gate(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    observation = record_observation(
+        database_path,
+        observer="runtime",
+        signal_kind="service.failed",
+        summary="falha urgente durante execução",
+        goal_id=goal.id,
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(urgent=True),
+    )
+    open_interrupt_request(database_path, attention_event_id=assessment.event.id)
+
+    receipt = run_executive_once(database_path, goal_id=goal.id)
+
+    assert receipt.status == "STOPPED"
+    assert receipt.decision.outcome == "NEEDS_INTERRUPT_REVIEW"
+    assert receipt.decision.operation is None
+    assert list_plans_for_goal(database_path, goal.id) == ()
 
 
 def test_runner_requires_model_without_mutating_cognitive_step(tmp_path: Path) -> None:

@@ -1859,6 +1859,17 @@ def _decision_gate_payload(decision: ExecutiveDecision) -> dict[str, object]:
             }
             for candidate in decision.attention_candidates
         ],
+        "interrupt_candidates": [
+            {
+                "interrupt_request_event_id": candidate.interrupt_request_event_id,
+                "assessment_event_id": candidate.assessment_event_id,
+                "observation_event_id": candidate.observation_event_id,
+                "summary": candidate.summary,
+                "reasons": list(candidate.reasons),
+                "goal_id": candidate.goal_id,
+            }
+            for candidate in decision.interrupt_candidates
+        ],
     }
 
 

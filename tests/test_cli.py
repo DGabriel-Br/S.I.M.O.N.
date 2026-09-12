@@ -3255,3 +3255,62 @@ def test_user_turn_cli_reviews_single_pending_attention_item(
     assert "Decisão: DISMISS" in output
     assert "Estado: DISMISSED" in output
     assert "Executive: DONE" in output
+
+
+def test_interrupt_open_cli_surfaces_pending_preemption_request(
+    tmp_path: Path,
+    capsys: object,
+) -> None:
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "observe",
+            "--source",
+            "runtime",
+            "--kind",
+            "service.failed",
+            "--urgent",
+            "serviço",
+            "crítico",
+            "falhou",
+        ]
+    ) == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+
+    with sqlite3.connect(tmp_path / "simon.db") as connection:
+        row = connection.execute(
+            """
+            SELECT id FROM events
+            WHERE kind = 'attention.assessed'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assessment_event_id = str(row[0])
+
+    assert main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "interrupt-open",
+            "--attention-event-id",
+            assessment_event_id,
+        ]
+    ) == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Interrupt request: evt_" in output
+    assert f"Assessment: {assessment_event_id}" in output
+    assert "Resumo: serviço crítico falhou" in output
+    assert "Estado: PENDING" in output
+    assert "Preempção aplicada: não" in output
+    assert "Goal pausado: não" in output
+    assert "Plan pausado: não" in output
+
+    assert main(["--data-dir", str(tmp_path), "executive-next"]) == 0
+    executive_output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "Executive: NEEDS_INTERRUPT_REVIEW" in executive_output
+    assert "Razão: pending_interrupt_requests" in executive_output
+    assert "Pedidos de interrupção pendentes:" in executive_output
+    assert "serviço crítico falhou" in executive_output
+    assert "Preempção aplicada: não" in executive_output

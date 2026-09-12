@@ -8,8 +8,11 @@ from simon.attention import (
     decide_attention,
     get_attention_item,
     get_attention_item_review,
+    get_interrupt_request,
     list_pending_attention_items,
+    list_pending_interrupt_requests,
     open_attention_item,
+    open_interrupt_request,
     review_attention_item,
 )
 from simon.cognition import GoalProposal
@@ -376,3 +379,86 @@ def test_attention_goal_proposal_review_rejects_different_payload_on_retry(
             decision="PROPOSE_GOAL",
             goal_proposal=second,
         )
+
+
+def test_interrupt_can_be_materialized_as_persistent_preemption_request(
+    tmp_path: Path,
+) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    observation = record_observation(
+        database_path,
+        observer="runtime",
+        signal_kind="service.failed",
+        summary="serviço crítico falhou",
+        trace_id="trace_interrupt",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(urgent=True),
+    )
+    before_revision = get_world_revision(database_path)
+
+    opening = open_interrupt_request(
+        database_path,
+        attention_event_id=assessment.event.id,
+    )
+
+    assert opening.created is True
+    assert opening.request.assessment_event_id == assessment.event.id
+    assert opening.request.observation_event_id == observation.event.id
+    assert opening.request.summary == "serviço crítico falhou"
+    assert opening.request.reasons == ("urgent",)
+    assert opening.request.status == "PENDING"
+    assert opening.request.event.kind == "attention.interrupt.requested"
+    assert opening.request.event.source == "attention"
+    assert opening.request.event.payload["preemption_requested"] is True
+    assert opening.request.event.payload["preemption_applied"] is False
+    assert opening.request.event.payload["focus_changed"] is False
+    assert opening.request.event.payload["goal_paused"] is False
+    assert opening.request.event.payload["plan_paused"] is False
+    assert opening.request.event.payload["effect_applied"] is True
+    assert get_world_revision(database_path) == before_revision
+    assert get_interrupt_request(database_path, opening.request.event.id) == opening.request
+    assert list_pending_interrupt_requests(database_path) == (opening.request,)
+
+
+def test_interrupt_request_opening_is_idempotent_per_assessment(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    observation = record_observation(
+        database_path,
+        observer="runtime",
+        signal_kind="risk.detected",
+        summary="risco crítico detectado",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(risk=True),
+    )
+
+    first = open_interrupt_request(database_path, attention_event_id=assessment.event.id)
+    second = open_interrupt_request(database_path, attention_event_id=assessment.event.id)
+
+    assert first.created is True
+    assert second.created is False
+    assert second.request == first.request
+    assert list_pending_interrupt_requests(database_path) == (first.request,)
+
+
+def test_interrupt_request_rejects_non_interrupt_destination(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="arquivo apenas relevante",
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(subscribed=True),
+    )
+
+    with pytest.raises(ValueError, match="destino INTERRUPT"):
+        open_interrupt_request(database_path, attention_event_id=assessment.event.id)

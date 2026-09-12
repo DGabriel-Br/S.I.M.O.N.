@@ -8,12 +8,13 @@ from simon.attention import (
     AttentionSignals,
     assess_observation_attention,
     open_attention_item,
+    open_interrupt_request,
     review_attention_item,
 )
 from simon.cli import main
 from simon.events import Event, append_event
 from simon.executive import decide_next
-from simon.goals import Goal, insert_goal, transition_goal
+from simon.goals import Goal, get_goal, insert_goal, transition_goal
 from simon.perception import record_observation
 from simon.plans import create_plan
 from simon.storage import initialize_storage
@@ -488,3 +489,76 @@ def test_reviewed_attend_no_longer_blocks_idle_executive(tmp_path: Path) -> None
     assert decision.outcome == "DONE"
     assert decision.reason_code == "no_open_goal"
     assert decision.attention_candidates == ()
+
+
+def test_interrupt_request_gates_active_foreground_without_pausing_it(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    goal = _goal(database_path)
+    observation = record_observation(
+        database_path,
+        observer="runtime",
+        signal_kind="service.failed",
+        summary="falha urgente durante trabalho foreground",
+        goal_id=goal.id,
+    )
+    assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=observation.event.id,
+        signals=AttentionSignals(urgent=True),
+    )
+    opening = open_interrupt_request(
+        database_path,
+        attention_event_id=assessment.event.id,
+    )
+
+    decision = decide_next(database_path)
+
+    assert decision.outcome == "NEEDS_INTERRUPT_REVIEW"
+    assert decision.reason_code == "pending_interrupt_requests"
+    assert decision.operation is None
+    assert decision.goal_id == goal.id
+    assert len(decision.interrupt_candidates) == 1
+    candidate = decision.interrupt_candidates[0]
+    assert candidate.interrupt_request_event_id == opening.request.event.id
+    assert candidate.assessment_event_id == assessment.event.id
+    assert candidate.observation_event_id == observation.event.id
+    assert candidate.summary == "falha urgente durante trabalho foreground"
+    assert candidate.reasons == ("urgent",)
+    restored_goal = get_goal(database_path, goal.id)
+    assert restored_goal is not None
+    assert restored_goal.status == "ACTIVE"
+
+
+def test_interrupt_request_has_priority_over_passive_attend(tmp_path: Path) -> None:
+    database_path, _ = initialize_storage(tmp_path)
+    attend_observation = record_observation(
+        database_path,
+        observer="filesystem",
+        signal_kind="file.changed",
+        summary="sinal relevante",
+    )
+    attend_assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=attend_observation.event.id,
+        signals=AttentionSignals(subscribed=True),
+    )
+    open_attention_item(database_path, attention_event_id=attend_assessment.event.id)
+
+    interrupt_observation = record_observation(
+        database_path,
+        observer="runtime",
+        signal_kind="risk.detected",
+        summary="risco urgente",
+    )
+    interrupt_assessment = assess_observation_attention(
+        database_path,
+        observation_event_id=interrupt_observation.event.id,
+        signals=AttentionSignals(risk=True),
+    )
+    open_interrupt_request(database_path, attention_event_id=interrupt_assessment.event.id)
+
+    decision = decide_next(database_path)
+
+    assert decision.outcome == "NEEDS_INTERRUPT_REVIEW"
+    assert decision.attention_candidates == ()
+    assert len(decision.interrupt_candidates) == 1

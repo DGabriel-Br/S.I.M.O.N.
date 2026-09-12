@@ -736,3 +736,77 @@ A review conversacional executa zero transições de trabalho. Ela não cria Goa
 7. proposta de Goal pendente continua tendo precedência sobre Attention;
 8. nenhuma review executa trabalho ou altera `world_revision`;
 9. o schema SQLite permanece na versão 11.
+
+## Passo 83 - INTERRUPT -> pedido persistente de preempção
+
+O destino `INTERRUPT` ganha seu primeiro consumidor sem receber autoridade para pausar trabalho. Um `attention.assessed` com `destination=INTERRUPT` pode ser materializado explicitamente como:
+
+```text
+attention.interrupt.requested
+status = PENDING
+preemption_requested = true
+preemption_applied = false
+focus_changed = false
+goal_paused = false
+plan_paused = false
+```
+
+A fronteira técnica é:
+
+```powershell
+uv run simon interrupt-open --attention-event-id evt_...
+```
+
+`observe` continua somente classificando a Observation. O pedido é um segundo Event persistente e idempotente por assessment. Materializar o pedido não altera `world_revision`, Goal, Plan, Action ou Focus.
+
+### Gate do Executive
+
+Enquanto existir ao menos um `attention.interrupt.requested` em `PENDING`, `decide_next()` retorna:
+
+```text
+NEEDS_INTERRUPT_REVIEW
+reason_code = pending_interrupt_requests
+operation = None
+```
+
+Esse gate é avaliado antes de `NEEDS_GOAL_SELECTION`, `NEEDS_ATTENTION_REVIEW` e qualquer operação `PROCEED`. Portanto, `INTERRUPT` possui precedência executiva sobre Attention passivo e sobre o início de novas transições.
+
+A precedência não é uma preempção aplicada. O Goal foreground continua `ACTIVE`, o Plan continua no status anterior, nenhuma Action é criada ou interrompida e nenhum foco é trocado. O efeito é somente impedir que o Executive inicie a próxima transição antes da revisão explícita do pedido.
+
+`run_executive_once()` e `run_executive_until_gate()` já respeitam a fronteira porque somente decisões `PROCEED` são executáveis. Ao encontrar `NEEDS_INTERRUPT_REVIEW`, o runner para com zero novas transições.
+
+### Provenance
+
+Cada candidato exposto pelo Executive preserva:
+
+- Event `attention.interrupt.requested`;
+- assessment `attention.assessed` de origem;
+- Observation de origem;
+- resumo normalizado;
+- razões determinísticas, como `urgent` ou `risk`;
+- Goal relacionado, quando a Observation possuía esse vínculo.
+
+O snapshot de gate persistido por `user-turn` também inclui `interrupt_candidates`, evitando perder a razão do bloqueio quando um turno não é suportado.
+
+### Deliberadamente fora do Passo 83
+
+- aceitar ou rejeitar a preempção;
+- pausar Goal ou Plan;
+- interromper Action `RUNNING`;
+- trocar foreground automaticamente;
+- transformar INTERRUPT em Goal;
+- resolução conversacional do pedido;
+- timeout, escalonamento ou scheduler;
+- ranking probabilístico ou Machine Learning.
+
+### Critérios de conclusão do Passo 83
+
+1. somente assessment `INTERRUPT` pode gerar pedido de preempção;
+2. a materialização é persistente e idempotente por assessment;
+3. o pedido nasce `PENDING` com `preemption_applied=false`;
+4. nenhuma materialização altera Goal, Plan, Action, Focus ou `world_revision`;
+5. pedido pendente produz `NEEDS_INTERRUPT_REVIEW` antes de qualquer nova operação;
+6. `INTERRUPT` tem precedência sobre `ATTEND` passivo;
+7. o runner executa zero transições enquanto o gate estiver pendente;
+8. provenance do pedido é preservada no Executive e no gate de `user-turn`;
+9. o schema SQLite permanece na versão 11.
